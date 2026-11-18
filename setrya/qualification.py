@@ -78,7 +78,7 @@ def retired_chunks():
     broken = scenario("broken", "retired.toml")
     check_status(broken, Status.FAIL, "refund@A.5")
     fixed = scenario("fixed", "retired.toml")
-    check_status(fixed, Status.PASS, "all final probes")
+    check_status(fixed, Status.PASS, "All final probes")
     for result in (broken, fixed):
         initial = [event for event in result.report.events
                    if event.get("probe_id") == "retired-clause" and event["stage"] == "baseline"]
@@ -197,7 +197,7 @@ def isolation():
                     raise AssertionError("first worker was not held")
             first.send_signal(signal.SIGINT)
             stdout, stderr = first.communicate(timeout=5)
-            require(first.returncode == 2 and "interrupted" in stderr, f"interruption was not actionable: {stdout}{stderr}")
+            require(first.returncode == 2 and "interrupted" in stderr.lower(), f"interruption was not actionable: {stdout}{stderr}")
             stdout, stderr = second.communicate(timeout=8)
             require(second.returncode == 0 and "PASS" in stdout, f"other run failed: {stdout}{stderr}")
             require(second_report.exists() and not first_report.exists() and not list(temp.glob("setrya-*")),

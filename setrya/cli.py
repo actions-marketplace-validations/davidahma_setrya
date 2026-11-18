@@ -29,7 +29,7 @@ def preflight() -> None:
         with closing(sqlite3.connect(":memory:")) as connection:
             connection.execute("CREATE VIRTUAL TABLE preflight USING fts5(body)")
     except sqlite3.Error:
-        raise InputError("SQLite FTS5 is unavailable; use a Python build with FTS5 enabled") from None
+        raise InputError("SQLite FTS5 is unavailable. Use a Python build with FTS5 enabled.") from None
 
 
 def format_verdict(verdict: Verdict, report: Report, rerun: str | None = None) -> str:
@@ -148,10 +148,10 @@ def main(argv=None) -> int:
         print(f"ERROR  {error}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
-        print("ERROR  interrupted; fixture teardown requested", file=sys.stderr)
+        print("ERROR  Interrupted. Fixture teardown requested.", file=sys.stderr)
         return 2
     except Exception as error:
         # Third-party errors may contain queries, snippets and local URLs.
-        print(f"ERROR  {type(error).__name__} during {args.command}; check adapter health and local permissions",
+        print(f"ERROR  {type(error).__name__} during {args.command}. Check adapter health and local permissions.",
               file=sys.stderr)
         return 2

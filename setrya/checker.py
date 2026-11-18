@@ -50,7 +50,7 @@ def _attribution(event: dict, rank: int, release: dict | None, receipt: dict | N
     if (receipt and receipt["outcome"] == "committed" and event["origins"][rank - 1] == receipt["attempt"]
             and _visible(event["view"], receipt, probe)):
         return f"Returned passage traces to old attempt {receipt['attempt']}"
-    return "The recorded search result establishes the violation; its write origin is unverified"
+    return "The recorded search result establishes the violation. Its write origin is unverified."
 
 
 def evaluate(report: Report) -> Verdict:
@@ -119,7 +119,7 @@ def evaluate(report: Report) -> Verdict:
                               if marker in probe.forbid), None)
             if forbidden:
                 rank, marker = forbidden
-                return Verdict(Status.FAIL, f"Expected {', '.join(probe.require)}; observed forbidden {marker} at rank {rank}",
+                return Verdict(Status.FAIL, f"Expected {', '.join(probe.require)}. Observed forbidden {marker} at rank {rank}.",
                                event["seq"], probe.id, _attribution(event, rank, release, receipt, probe))
 
         if first_fresh is None or stage != "final" or not release_valid:
@@ -155,5 +155,5 @@ def evaluate(report: Report) -> Verdict:
                            probe=probe.id)
     decisive = max(final.values(), key=lambda event: event["seq"])
     resolved = "Index rejected the old write" if receipt["outcome"] == "rejected" else "Search observed the completed write"
-    return Verdict(Status.PASS, f"{resolved}; all final probes found their required passages",
+    return Verdict(Status.PASS, f"{resolved}. All final probes found their required passages.",
                    decisive["seq"], decisive["probe_id"])

@@ -63,7 +63,7 @@ def check(mode="fixed"):
                     result = client.search(question, ROUTE, SCOPE, 3)
                     observed = ids(result)
                     assert forbidden is None or forbidden not in observed, (
-                        f"expected {required}; observed {forbidden} at rank {observed.index(forbidden) + 1}"
+                        f"expected {required}. Observed {forbidden} at rank {observed.index(forbidden) + 1}."
                     )
                     view = result["view"]
                     if receipt["outcome"] == "rejected" or (
@@ -71,7 +71,7 @@ def check(mode="fixed"):
                         and view["route"] == ROUTE and view["scope"] == SCOPE
                     ):
                         assert monotonic() <= deadline, "final search missed the deadline"
-                        assert None not in observed and required in observed, f"expected {required}; observed {observed}"
+                        assert None not in observed and required in observed, f"expected {required}. Observed {observed}."
                         break
                     assert monotonic() < deadline, "search visibility was unverified"
                     sleep(0.02)

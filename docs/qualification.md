@@ -9,7 +9,7 @@ python3 -m setrya qualify --case report-replay
 scripts/qualify-offline.sh
 ```
 
-The offline harness uses a loopback-only network namespace on Linux and a loopback-only sandbox profile on macOS. It checks loopback and attempts a connection to a reserved off-host address to verify the isolation. On Linux, the harness needs permission for `unshare --net` and `ip link`; CI uses non-interactive sudo to configure the namespace. Set `SETRYA_PYTHON` to an absolute Python executable to override interpreter discovery.
+The offline harness uses a loopback-only network namespace on Linux and a loopback-only sandbox profile on macOS. It checks loopback and attempts a connection to a reserved off-host address to verify the isolation. On Linux, the harness needs permission for `unshare --net` and `ip link`. CI uses non-interactive sudo to configure the namespace. Set `SETRYA_PYTHON` to an absolute Python executable to override interpreter discovery.
 
 | Case | Expected evidence |
 | --- | --- |
