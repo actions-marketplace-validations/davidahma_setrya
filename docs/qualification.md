@@ -1,0 +1,28 @@
+# Release qualification
+
+Run Python 3.11 or later with SQLite FTS5. The CI matrix runs deterministic unit tests and the quick qualification suite on each configured Python and OS combination. The offline release job records the exact Linux, Python, and SQLite configuration used for the full checkout and archive qualification. Review the [Checks](https://github.com/davidahma/setrya/actions/workflows/ci.yml) and [offline qualification](https://github.com/davidahma/setrya/actions/workflows/qualification.yml) runs for the release commit.
+
+```sh
+python3 -m unittest discover -s tests -v
+python3 -m setrya qualify
+python3 -m setrya qualify --case report-replay
+scripts/qualify-offline.sh
+```
+
+The offline harness uses a loopback-only network namespace on Linux and a loopback-only sandbox profile on macOS. It checks loopback and attempts a connection to a reserved off-host address to verify the isolation. On Linux, the harness needs permission for `unshare --net` and `ip link`; CI uses non-interactive sudo to configure the namespace. Set `SETRYA_PYTHON` to an absolute Python executable to override interpreter discovery.
+
+| Case | Expected evidence |
+| --- | --- |
+| `demo` | Three distinct verdicts and rerun commands in under two minutes. |
+| `late-write` | B before resume, A after the stale commit, and a passing guarded worker. |
+| `retired-chunks` | Find chunk five at baseline, expose it in a broken replacement, and remove it in a fixed replacement while retaining the control. |
+| `early-stale` | Observe a stale read before the old worker resumes with matching attribution. |
+| `missing-evidence` | Clean stale-view observations, exposure when the view advances, a missing revision identity, and a missing checkpoint. |
+| `adapter-handoff` | Compare broken and fixed HTTP fixtures through the CLI and the plain regression test. Exercise the Python-function entry point. |
+| `report-replay` | Recompute reports after the drill changes and app exits. Check exit codes, attribution, schema rejection, and default output redaction. |
+| `isolation` | Run independent fixtures concurrently, interrupt and restart one, and preserve the other run's results. |
+| `repeatability` | 30 fresh-process samples each of the broken, guarded, and unobservable fixtures. A retry does not erase a failed first attempt. |
+
+**Scope of evidence.** The fixture comparison uses one shared worker checkpoint and the same six HTTP controls for seeding, start, acknowledgment, publication, release, and receipt. Both consumers exercise the same source contents, questions, depth, and expectations. Setrya adds the TOML rule mapping and reusable adapter. The plain test keeps orchestration and assertions in one Python file. Both diagnose the deliberately broken refund fixture. Setrya also saves an independently replayable event history, which the plain test currently reports as assertion output. Unaided setup time, the two-minute newcomer interpretation target, third-party compatibility, and adoption through a team's later release are awaiting observation.
+
+For a release, keep the archive validated by CI, checksum, OS/Python/SQLite version, and qualification logs. Link the exact workflow run from release notes.

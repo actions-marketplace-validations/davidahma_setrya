@@ -1,0 +1,25 @@
+name: Bug report
+description: Report a reproducible problem with Setrya
+labels: []
+body:
+  - type: input
+    id: versions
+    attributes:
+      label: Versions and platform
+      description: Include the Setrya, Python, and SQLite versions and your OS.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Synthetic steps to reproduce
+      description: Include the command and what you expected to observe.
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed result
+      description: An approved redacted report is helpful. Omit real queries, passages, credentials, and private URLs.
+    validations:
+      required: true
