@@ -1,4 +1,4 @@
-from contextlib import redirect_stdout
+from contextlib import chdir, redirect_stdout
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
@@ -111,6 +111,17 @@ class RecorderTests(unittest.TestCase):
                 self.assertNotIn("private payload", report_path.read_text())
                 self.assertIs(evaluate(Report.load(report_path)).status, expected)
 
+    def test_relative_report_stays_anchored_when_the_test_changes_directory(self):
+        original = self.drill.read_bytes()
+        output = self.directory / "results"
+        output.mkdir()
+        with chdir(output):
+            recorder = Recorder(self.drill, test_id="test", report=self.drill.name)
+            with chdir(self.directory), recorder:
+                self.sequence(recorder)
+        self.assertEqual(self.drill.read_bytes(), original)
+        self.assertIs(evaluate(Report.load(output / self.drill.name)).status, Status.PASS)
+
     def test_report_cannot_overwrite_the_drill(self):
         original = self.drill.read_text()
         with self.assertRaisesRegex(InputError, "distinct files"):
@@ -159,8 +170,8 @@ class RecorderTests(unittest.TestCase):
                          "--summary", str(summary)])
         self.assertEqual(code, 0)
         text = summary.read_text()
-        self.assertIn("python3 -m setrya replay base.json", text)
-        self.assertIn('python3 -m setrya replay "$CANDIDATE_REPORT"', text)
+        self.assertIn("setrya replay base.json", text)
+        self.assertIn('setrya replay "$CANDIDATE_REPORT"', text)
         self.assertNotIn(str(self.directory), text)
         self.assertNotIn(candidate.name, text)
 
