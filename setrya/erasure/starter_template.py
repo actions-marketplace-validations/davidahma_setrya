@@ -57,7 +57,7 @@ def run(output):
 
 def summary(receipt, output):
     return (f"{receipt['verdict']} · {receipt['unknown_copies']} unknown copies · "
-            f"{receipt['time_to_first_verdict_ms']} ms to first verdict\n"
+            f"{receipt['time_to_first_verdict_ms']} ms drill duration\n"
             f"Replay: setrya replay {quote(str(output))}")
 
 
@@ -77,6 +77,8 @@ def test_subject_erasure(tmp_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=("late-write",), default="late-write",
+                        help="v2 exercises a held worker")
     parser.add_argument("--output", required=True, type=Path, help="new directory for the receipt and evidence")
     args = parser.parse_args()
     try:
