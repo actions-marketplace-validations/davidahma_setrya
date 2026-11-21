@@ -29,20 +29,29 @@ def help_parser():
 
 
 def doctor(argv):
-    from .erasure.v3 import observe_baseline
+    from .erasure.v3 import SharedCase, observe_baseline
 
     parser = argparse.ArgumentParser(prog="setrya doctor", description="Read a trusted fixture's baseline before erasure.")
     parser.add_argument("--starter", type=Path, required=True)
     parser.add_argument("--mode", choices=("deletion", "late-write"), default="deletion")
     args = parser.parse_args(argv)
-    source = args.starter.resolve(strict=True)
+    if not args.starter.is_file():
+        raise InputError("Supply a trusted starter file with --starter.")
+    source = args.starter.resolve()
     original = sys.path
     try:
         sys.path = [str(source.parent), str(Path.cwd()), *original]
         hooks = runpy.run_path(str(source))
-        with hooks["open_fixture"]() as (subject, app, items):
-            case = hooks["CASE"]
+        case, open_fixture = hooks.get("CASE"), hooks.get("open_fixture")
+        if not isinstance(case, SharedCase) or not callable(open_fixture):
+            raise InputError("The trusted starter must define a SharedCase named CASE and open_fixture().")
+        case.spec()
+        with open_fixture() as (subject, app, items):
             required = ["inspect", "read", "erase"]
+            if case.scan_stores:
+                required.append("scan")
+            if case.require_lineage:
+                required.append("lineage")
             if args.mode == "late-write":
                 required += ["hold", "checkpoint", "release_and_drain"]
             missing = [name for name in required if not callable(getattr(app, name, None))]
@@ -58,10 +67,42 @@ def doctor(argv):
     except NotImplementedError:
         print("NOT TESTED  Connect open_fixture to your disposable application.")
         return 3
-    except (KeyError, SystemExit):
-        raise InputError("The trusted starter must define CASE and open_fixture().") from None
+    except SystemExit:
+        raise InputError("The starter exited before its baseline could be checked.") from None
     finally:
         sys.path = original
+
+
+def _start(command, args):
+    is_demo = command == "demo"
+    description = ("Run a synthetic deletion test and save the results." if is_demo
+                   else "Create a runnable person fixture or a tenant observation policy.")
+    parser = argparse.ArgumentParser(prog=f"setrya {command}", description=description)
+    parser.add_argument("--scope", choices=("person", "tenant"), default="person", help="deletion scope (default: person)")
+    parser.add_argument("--output", type=Path, help="fresh output directory")
+    if is_demo:
+        parser.add_argument("example", choices=("workspace", "analyst"), nargs="?", help="person example (default: workspace)")
+        parser.add_argument("--mode", choices=("deletion", "late-write"), help="person drill mode (default: late-write)")
+    opts = parser.parse_args(args)
+    if opts.scope == "tenant":
+        from .erasure.cli import main
+        return main([command, *args], prog="setrya")
+    if is_demo:
+        mode = opts.mode or "late-write"
+        if opts.example == "analyst":
+            from .erasure.investigation import run_demo
+            return run_demo(opts.output or Path("investigation"), mode=mode)
+        from .examples.workspace import demo as run_workspace
+        return run_workspace(opts.output or Path("workspace"), mode)
+
+    path = opts.output or Path("setrya-case")
+    body = files("setrya.erasure").joinpath("workspace_starter.py").read_bytes()
+    path.mkdir(parents=True, exist_ok=False)
+    starter = path / "test_erasure.py"
+    starter.write_bytes(body)
+    print("Created a synthetic fixture. Replace CASE and open_fixture to test your app.")
+    print(join(["setrya", "doctor", "--starter", str(starter)]))
+    return 0
 
 
 def dispatch(argv):
@@ -78,34 +119,12 @@ def dispatch(argv):
         if cmd in ("run", "verify"):
             from .erasure.cli import main
             return main([cmd, *args], prog="setrya")
-        if cmd == "demo" and "--scope" in options:
-            from .erasure.cli import main
-            return main(argv, prog="setrya")
-        if cmd == "demo" and first not in ("refund", "erasure", "access") and "--case" not in options:
-            parser = argparse.ArgumentParser(prog="setrya demo", description="Run a synthetic deletion test and save both results.")
-            parser.add_argument("example", choices=("workspace", "analyst"), nargs="?", default="workspace")
-            parser.add_argument("--mode", choices=("deletion", "late-write"), default="late-write")
-            parser.add_argument("--output", type=Path, help="fresh result directory (default: workspace or investigation)")
-            opts = parser.parse_args(args)
-            if opts.example == "analyst":
-                from .erasure.investigation import run_demo
-                return run_demo(opts.output or Path("investigation"), mode=opts.mode)
-            from .examples.workspace import demo
-            return demo(opts.output or Path("workspace"), opts.mode)
-        if cmd == "init" and first not in ("endpoint", "erasure") and "--scope" not in options:
-            parser = argparse.ArgumentParser(prog="setrya init", description="Create a runnable, synthetic delete-only starter.")
-            parser.add_argument("--output", type=Path, default=Path("setrya-case"))
-            path = parser.parse_args(args).output
-            body = files("setrya.erasure").joinpath("workspace_starter.py").read_bytes()
-            path.mkdir(parents=True, exist_ok=False)
-            starter = path / "test_erasure.py"
-            starter.write_bytes(body)
-            print("Created a synthetic fixture. Replace CASE and open_fixture to test your app.")
-            print(join(["setrya", "doctor", "--starter", str(starter)]))
-            return 0
-        if cmd == "init" and "--scope" in options:
-            from .erasure.cli import main
-            return main(argv, prog="setrya")
+        if (cmd == "demo" and first not in ("refund", "erasure", "access") and "--case" not in options
+                or cmd == "init" and first not in ("endpoint", "erasure")):
+            if "--example" in options:
+                from .erasure.cli import main
+                return main(argv, prog="setrya")
+            return _start(cmd, args)
     except FileExistsError:
         print("ERROR  Output already exists. Choose a new directory with --output.", file=sys.stderr)
         return 2

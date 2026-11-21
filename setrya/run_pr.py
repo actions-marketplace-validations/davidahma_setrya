@@ -71,9 +71,9 @@ def _lane(repo, root, name, commit, drill_bytes, expected, command, timeout):
         try:
             test_exit = _test(command, checkout, env, timeout)
         except subprocess.TimeoutExpired:
-            # Teardown can outlive the completed endpoint recording. Validate
+            # Teardown can outlive a completed recording. Validate
             # that recording normally, but leave the missing native exit unset.
-            if expected is not None or not evidence.with_suffix(".executed").is_file():
+            if not evidence.exists() or not evidence.with_suffix(".executed").is_file():
                 raise
             command_problem = "command timed out after recording"
         if (resolve_commit(checkout, "HEAD") != commit
@@ -94,18 +94,16 @@ def _lane(repo, root, name, commit, drill_bytes, expected, command, timeout):
                     != sha256(read_regular_bytes(manifest, "endpoint manifest")).hexdigest().encode("ascii")):
                 raise InputError("the bundle does not match a live endpoint run")
             return ReviewInput(EndpointEvidence.load(evidence), commit, test_exit, command_problem)
-        report = Report.load(evidence)
+        executed = evidence.with_suffix(".executed")
+        if (not executed.is_file() or executed.is_symlink()
+                or read_regular_bytes(source, "drill") != drill_bytes):
+            raise InputError("the report does not match a completed live SDK run of the selected drill")
+        digest = read_regular_bytes(executed, "completed report digest", 64).decode("ascii")
+        report = Report.load(evidence, expected_sha256=digest)
         if (report.rules != expected.rules or not report.inputs
                 or report.inputs.get("questions") != bind_inputs(expected, test_id="run-pr")["questions"]):
             raise InputError("the recorded rules or questions differ from the selected drill")
-        # Search v1 omits adapter options. The live SDK checks the complete
-        # Drill, including the factory and options, before opening its journal.
-        executed = evidence.with_suffix(".executed")
-        identity = f"{report.run_id} {report.inputs['adapter']}".encode("ascii")
-        if (read_regular_bytes(source, "drill") != drill_bytes or not executed.is_file() or executed.is_symlink()
-                or read_regular_bytes(executed, "execution identity", 256) != identity):
-            raise InputError("the report does not match a live SDK run of the selected drill")
-        return ReviewInput(report, commit, test_exit, None)
+        return ReviewInput(report, commit, test_exit, command_problem)
     except subprocess.TimeoutExpired:
         problem = "checkout or command timed out"
     except (OSError, subprocess.CalledProcessError):

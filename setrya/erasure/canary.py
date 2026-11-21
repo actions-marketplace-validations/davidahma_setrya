@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Mapping
 
 from setrya.drill import InputError
 from .adapters import _keys, _pg_connection, _sql_name
@@ -26,12 +27,19 @@ class SQLiteCanaryScanner:
         self.db = db
         # Use a qualified table name on every column so SQLite cannot treat a
         # misspelled double-quoted column as a literal string and return no hits.
-        self.query = (f'SELECT t."{key}" FROM "{table}" t WHERE t."{scope_column}" COLLATE BINARY=? '
-                      f'AND instr(t."{content}",?)>0 LIMIT 4097')
+        self.query = f"""
+            SELECT CASE WHEN typeof(t."{content}") = 'text' THEN t."{key}" END AS copy_key
+            FROM "{table}" t WHERE t."{scope_column}" COLLATE BINARY=?
+              AND (typeof(t."{content}") NOT IN ('text', 'null') OR instr(t."{content}",?)>0) LIMIT 4097
+        """
 
     def find(self, *, scope: str, marker: str) -> set[str]:
         validate_probe(scope, marker)
+        if self.db.in_transaction:
+            raise InputError("commit application writes before scanning")
         rows = self.db.execute(self.query, (scope, marker)).fetchall()
+        if any((row["copy_key"] if isinstance(row, Mapping) else row[0]) is None for row in rows):
+            raise InputError("expected a text canary column and non-null copy keys")
         keys = _keys(rows)
         if len(rows) > 4096 or len(rows) != len(keys):
             raise InputError("canary scan needs at most 4096 distinct scoped keys")
@@ -45,7 +53,7 @@ class PostgresCanaryScanner:
         self.connection = connection
         self.query = (f"SELECT t.{_sql_name(key)}::text AS copy_key FROM {_sql_name(table)} AS t "
                       f"WHERE t.{_sql_name(scope_column)}::text COLLATE \"C\" = %s "
-                      f"AND strpos(t.{_sql_name(content)}::text, %s) > 0 LIMIT 4097")
+                      f"AND strpos(t.{_sql_name(content)}, %s::text) > 0 LIMIT 4097")
 
     def find(self, *, scope: str, marker: str) -> set[str]:
         validate_probe(scope, marker)
@@ -159,20 +167,17 @@ class AnswerCacheCanaryScanner:
 
     def find(self, *, scope: str, marker: str) -> set[str]:
         validate_probe(scope, marker)
-        keys = self.cache.cached_keys(self.tenant, scope)
-        if len(keys) > LIMIT:
-            raise InputError("answer cache canary scan exceeds the key limit")
-        found, seen = set(), set()
-        for key in keys:
+        from setrya.local_cache import CacheKey
+
+        scan = getattr(self.cache, "matching_answer_keys", None)
+        if not callable(scan):
+            raise InputError("this cache does not provide a consistent canary scan")
+        found = set()
+        for key in scan(self.tenant, scope, marker, LIMIT):
+            if not isinstance(key, CacheKey) or key.tenant != self.tenant or key.retrieval_scope != scope:
+                raise InputError("cache canary returned a key outside the declared scope")
             location = identifier(f"{key.tenant}:{key.access_scope}:{key.request}", "answer key")
-            if location in seen:
-                raise InputError("ambiguous answer cache copy key")
-            seen.add(location)
-            answer = self.cache.get(key)
-            if answer is None:
-                raise InputError("answer changed during the canary scan")
-            if marker in answer.answer:
-                found.add(location)
-        if set(keys) != set(self.cache.cached_keys(self.tenant, scope)):
-            raise InputError("cache keys changed during the canary scan")
+            if location in found or len(found) >= LIMIT:
+                raise InputError("ambiguous or oversized answer cache canary scan")
+            found.add(location)
         return found

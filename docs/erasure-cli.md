@@ -1,6 +1,6 @@
 # Run, replay, and review erasure
 
-Install the core package with Python 3.11 or later. The primary starter runs against a disposable workspace. Choose a fresh output directory for each run.
+Install the core package with Python 3.11 or later. The primary starter runs against a disposable workspace. For `init` and `demo`, person scope is the default. Use `--scope tenant` for tenant offboarding. Choose a fresh output directory for each run.
 
 ```sh
 python -m pip install setrya
@@ -14,6 +14,8 @@ setrya replay after-queue
 The generated starter also runs under `python -m pytest -q subject-test/test_erasure.py`. Replace its sample `CASE` and `open_fixture` imports with your own test fixture. Doctor opens the fixture, checks its declared hooks, reads its store keys and asks both questions as each caller. Your fixture setup may seed test data. Doctor does not invoke the application's deletion or worker hooks. For `late-write`, wire a checkpoint that holds the same job before its write and drains its serving effects on release. The older `setrya init erasure` template starts with an unconnected shared-case fixture and includes a cache factory. [Observation types and evidence contract](erasure-v3.md) · [Migrating cache revisions](local-cache.md)
 
 For PostgreSQL LangGraph deployments install `'setrya[erasure,erasure-postgres]'`. For Elasticsearch add `erasure-elasticsearch`. For the shared answer cache add `redis`. Replay of downloaded evidence uses the core package alone.
+
+If the fixture exits before writing a receipt, `setrya run` reports the fixture exit code. An unconnected starter exits 3. Other exits without a receipt return ERROR (2). For application logs and tracebacks, run the trusted starter directly in your private development environment with its usual `--mode` and a fresh `--output`.
 
 ## Two decisions
 
@@ -30,7 +32,7 @@ setrya verify --receipt guarded/erasure-receipt.json --bundle guarded/receipt.si
 setrya replay guarded
 ```
 
-Use `erasure sign --key cosign.key --receipt … --bundle …` and `erasure verify --key cosign.pub --receipt … --bundle …` for local detached Cosign signatures. Distribute the public key independently.
+Use `erasure sign --key cosign.key --receipt … --bundle …` and `erasure verify --key cosign.pub --receipt … --bundle …` for local detached Cosign signatures. Distribute the public key independently. Add `--scope person` or `--scope tenant` to `setrya verify` or `setrya replay` when the reviewer requires that scope.
 
 ## Tenant scope
 
