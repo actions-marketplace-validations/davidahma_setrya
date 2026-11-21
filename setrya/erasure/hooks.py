@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -28,7 +29,7 @@ def _payload_bytes(value):
     return json.dumps(typed(value), ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
 
 
-def _cache_hint(request):
+def _cache_hint(request, provider):
     """Inspect supported SDK cache control fields; a missing directive leaves account settings unknown."""
     def blocks(value):
         return (v for v in value if isinstance(v, Mapping)) if isinstance(value, (tuple, list)) else ()
@@ -38,6 +39,18 @@ def _cache_hint(request):
         point = block.get("cachePoint")
         return (isinstance(control, Mapping) and control.get("type") == "ephemeral"
                 or isinstance(point, Mapping) and point.get("type") == "default")
+
+    if provider == "openai":
+        options = request.get("prompt_cache_options")
+        if isinstance(options, Mapping) and options.get("mode") == "implicit":
+            return True
+        for item in blocks(request.get("input")):
+            if any(isinstance(part.get("prompt_cache_breakpoint"), Mapping)
+                   for part in blocks(item.get("content"))):
+                return True
+        if not options and request.get("prompt_cache_retention") in ("in_memory", "24h"):
+            return True
+        return None
 
     body = request.get("body", request)
     if isinstance(body, (str, bytes)):
@@ -153,16 +166,22 @@ class CopyHooks:
                   prompt_caching, sources, operation):
         if not isinstance(request, Mapping):
             raise InputError("provider request must be a mapping of SDK arguments")
-        requested_cache = _cache_hint(request)
+        if inspect.iscoroutinefunction(call) or inspect.iscoroutinefunction(inspect.unwrap(call)):
+            raise InputError("provider observation requires a synchronous SDK operation")
+        requested_cache = _cache_hint(request, provider)
         if requested_cache is True and prompt_caching is False:
             raise InputError("request contains a cache directive but prompt_caching was declared off")
         details = dict(provider=provider, model=model, region=region, invocation_logging=invocation_logging,
                        prompt_caching=True if requested_cache else prompt_caching, evidence_level="configuration",
                        sources=list(sources), operation=operation,
-                       components=sorted(name for name in ("messages", "system", "tools", "body", "toolConfig", "tool_choice")
+                       components=sorted(name for name in ("input", "instructions", "messages", "system", "tools", "body", "toolConfig", "tool_choice")
                                          if name in request), **self._fingerprint(request))
         self._attempt(store, key, source, "sent", **details)
         result = call(**request)
+        if inspect.isawaitable(result):
+            if inspect.iscoroutine(result):
+                result.close()
+            raise InputError("provider operation returned an awaitable instead of an SDK response")
         self._record(store, key, source, "sent", stage="returned", **details)
         return result
 

@@ -106,7 +106,14 @@ class DiscoveryCaseTests(TestCase):
         result = discovery.run_case(self.binding, **self.options, output=folder)
         self.assertFalse(self.app.erased)
         self.assertEqual(result["technical_verdict"], "NOT TESTED")
-        self.assertIn("Cannot delete exports/mixed", discovery.summary(discovery.replay(folder)))
+        rows = {r["id"]: r for r in result["services"]}
+        self.assertEqual(rows["raw-export"]["baseline"], "UNREAD")
+        self.assertEqual((rows["shared-answer"]["baseline"], rows["shared-answer"]["status"]),
+                         ("CONFIRMED", "NOT TESTED"))
+        text = discovery.summary(discovery.replay(folder))
+        self.assertIn("Cannot delete exports/mixed", text)
+        self.assertIn("BASELINE CONFIRMED  shared-answer", text)
+        self.assertIn("NOT TESTED  raw-export", text)
 
     def test_source_lookup_is_subject_bound_and_keeps_all_descendants_and_shared_inputs(self):
         from setrya.erasure.journal import CopyJournal
@@ -153,8 +160,13 @@ class DiscoveryCaseTests(TestCase):
                      "source": "main", "details": {"evidence_level": "configuration", "provider": "anthropic",
                          "operation": "messages.create", "sources": ["main@7"], "stage": "attempted"}}
         returned = {**attempted, "details": {**attempted["details"], "stage": "returned"}}
-        def status(events):
-            return discovery._provider_invocations({**e, "journal": events}, self.binding)[("provider", "one-call")]["status"]
+        def status(events, version=2):
+            proof = discovery._provider_invocations({**e, "journal": events}, self.binding, packet_version=version)
+            return proof[("provider", "one-call")]["status"]
+        responses = [{**ev, "details": {**ev["details"], "provider": "openai", "operation": "responses.create"}}
+                     for ev in (attempted, returned)]
+        self.assertEqual(status(responses, version=1), "UNOBSERVED")
+        self.assertEqual(status(responses, version=2), "SDK_RETURNED")
         self.assertEqual(status([attempted, returned]), "SDK_RETURNED")
         self.assertEqual(status([attempted, returned, attempted]), "UNOBSERVED")
         self.assertEqual(status([{**attempted, "details": {**attempted["details"], "operation": "langchain.start"}}]),
@@ -314,6 +326,9 @@ class DiscoveryCaseTests(TestCase):
         self.assertEqual(result["technical_verdict"], "NOT TESTED")
         self.assertEqual(discovery.replay(folder), result)
         self.assertIsNone(result["erasure_receipt"])
+        self.assertEqual((result["version"], result["profile"]), (3, "discovery"))
+        self.assertTrue(result["open_items"])
+        self.assertEqual(result["evidence"]["file"], discovery.INPUT)
         self.assertEqual(result["services"][0]["exhibit"], "approved-hold")
         self.assertEqual(result["services"][0]["status"], "RETAINED")
         self.assertFalse((folder / discovery.DRILL).exists())

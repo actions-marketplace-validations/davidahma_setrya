@@ -126,7 +126,7 @@ def _scope(binding, subject, spec, external):
 
 def _prepare(binding, mode, output):
     # Freeze the validated scope before calling application code.
-    packet = {"format": "setrya.discovery.input", "version": 1,
+    packet = {"format": "setrya.discovery.input", "version": 2,
               "binding": binding, "nonce": token_hex(32), "mode": mode}
     folder = Path(output)
     folder.mkdir(parents=True, exist_ok=False)
@@ -207,7 +207,7 @@ def _endpoint(service, e):
     failures, gaps, pointers = set(), set(), []
     for stage in STAGES:
         sample = e[stage]
-        for i, row in enumerate(sample["answers"] if sample else [None] * 4):
+        for i, row in enumerate(sample["answers"] if sample else [None] * (len(e["case"]["callers"]) * 2)):
             if row is not None:
                 pointers.append(_pointer(stage, "answers", i))
             if stage != "baseline" and e["erased"] is not None:
@@ -218,7 +218,29 @@ def _endpoint(service, e):
             "evidence": pointers, "reasons": sorted(failures) + sorted(gaps)}
 
 
-def _provider_invocations(e, binding):
+def _baseline_status(service, evidence, direct, source):
+    baseline = evidence["baseline"]
+    if service["role"] == "endpoint":
+        samples = baseline["answers"]
+        if all(row and row["control_present" if i % 2 else "target_present"] is True
+               for i, row in enumerate(samples)):
+            return "CONFIRMED"
+        return "INCOMPLETE" if any(row is not None for row in samples) else "UNREAD"
+
+    location = _location(service)
+    index = direct.get(location)
+    row = baseline["stored"][index] if index is not None else None
+    if row is None:
+        return "UNREAD"
+    action = service["action"]
+    positive = (row["exists"] and row["control_present"] is (action != "delete")
+                and row["target_present"] is (action != "preserve"))
+    if location == _location(source):
+        positive = positive and row["revision"] == source["revision"]
+    return "CONFIRMED" if positive else "INCOMPLETE"
+
+
+def _provider_invocations(e, binding, *, packet_version):
     """Join an outbound SDK observation to one source-linked invocation key."""
     lineage = e["lineage"]
     affected = _descendants(binding["source"], lineage)
@@ -233,6 +255,10 @@ def _provider_invocations(e, binding):
         loc = _location(event)
         if loc in providers and event["action"] == "sent":
             journal[loc].append((i, event))
+    sdk_operations = {"anthropic": ("messages.create",),
+                      "bedrock": ("converse", "invoke_model", "converse_stream", "invoke_model_with_response_stream")}
+    if packet_version >= 2:
+        sdk_operations["openai"] = ("responses.create",)
     proof = {}
     for loc in providers:
         status, pointers = "UNOBSERVED", []
@@ -242,21 +268,19 @@ def _provider_invocations(e, binding):
             versions = {(r["key"], f"{r['key']}@{r['revision']}") for r in edge["inputs"] if _version(r) in affected}
             if versions:
                 pointers.append(f"{DRILL}/{EVIDENCE}#/lineage/derivations/{index}")
-                status, event_links = _sdk_exchange(journal[loc], binding["classification"], versions, edge)
+                status, event_links = _sdk_exchange(journal[loc], binding["classification"], versions, edge, sdk_operations)
                 pointers.extend(event_links)
         proof[loc] = {"status": status, "evidence": pointers}
     return proof
 
 
-def _sdk_exchange(events, classification, versions, edge):
+def _sdk_exchange(events, classification, versions, edge, sdk_operations):
     """Attribute one client call. Reused keys and framework start callbacks are ambiguous."""
     stages = [event["details"].get("stage") for _, event in events]
     if stages not in (["attempted"], ["attempted", "returned"], ["returned", "attempted"]):
         return "UNOBSERVED", []
     first = events[0][1]
     details = first["details"]
-    sdk_operations = {"anthropic": ("messages.create",),
-                      "bedrock": ("converse", "invoke_model", "converse_stream", "invoke_model_with_response_stream")}
     if (details.get("evidence_level") != "configuration"
             or details.get("operation") not in sdk_operations.get(details.get("provider"), ())):
         return "UNOBSERVED", []
@@ -286,7 +310,9 @@ def _external(service, located):
 
 def _base(packet):
     binding = packet["binding"]
-    return {"format": FORMAT, "version": 1, "run": sha256(_canonical(packet)).hexdigest(),
+    envelope = ({"format": FORMAT, "version": 1} if packet["version"] == 1 else
+                {"format": v3_receipt.RECEIPT_FORMAT, "version": 3, "scope": "person", "profile": "discovery"})
+    return {**envelope, "run": sha256(_canonical(packet)).hexdigest(),
             **{key: binding[key] for key in ("catalog", "sample", "case_id", "finding_id", "finding_sha256", "asset_sha256", "finding_type", "categories",
                                              "observed_at", "environment", "revision", "classification", "subject_ref",
                                              "source", "conversation", "route", "callers", "questions")},
@@ -294,16 +320,19 @@ def _base(packet):
 
 
 def _derive(folder, expected_binding):
-    packet = _load(read_regular_bytes(folder / INPUT, "discovery input"))
+    raw_packet = read_regular_bytes(folder / INPUT, "discovery input")
+    packet = _load(raw_packet)
     require(keys_match(packet, ("format", "version", "binding", "nonce", "mode"))
             and packet["format"] == "setrya.discovery.input" and type(packet["version"]) is int
-            and packet["version"] == 1 and isinstance(packet["nonce"], str)
+            and packet["version"] in (1, 2) and isinstance(packet["nonce"], str)
             and re.fullmatch("[0-9a-f]{64}", packet["nonce"]), "Invalid discovery input packet.")
     binding = validate_binding(packet["binding"])
     if expected_binding is not None:
         require(_canonical(validate_binding(expected_binding)) == _canonical(binding),
                 "Case scope differs from the independently supplied binding.")
     result = _base(packet)
+    if packet["version"] == 2:
+        result["evidence"] = {"file": INPUT, "sha256": sha256(raw_packet).hexdigest()}
     if binding["source"]["action"] == "retain":
         require(packet["mode"] == "retention" and not (folder / DRILL).exists(), "Invalid retained case bundle.")
         rows = []
@@ -313,6 +342,8 @@ def _derive(folder, expected_binding):
             if s.get("action") == "retain":
                 row.update(status="RETAINED", exhibit=s["evidence"], evidence=[f"{INPUT}#/binding/services/{len(rows)}"])
             rows.append(row)
+        if packet["version"] == 2:
+            result["open_items"] = _open_items(rows)
         return {**result, "technical_verdict": "NOT TESTED", "review_status": "OPEN_ITEMS", "race": "not exercised",
                 "services": rows, "erasure_receipt": None, "lineage": None, "failures": [], "errors": [],
                 "gaps": ["Deletion was deferred under the approved retention policy."]}
@@ -334,7 +365,7 @@ def _derive(folder, expected_binding):
     direct = {_location(a): i for i, a in enumerate(e["case"]["artifacts"])}
     external = {_location(item): (i, item) for i, item in enumerate(e["external"])}
     services = []
-    invocations = _provider_invocations(e, binding)
+    invocations = _provider_invocations(e, binding, packet_version=packet["version"])
     external_open = False
     for service in binding["services"]:
         if service["role"] == "endpoint":
@@ -348,6 +379,8 @@ def _derive(folder, expected_binding):
             row = _direct(service, direct.get(_location(service)), e)
             if _location(service) not in direct:
                 gaps.add(f"No direct check for {service['id']} ({service['store']}/{service['key']}, owner {service['owner']}).")
+        if packet["version"] >= 2 and service["role"] not in EXTERNAL_ROLES:
+            row["baseline"] = _baseline_status(service, e, direct, binding["source"])
         services.append(row)
     verdict = receipt["technical_verdict"]
     if verdict == "PASS" and gaps:
@@ -355,10 +388,18 @@ def _derive(folder, expected_binding):
     review = receipt["review_status"]
     if review == "READY_FOR_REVIEW" and (external_open or verdict != "PASS"):
         review = "OPEN_ITEMS"
+    if packet["version"] == 2:
+        result["open_items"] = _open_items(services)
     return {**result, "technical_verdict": verdict, "review_status": review, "race": receipt["race"],
             "drill_observed_at": receipt["observed_at"], "services": services, "lineage": e["lineage"],
             "erasure_receipt": {"file": f"{DRILL}/{RECEIPT}", "sha256": sha256(raw).hexdigest()},
             "failures": receipt["failures"], "gaps": sorted(gaps), "errors": receipt["errors"]}
+
+
+def _open_items(rows):
+    return [{"id": row["id"], "owner": row["owner"], "kind": row["role"], "status": row["status"],
+             "follow_up": row.get("follow_up"), "evidence": f"{RESULT}#/services/{i}"}
+            for i, row in enumerate(rows) if row["status"] not in ("PASS", "FAIL")]
 
 
 def replay_bytes(directory, raw, *, expected_binding=None):
@@ -385,7 +426,11 @@ def summary(result):
              f"{result['environment']} · application {result['revision']} · worker race {result['race']}"]
     for service in result["services"]:
         follow = f" · due {service['follow_up']}" if service.get("follow_up") else ""
-        lines.append(f"{service['status']}  {service['id']} · {service['role']} · owner {service['owner']}{follow}")
+        baseline = f" · baseline {service['baseline'].lower()}" if "baseline" in service else ""
+        status = service["status"]
+        if status == "NOT TESTED" and service.get("baseline") == "CONFIRMED":
+            status, baseline = "BASELINE CONFIRMED", " · deletion not verified"
+        lines.append(f"{status}  {service['id']} · {service['role']} · owner {service['owner']}{baseline}{follow}")
     lines.extend(result["failures"] + result["gaps"])
     lines.extend(f"{error['operation']} failed ({error['error']})." for error in result["errors"])
     return "\n".join(lines)
