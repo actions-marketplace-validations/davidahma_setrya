@@ -46,7 +46,9 @@ class WorkerJournal(CopyJournal):
         super().__init__(path, export_trace_events=export_trace_events)
         with closing(sqlite3.connect(self.path)) as db, db:
             _bind(db, "producer", self.run_id, self.producer)
-            db.execute("CREATE TABLE IF NOT EXISTS sealed_subjects (subject TEXT PRIMARY KEY)")
+            db.execute("CREATE TABLE IF NOT EXISTS sealed_subjects (subject TEXT PRIMARY KEY, chain TEXT)")
+            if "chain" not in {column[1] for column in db.execute("PRAGMA table_info(sealed_subjects)")}:
+                db.execute("ALTER TABLE sealed_subjects ADD COLUMN chain TEXT")
             db.execute("""CREATE TRIGGER IF NOT EXISTS reject_sealed_write BEFORE INSERT ON copy_events
                           WHEN EXISTS(SELECT 1 FROM sealed_subjects WHERE subject=NEW.subject)
                           BEGIN SELECT RAISE(ABORT,'worker has sealed this subject'); END""")
@@ -59,7 +61,23 @@ class WorkerJournal(CopyJournal):
         require(isinstance(subject, Subject), "Expected a scoped subject.")
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
-            chain = verify_snapshot(db, _FIELDS)
+            current = verify_snapshot(db, _FIELDS)
+            sealed = db.execute("SELECT chain FROM sealed_subjects WHERE subject=?", (subject.ref,)).fetchone()
+            if sealed is None:
+                chain = current
+            elif sealed[0] is None:
+                # A producer that sealed before chain support must reproduce its original v1 packet.
+                chain = None
+            else:
+                chain = json.loads(sealed[0], object_pairs_hook=unique_fields)
+                check_summary(chain)
+                require(chain["first_event"] == current["first_event"]
+                        and chain["last_event"] <= current["last_event"],
+                        "Worker seal is outside the verified journal chain.")
+                if chain["head"] is not None:
+                    checkpoint = db.execute("SELECT row_hash FROM copy_events WHERE event=?",
+                                            (chain["last_event"],)).fetchone()
+                    require(checkpoint == (chain["head"],), "Worker seal differs from the verified journal chain.")
             events = []
             used = 0
             for seq, *fields in db.execute(f"SELECT event, {_FIELDS} FROM copy_events WHERE subject=? ORDER BY event",
@@ -67,10 +85,14 @@ class WorkerJournal(CopyJournal):
                 used += sum(len(value.encode()) for value in fields if value is not None) + 128
                 require(len(events) < MAX_EVENTS and used <= MAX_BYTES, "Worker packet exceeds the export limit.")
                 events.append({"sequence": seq, **_copy_from_row(fields).wire()})
-            packet = {"format": FORMAT, "run_id": self.run_id, "producer": self.producer, "subject_ref": subject.ref,
-                      "events": events, "chain": chain}
+            packet = {"format": FORMAT if chain is not None else LEGACY_FORMAT, "run_id": self.run_id,
+                      "producer": self.producer, "subject_ref": subject.ref, "events": events}
+            if chain is not None:
+                packet["chain"] = chain
             require(len((json.dumps(packet, indent=2) + "\n").encode()) <= MAX_BYTES, "Worker packet exceeds the export limit.")
-            db.execute("INSERT OR IGNORE INTO sealed_subjects VALUES(?)", (subject.ref,))
+            if sealed is None:
+                db.execute("INSERT INTO sealed_subjects(subject,chain) VALUES(?,?)",
+                           (subject.ref, json.dumps(chain)))
         return publish_new(packet, Path(destination), max_bytes=MAX_BYTES)
 
 
