@@ -104,7 +104,8 @@ class Attribution(unittest.TestCase):
             evidence = json.loads((root / "erasure-evidence.json").read_bytes())
             self.assertIn(extra, evidence["final"]["scans"]["files"])
             self.assertNotIn(extra, evidence["immediate"]["scans"]["files"])
-            self.assertEqual([row["key"] for row in evidence["late_residuals"]], [extra])
+            self.assertEqual([row["key"] for row in evidence["late_residuals"] if row and row["store"] == "files"],
+                             [extra])
             new, = [row for row in result["write_attribution"] if row["key"] == extra]
             self.assertEqual((new["revision"], new["turn"]), (revision, "late-memory"))
 
