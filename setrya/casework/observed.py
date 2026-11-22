@@ -129,6 +129,9 @@ def derive_observed(e):
             open_items.append({"store": store, "key_sha256": key, "kind": "verification",
                                "evidence": f"erasure-receipt.json#/checks/{len(checks)-1}",
                                **policy.get(store, {})})
+    for store in sorted(set(expected) - ({s for s, _ in first} & {s for s, _ in last})):
+        open_items.append({"store": store, "kind": "coverage", "evidence": "erasure-receipt.json#/gaps",
+                           **policy.get(store, {})})
     states = {c["status"] for c in checks}
     verdict = "FAIL" if "PRESENT" in states else "NOT TESTED" if gaps or states != {"ABSENT"} else "PASS"
     return {"scope": "person", "request_id": req["id"], "subject": {"ref": req["subject_ref"]},

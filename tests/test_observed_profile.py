@@ -165,3 +165,60 @@ follow_up="2020-01-02"
         self.log.record(self.control, store="archive", key="exclusive-key", source="test", action="stored")
         after = self.follow("observed", "shared")
         self.assertEqual(after["items"][0]["reason"], "no-exclusive-journal-key")
+
+    def test_newer_local_event_does_not_erase_a_send_or_other_ownership(self):
+        with closing(connect(self.store)) as db, db:
+            db.execute("INSERT INTO notes VALUES(?,?)", ("exclusive-key", self.subject.ref))
+        self.observe("prior")
+        with closing(connect(self.store)) as db, db:
+            db.execute("DELETE FROM notes WHERE id='exclusive-key'")
+        self.log.record(self.subject, store="archive", key="exclusive-key", source="first", action="sent")
+        self.log.record(self.subject, store="archive", key="exclusive-key", source="newer", action="stored")
+        self.assertEqual(self.follow("prior","sent")["items"][0]["reason"], "no-exclusive-journal-key")
+
+    def test_observer_and_linked_receipt_conform_to_the_published_schema(self):
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest("requires jsonschema")
+        schema = json.loads((Path(__file__).parents[1]/"setrya/erasure/receipt-v3.schema.json").read_bytes())
+        result = self.observe("issued", controls=[{"framework":"DPA","reference":"clause 4.2"}])
+        jsonschema.validate(result, schema)
+        result = self.follow("issued","followup")
+        jsonschema.validate(result, schema)
+
+    def test_live_postgres_read_only_role_and_retained_scan_control(self):
+        import os
+        import secrets
+        dsn = os.environ.get("SETRYA_PGVECTOR_DSN")
+        if not dsn:
+            self.skipTest("requires disposable PostgreSQL")
+        import psycopg
+        from psycopg import sql
+        from psycopg.conninfo import make_conninfo
+
+        name = "obs_" + secrets.token_hex(8)
+        role = sql.Identifier(name)
+        password = secrets.token_hex(24)
+        table = sql.Identifier(name, "notes")
+        with psycopg.connect(dsn, autocommit=True) as db:
+            db.execute(sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(role, sql.Literal(password)))
+            try:
+                db.execute(sql.SQL("CREATE SCHEMA {}").format(role))
+                db.execute(sql.SQL("CREATE TABLE {}(id text PRIMARY KEY, ref text)").format(table))
+                for key, subject in (("keep",self.control),("exclusive-key",self.subject)):
+                    db.execute(sql.SQL("INSERT INTO {} VALUES (%s,%s)").format(table), (key,subject.ref))
+                db.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(role, role))
+                db.execute(sql.SQL("GRANT SELECT(id,ref) ON {} TO {}").format(table, role))
+                self.mapping.write_text(self.mapping.read_text().replace('kind="sqlite"\npath="store.sqlite"',
+                                            f'kind="postgres"\nschema="{name}"\ndsn_env="SET_OBSERVER_DSN"'))
+                with patch.dict(os.environ, SET_OBSERVER_DSN=make_conninfo(dsn,user=name,password=password)):
+                    self.assertEqual(self.observe("existing")["technical_verdict"], "FAIL")
+                    db.execute(sql.SQL("DELETE FROM {} WHERE id='exclusive-key'").format(table))
+                    self.assertEqual(self.follow("existing", "verified")["items"][0]["status"], "verified")
+                    db.execute(sql.SQL("GRANT UPDATE(ref) ON {} TO {}").format(table,role))
+                    self.assertEqual(self.observe("writable")["technical_verdict"], "NOT TESTED")
+                    self.assertEqual(self.follow("existing", "writable-recheck")["items"][0]["status"], "still open")
+            finally:
+                db.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(role))
+                db.execute(sql.SQL("DROP ROLE {}").format(role))

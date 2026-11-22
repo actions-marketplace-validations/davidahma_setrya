@@ -7,7 +7,7 @@ import json
 import re
 import sqlite3
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from typing import Literal, Protocol
 
 from setrya.drill import InputError
@@ -71,30 +71,50 @@ class _Direct:
         return self.find(subject)
 
 
+def _require_sqlite_base_table(db, name):
+    cursor = db.cursor()
+    cursor.row_factory = None
+    with closing(cursor):
+        # PRAGMA cannot be shadowed by an application table of the same name.
+        rows = cursor.execute(f"PRAGMA main.table_list({_sql_name(name)})").fetchall()
+    if len(rows) != 1 or rows[0][0] != "main" or rows[0][2] != "table":
+        raise InputError("direct SQLite observation requires a base table in main")
+
+
 class SQLiteAdapter(_Direct):
     """Rows in an application-owned table with an exact subject column."""
 
     def __init__(self, connection: sqlite3.Connection, table: str, *, key_column="id", subject_column="setrya_subject"):
         self.db = connection
+        self.table_name = table
         self.table = _sql_name(table)
         self.key = _sql_name(key_column)
         self.scope = _sql_name(subject_column)
 
-    def _check_connection(self):
+    @contextmanager
+    def _snapshot(self, *, write=False):
         if self.db.in_transaction:
             raise ValueError("give the SQLite adapter a connection with committed application writes")
+        self.db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+        try:
+            _require_sqlite_base_table(self.db, self.table_name)
+            yield self.db
+            self.db.execute("COMMIT" if write else "ROLLBACK")
+        finally:
+            if self.db.in_transaction:
+                self.db.execute("ROLLBACK")
 
     def find(self, subject):
-        self._check_connection()
-        with self.db:
-            return _keys(self.db.execute(
-                f"SELECT s.{self.key} AS copy_key FROM {self.table} AS s WHERE s.{self.scope} COLLATE BINARY = ?", (_ref(subject),)
+        with self._snapshot() as db:
+            return _keys(db.execute(
+                f"SELECT s.{self.key} AS copy_key FROM main.{self.table} AS s WHERE s.{self.scope} COLLATE BINARY = ?",
+                (_ref(subject),),
             ))
 
     def delete(self, subject):
-        self._check_connection()
-        with self.db:
-            self.db.execute(f"DELETE FROM {self.table} WHERE {self.table}.{self.scope} COLLATE BINARY = ?", (_ref(subject),))
+        with self._snapshot(write=True) as db:
+            db.execute(f"DELETE FROM main.{self.table} WHERE {self.table}.{self.scope} COLLATE BINARY = ?",
+                       (_ref(subject),))
 
 
 @contextmanager
@@ -110,6 +130,20 @@ def _pg_connection(client):
             # PostgreSQL raises if row-level security would hide evidence for this role.
             conn.execute("SET LOCAL row_security = off")
             yield conn
+
+
+def _require_pg_base_table(conn, table):
+    # Lock the resolved relation until the transaction finishes. A view, a
+    # session-local table or a replica can hide persisted application rows.
+    conn.execute(f"SELECT 1 FROM ONLY {table} LIMIT 0")
+    row = conn.execute("""
+        SELECT NOT pg_catalog.pg_is_in_recovery() AND c.relkind = 'r'
+               AND c.relpersistence <> 't' AND NOT c.relrowsecurity AND NOT c.relispartition
+               AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits WHERE inhparent = c.oid OR inhrelid = c.oid) AS visible
+        FROM pg_catalog.pg_class c WHERE c.oid = pg_catalog.to_regclass(%s)
+    """, (table,)).fetchone()
+    if row is None or (row["visible"] if isinstance(row, Mapping) else row[0]) is not True:
+        raise InputError("direct observation requires an unfiltered PostgreSQL primary base table")
 
 
 class PgvectorAdapter(_Direct):
@@ -134,6 +168,8 @@ class PgvectorAdapter(_Direct):
 
     def find(self, subject):
         with _pg_connection(self.db) as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            _require_pg_base_table(conn, self.table)
             self._require_single_owner(conn, subject)
             return _keys(conn.execute(
                 f"SELECT {self.key}::text AS copy_key FROM {self.table} WHERE {self.scope}::text COLLATE \"C\" = %s", (_ref(subject),)
@@ -141,6 +177,7 @@ class PgvectorAdapter(_Direct):
 
     def delete(self, subject):
         with _pg_connection(self.db) as conn:
+            _require_pg_base_table(conn, self.table)
             self._require_single_owner(conn, subject)
             conn.execute(f"DELETE FROM {self.table} WHERE {self.scope}::text COLLATE \"C\" = %s", (_ref(subject),))
 

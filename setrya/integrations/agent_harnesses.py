@@ -163,8 +163,10 @@ def _trace_field_matches(field, marker):
         if marker in field:
             return True
         try:
-            field = json.loads(field)
-        except ValueError:
+            # Search every decoded field name and value, including repeated
+            # names in stringified tool payloads. A dict would drop earlier copies.
+            field = json.loads(field, object_pairs_hook=list)
+        except json.JSONDecodeError:
             pass  # A plain string is a valid trace input or output.
     return contains_marker(field, marker)
 

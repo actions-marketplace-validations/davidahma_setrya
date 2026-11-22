@@ -147,6 +147,10 @@ class HttpCaseTests(unittest.TestCase):
         with sqlite3.connect(db) as conn:
             conn.execute("CREATE TABLE memo(id TEXT PRIMARY KEY, scope TEXT, body TEXT)")
             conn.execute("INSERT INTO memo VALUES ('1','ticket-204',?)", (self.target,))
+        with patch.dict(os.environ, SETRYA_COPY_JOURNAL=str(db)):
+            self.assertIn("separate local file", self.cli(2, "doctor", "--case", path))
+        with sqlite3.connect(db) as conn:
+            self.assertEqual(conn.execute("SELECT name FROM sqlite_schema WHERE name='copy_events'").fetchall(), [])
         def erase():
             with sqlite3.connect(db) as conn:
                 conn.execute("DELETE FROM memo WHERE id='1'")

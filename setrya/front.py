@@ -23,6 +23,7 @@ def help_parser():
         ("demo", "run the two-user workspace example or the analyst investigation"),
         ("receipt", "summarize a replayed receipt for an engineer, reviewer or customer"),
         ("recheck", "recheck due follow-up items using read-only evidence"),
+        ("route-coverage", "match changed routes and jobs to candidate evidence"),
         ("coverage-drift", "find journalled systems without inspection or scanning coverage"),
         ("observe", "check known keys for completed deletion requests with read-only credentials"),
         ("verify", "authenticate a receipt and check its evidence against a trusted signer"),
@@ -83,6 +84,9 @@ def dispatch(argv):
     options = {arg.partition("=")[0] for arg in args if arg.startswith("--")}
     first = args[0] if args else None
     try:
+        if cmd == "route-coverage":
+            from .route_coverage import main
+            return main(args)
         if cmd == "coverage-drift":
             from .coverage_drift import main
             return main(args)

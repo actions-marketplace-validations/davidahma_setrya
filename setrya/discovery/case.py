@@ -395,7 +395,8 @@ def _derive(folder, expected_binding):
         review = "OPEN_ITEMS"
     if packet["version"] == 2:
         result["open_items"] = _open_items(services)
-    return {**result, "technical_verdict": verdict, "review_status": review, "race": receipt["race"],
+    return {**result, **({"controls": receipt["controls"]} if "controls" in receipt else {}),
+            "technical_verdict": verdict, "review_status": review, "race": receipt["race"],
             "drill_observed_at": receipt["observed_at"], "services": services, "lineage": e["lineage"],
             "erasure_receipt": {"file": f"{DRILL}/{RECEIPT}", "sha256": sha256(raw).hexdigest()},
             "failures": receipt["failures"], "gaps": sorted(gaps), "errors": receipt["errors"]}

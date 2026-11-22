@@ -52,7 +52,9 @@ def load_coverage(path):
                 "Invalid coverage boundary fields.")
         store = identifier(row["store"], "coverage store")
         kind = row["kind"]
-        name = identifier(row["name"], "coverage boundary")
+        name = row["name"]
+        if (kind, name) != ("namespace", "setrya/{subject}"):
+            identifier(name, "coverage boundary")
         require(store in declared and kind in ("store", "namespace", "trace")
                 and (kind != "store" or name == store), "Invalid inventory coverage boundary.")
         key = store, kind, name

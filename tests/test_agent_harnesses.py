@@ -31,6 +31,23 @@ class HarnessTests(unittest.TestCase):
         self.journal = CopyJournal(self.root / "journal.sqlite")
         self.hooks = CopyHooks(self.journal, self.subject)
 
+    def test_langfuse_stringified_payload_keeps_each_field_with_a_repeated_name(self):
+        from types import SimpleNamespace
+        scope = "case-704"
+        target = SimpleNamespace(input=r'{"tool":{"note":"synthetic\u002dtoken","note":"public"}}', output=None,
+                                 trace_id="trace-t", id="observation-t", project_id="demo", session_id=scope,
+                                 model_fields_set={"input", "output"})
+        control = SimpleNamespace(input='{"note":"blue","note":"green"}', output="retained",
+                                  trace_id="trace-c", id="observation-c", project_id="demo", session_id=scope,
+                                  model_fields_set={"input", "output"})
+        page = SimpleNamespace(data=[target, control], meta=SimpleNamespace(cursor=None))
+        client = SimpleNamespace(api=SimpleNamespace(observations=SimpleNamespace(get_many=lambda **_: page)))
+        reader = LangfuseCanaryScanner(client, project_id="demo", control="trace-c/observation-c")
+        self.assertEqual(reader.find(scope=scope, marker="synthetic-token"), {"trace-t/observation-t"})
+        target.input, target.output = control.input, "synthetic-token"
+        self.assertEqual(reader.find(scope=scope, marker="synthetic-token"), {"trace-t/observation-t"})
+        self.assertEqual(reader.find(scope=scope, marker="another-token"), set())
+
     def test_transcript_with_ambiguous_object_keys_cannot_establish_absence(self):
         from setrya.offboarding.inputs import InvalidReport
         scope = str(uuid4())

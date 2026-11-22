@@ -134,7 +134,15 @@ class HttpCase:
                         raise
                     on_unavailable(name, type(error).__name__)
             location = os.environ.get("SETRYA_COPY_JOURNAL")
-            if not location:
+            if location:
+                journal_path = Path(location).resolve()
+                for cfg in self.stores.values():
+                    if cfg["kind"] in ("sqlite", "openai-agents"):
+                        store_path = Path(os.environ[cfg["connection_env"]]).resolve()
+                        if (store_path == journal_path or (store_path.exists() and journal_path.exists()
+                                                          and store_path.samefile(journal_path))):
+                            raise InputError("Use a separate local file for the copy journal and application store.")
+            else:
                 directory = stack.enter_context(TemporaryDirectory(prefix="setrya-recipe-journal-"))
                 location = Path(directory) / "copies.sqlite"
             yield subject, StoreApplication(self, observers, CopyJournal(location)), ()
@@ -157,9 +165,9 @@ class StoreApplication:
         self.spec, self.observers, self.journal = spec, observers, journal
 
     def _record(self, subject, store, key, operation):
-        self.journal.record(subject, store=store, key=key, source=self.observers[store].scope,
-                            action="retrieved", details={"operation": operation, "boundary_kind": "namespace",
-                                                         "boundary": self.observers[store].scope})
+        scope = self.observers[store].scope
+        self.journal.record(subject, store=store, key=key, source=scope, action="retrieved",
+                            details={"operation": operation, "boundary_kind": "namespace", "boundary": scope})
 
     def inspect(self, subject, store, key):
         row = self.observers[store].inspect(key, *self.spec.store_facts)

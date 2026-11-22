@@ -2,14 +2,32 @@
 
 A support lead answering a deletion ticket has two different kinds of evidence. A replayed drill shows how the application behaved in a test. A direct key check shows which recorded copies a reader could still find for an actual completed request.
 
-## Give a customer the result of a drill
+## Summarize the recorded verdict
 
 ```sh
 setrya demo --output workspace
-setrya receipt render workspace/guarded --audience customer --case-id N-204
+setrya receipt summary workspace/broken --audience engineer
+setrya receipt summary workspace/guarded --audience reviewer --format markdown
+setrya receipt summary workspace/guarded --audience customer --case-id N-204
 ```
 
-The renderer replays the v3 receipt with its companion evidence before producing plain text. It covers person drills, tenant receipts and discovery cases. The customer sees what was checked, whether a delayed writer ran, and how many provider, retention or other follow-ups remain. A review date appears when the evidence contains one. For discovery cases, the observation date comes from the drill. A deferred case gives the catalog date and states that no deletion drill ran. Questions, answers, internal store keys and subject references stay in the original bundle.
+The command replays the receipt and verifies its evidence before rendering. An engineer gets the decisive reads and evidence locations. A reviewer sees the technical verdict, the worker scope, which tested records or answers still contained the deleted fact, and what to follow up. A customer sees counts and plain language. Each audience gets the recorded owner and follow-up date, or an explicit indication that either is missing. Use owner names approved for the customer copy. Questions, answers, subject references and internal store keys stay out of that view.
+
+Person drills, observed-deletion receipts, linked follow-ups, tenant receipts and discovery cases all have summaries. On historical v3 drills, the summary preserves the limits of the evidence those versions collected. `receipt render` is also available.
+
+### Attach a contract or control reference
+
+A team can attach its own control identifiers and DPA clauses when issuing a receipt. Add this optional field to a declarative case.
+
+```yaml
+controls:
+  - framework: SOC 2
+    reference: C1.2
+  - framework: DPA
+    reference: clause 4.2
+```
+
+For a Python fixture, supply the same dictionaries as a tuple in `SharedCase(controls=(...), ...)`. The runner binds these references to the original evidence. Editing only the issued receipt causes replay to fail. References carry forward into linked follow-ups. They help the reviewer locate the relevant agreement or control. The technical verdict covers the recorded observations only. Older receipts that omitted references retain their original verdict and replay rules.
 
 A tenant or discovery receipt has its own request or case ID. Supplying a different ID is an error. On a synthetic drill the optional case number is identified as a label supplied at rendering time. The rendering command exits 0 when it produces the summary, including for a correctly recorded failure. Use `setrya replay` for the engineering gate and `setrya verify` for signer authentication.
 
@@ -78,3 +96,50 @@ The command above assumes the export contains at least 25 eligible subjects. The
 The JSON includes the eligible and sampled counts, present, absent and unknown totals, and a 95% equal-tailed finite-population interval for the proportion of eligible requests with a residual exclusive key. An exact hypergeometric calculation accounts for sampling without replacement. A full census produces the observed count. When even one sampled request is unknown, the point estimate is null. The lower limit treats every unknown as absent and the upper treats every unknown as present. With no observed residuals a small sample can still have a wide upper bound.
 
 The interval describes only the supplied week's frame and mapped keys. Omitted tickets, uninstrumented stores, changed key ownership and stale snapshots can bias the result independently of the interval.
+
+## Issue and replay a read-only deletion receipt
+
+Use `--receipt` on a single completed request to record two independent observations of the journalled keys. Each observation opens the journal, follows known derived copies, checks each mapped store’s retained control and reads the keys. Setrya records a subject-bound key digest and the journal event or lineage pointer. The receipt omits raw keys, stored content and connection strings.
+
+```sh
+setrya observe request --id N-204 --population completed.json \
+  --inventory observer.toml --journal copies.sqlite --receipt N-204-observed
+setrya replay N-204-observed
+```
+
+The v3 profile is `observed-deletion`. Either reading a residual fails the check. PASS requires two absences for each expected exclusive key and consistent journal coverage. A shared key, missing control, unavailable reader or changed journal scope leaves a gap. Production observation uses the journal and read-only SQLite or PostgreSQL readers. Endpoint answers, unjournalled data, provider copies and worker races need separate evidence.
+
+Use the same public API inside an existing case workflow.
+
+```python
+from setrya.casework import observe_deletion
+
+receipt = observe_deletion(
+    frame="completed.json", request="N-204", journal="copies.sqlite",
+    inventory_file="observer.toml", output="N-204-observed",
+    controls=[{"framework": "DPA", "reference": "clause 4.2"}],
+)
+print(receipt["technical_verdict"])
+```
+
+`JournalObserver(journal=..., inventory_file=...)` also exposes `find(request)` and `verify_absent(request)` for one validated request row from the frame above. Each operation takes a new read-only snapshot. The operator controls the local store mapping. SQLite uses a read-only URI and query-only transactions. PostgreSQL requires a dedicated role with read privileges on the mapped table, rejects roles with write privileges there, and uses a read-only transaction on the primary. The API accepts the built-in read-only mappings and never invokes an application’s seeding, deletion, worker or synthetic-caller hooks.
+
+## Recheck a due obligation
+
+`setrya recheck` reads the original v3 receipt and verifies its evidence. For an elapsed UTC follow-up date, it looks up the exact store and key in the subject’s current journal. For directly inspectable retained or attested copies, it reads the physical key and scans the mapped subject-reference column for any remaining row. An unrelated retained row anchors the scan. Configure that row, its actual tenant-bound reference, and optional ownership fields inside the relevant store section of `observer.toml`.
+
+```toml
+subject_column = "subject_ref"
+control_subject_ref = "a9b4cd22b9be40f5076d8fabce26c23a05b8ff3ba5d0d68a573ab3531e04ade"
+owner = "customer-platform"
+follow_up = "2026-05-14"
+```
+
+The PostgreSQL reader needs SELECT on the primary-key and subject-reference columns. A currently retained control already present in the application supplies the reference. The journal must identify the target’s exclusive key. A missing control, shared key, provider send, future or undated obligation, or missing store mapping stays open. A scan covers exactly the configured subject column in that store. An obligation with only provider configuration has no direct observation. Tenant and discovery items without a directly bound subject and copy key retain their original obligations.
+
+```sh
+setrya recheck N-204-observed --journal copies.sqlite --inventory observer.toml --output N-204-followup
+setrya replay N-204-followup --case-review
+```
+
+Each linked receipt includes the original evidence needed to replay it offline. Keep the original signed receipt separately and pass its expected SHA-256 to `recheck --expect-parent` when an independent ticket or reviewer supplies it. The output marks each original open item `verified` or `still open`. Both direct and scanned absence are needed to close an item. The original technical verdict remains visible. New residuals fail the follow-up, and a follow-up can never turn the original failed drill into a PASS. The command exits 0 for a clear case, 1 for residuals, 2 for invalid inputs, or 3 when evidence or follow-up remains outstanding.

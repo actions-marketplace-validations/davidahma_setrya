@@ -59,6 +59,22 @@ class ReceiptViews(unittest.TestCase):
             with self.assertRaisesRegex(InvalidReport, "differs"):
                 receipt_summary(bundle)
 
+    def test_all_audiences_can_render_a_linked_followup_without_a_run_id(self):
+        from setrya.casework.recheck import recheck
+        with TemporaryDirectory() as tmp, open_fixture(shared=True) as (subject, app, items):
+            original, followup = Path(tmp, "initial"), Path(tmp, "followup")
+            run_shared(subject, case=CASE, application=app, external_items=items, mode="deletion", output=original)
+            recheck(original, output=followup)
+            linked = replay(followup)
+            self.assertEqual(linked["profile"], "follow-up")
+            self.assertNotIn("run", linked)
+            for audience in ("engineer", "reviewer", "customer"):
+                with self.subTest(audience=audience):
+                    text = receipt_summary(followup, audience=audience)
+                    self.assertIn("platform-team", text)
+                    if audience != "customer":
+                        self.assertIn(linked["parent_sha256"], text)
+
     def test_archived_case_and_invalid_control_identifiers(self):
         bundle = Path(__file__).parent / "fixtures" / "erasure_v3_1_0_3"
         self.assertNotIn("Customer control references", receipt_summary(bundle))
@@ -92,14 +108,18 @@ class Drift(unittest.TestCase):
             self.assertEqual(code, 3)
             self.assertEqual({(r["kind"], r["name"]) for r in report["boundaries"] if not r["mapped"]},
                              {("store", "traces"), ("trace", "traces"), ("namespace", "/".join(memory.ns)),
-                              ("namespace", "derived")})
-            content += (binding("notes", "namespace", "/".join(memory.ns)) + binding("notes", "namespace", "derived")
+                              })
+            content += (binding("notes", "namespace", "setrya/{subject}")
                         + binding("traces", "store", "traces") + binding("traces", "trace", "traces"))
             inventory.write_text(content)
             before = journal.path.read_bytes()
             with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
                 self.assertEqual(main(["coverage-drift", "--journal", str(journal.path), "--inventory", str(inventory)]), 0)
             self.assertEqual(before, journal.path.read_bytes())
+            other = Subject.derive(b"a" * 32, "tenant", "other", "private")
+            journal.record(other, store="notes", key="sibling", action="stored", source="source-b",
+                           details={"boundary_kind": "namespace", "boundary": "/".join(memory.ns)})
+            self.assertEqual(compare([journal.path], inventory)[1], 3)
             journal.record(subject, store="new-sink", key="z", action="stored", source="source-a")
             report, code = compare([journal.path], inventory)
             self.assertEqual(code, 3)

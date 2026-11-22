@@ -1,6 +1,7 @@
 """Compare recorded storage boundaries to an application's owner and adapter inventory."""
 import argparse
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from setrya.offboarding.inputs import require, unique_fields
 
 
 def observed(journals):
-    found = set()
+    found = {}
     total = size = 0
     for path in journals:
         with sqlite_reader(path) as db:
@@ -20,19 +21,21 @@ def observed(journals):
                                      "AND name IN ('copy_events','collected_events','lineage_versions')"))
             require(tables and all(t == "table" for t in tables.values()), "Expected a concrete journal table.")
             readers = {
-                "copy_events": "SELECT store, details FROM main.copy_events",
-                "collected_events": "SELECT NULL, record FROM main.collected_events",
-                "lineage_versions": "SELECT store, namespace FROM main.lineage_versions",
+                "copy_events": "SELECT store, subject, details FROM main.copy_events",
+                "collected_events": "SELECT NULL, ref, record FROM main.collected_events",
+                "lineage_versions": "SELECT store, NULL, NULL FROM main.lineage_versions",
             }
             for table in tables:
-                for store, raw in db.execute(readers[table]):
+                for store, subject, raw in db.execute(readers[table]):
                     total += 1
-                    require(isinstance(raw, str), "Invalid journal row.")
-                    size += len(raw.encode())
-                    require(total <= 100_000 and size <= 32 * 1024 * 1024, "Drift input exceeds the observation budget.")
+                    require(total <= 100_000, "Drift input exceeds the observation budget.")
                     if table == "lineage_versions":
-                        details = {"boundary_kind": "namespace", "boundary": raw}
+                        # The lineage namespace identifies a provenance graph, not a physical store namespace.
+                        details = {}
                     else:
+                        require(isinstance(raw, str), "Invalid journal row.")
+                        size += len(raw.encode())
+                        require(size <= 32 * 1024 * 1024, "Drift input exceeds the observation budget.")
                         details = json.loads(raw, object_pairs_hook=unique_fields)
                         if table == "collected_events":
                             require(isinstance(details, dict) and {"store", "details"} <= details.keys(),
@@ -41,20 +44,26 @@ def observed(journals):
                     identifier(store, "journal store")
                     require(isinstance(details, dict), "Invalid journal event details.")
                     validate_details(details)
-                    found.add((store, "store", store))
+                    found[store, "store", store] = False
                     if "boundary" in details:
-                        found.add((store, details["boundary_kind"], details["boundary"]))
+                        key = store, details["boundary_kind"], details["boundary"]
+                        subject_namespace = (key[1] == "namespace" and isinstance(subject, str)
+                                             and re.fullmatch(r"[0-9a-f]{64}", subject) is not None
+                                             and key[2] == "setrya/" + subject)
+                        found[key] = found.get(key, True) and subject_namespace
                     elif details.get("operation") == "langfuse.observation":
-                        found.add((store, "trace", store))
-    return sorted(found)
+                        found[store, "trace", store] = False
+    return sorted(found.items())
 
 
 def compare(journals, inventory):
     systems, bindings = load_coverage(inventory)
     rows = []
-    for store, kind, name in observed(journals):
+    for (store, kind, name), subject_namespace in observed(journals):
         declared = systems.get(store, {})
         mapped = bindings.get((store, kind, name), ())
+        if subject_namespace and not mapped:
+            mapped = bindings.get((store, kind, "setrya/{subject}"), ())
         if kind == "store" and declared.get("adapter", "none") != "none":
             mapped = (declared["adapter"], *mapped)
         rows.append({"store": store, "kind": kind, "name": name, "owner": declared.get("owner"),

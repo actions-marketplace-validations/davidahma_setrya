@@ -78,7 +78,7 @@ def receipt_summary(bundle, *, audience="reviewer", output_format="text", case_i
         title, *body = customer_text(receipt, case_id=case_id).splitlines()
         sections = [(None, body), ("Recorded observations", outcomes)]
     else:
-        title = f"Deletion review for {receipt.get('request_id') or receipt.get('case_id') or receipt['run']}"
+        title = f"Deletion review for {receipt.get('request_id') or receipt.get('case_id') or receipt.get('run') or receipt['parent_sha256']}"
         sections = [("Decision", [f"Technical verdict {receipt['technical_verdict']}",
                                   f"Review status {receipt['review_status']}"])]
         if audience == "engineer":
