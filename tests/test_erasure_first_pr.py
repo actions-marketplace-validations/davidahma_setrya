@@ -1,6 +1,9 @@
 """Keep the first-PR instructions, downloaded workflow and generated starter in sync."""
 from pathlib import Path
 import re
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
 import unittest
 
 from setrya import __version__
@@ -32,7 +35,7 @@ class FirstPrInstructions(unittest.TestCase):
         self.assertIn(f"setrya init --output {name}\n", commands)
         self.assertIn(f"setrya doctor --starter {starter} --mode deletion\n", commands)
         self.assertIn(f"git add {starter} {destination}\n", commands)
-        self.assertIn(f"/v{__version__}/{TEMPLATE} -o {destination}\n", commands)
+        self.assertIn(f"/releases/download/v{__version__}/setrya-quickstart.yml -o {destination}\n", commands)
         workflow = (ROOT / TEMPLATE).read_text()
         for text in (commands, workflow):
             self.assertIn(f"python -m pip install setrya=={__version__}\n", text)
@@ -43,3 +46,18 @@ class FirstPrInstructions(unittest.TestCase):
         self.assertEqual(pins[0][1], __version__)
         self.assertEqual(re.findall(r"^\s+starter: (\S+)$", workflow, re.M), [starter])
         self.assertEqual(re.findall(r"^\s+mode: (\S+)$", workflow, re.M), ["deletion"])
+
+
+    def test_release_gate_requires_both_quickstart_pins_at_the_tag_commit(self):
+        secret_free_commit = "a5" * 20
+        script = ROOT / "scripts/render-action-workflow.py"
+        with TemporaryDirectory() as temp:
+            path = Path(temp) / "setrya-quickstart.yml"
+            cli = [sys.executable, "-I", str(script), "--commit", secret_free_commit]
+            subprocess.run([*cli, "--output", str(path)], check=True, capture_output=True)
+            text = path.read_text()
+            self.assertEqual(text.count(f"uses: davidahma/setrya@{secret_free_commit}"), 2)
+            subprocess.run([*cli, "--expect", str(path)], check=True, capture_output=True)
+            path.write_text(text.replace(secret_free_commit, "b6" * 20, 1))
+            result = subprocess.run([*cli, "--expect", str(path)], capture_output=True)
+            self.assertEqual(result.returncode, 2)

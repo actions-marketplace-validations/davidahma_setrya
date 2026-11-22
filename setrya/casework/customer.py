@@ -79,7 +79,9 @@ def customer_text(receipt, *, case_id=None):
         for item in items:
             kind = item.get("kind", "").lower()
             status = item.get("status", "").lower()
-            if "retain" in status or kind in ("retained", "backup") or "retention" in status:
+            if item.get("evidence") == "remote-copies-uninspected":
+                label = "Remote copies were not inspected"
+            elif "retain" in status or kind in ("retained", "backup") or "retention" in status:
                 label = "Record retention"
             elif kind in ("configuration", "provider") or status == "configuration":
                 label = "Provider configuration"

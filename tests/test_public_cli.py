@@ -163,7 +163,7 @@ class PublicCLI(unittest.TestCase):
             main(["--help"])
         help_text = out.getvalue()
         self.assertIn(POSITIONING, help_text)
-        self.assertIn("{init,run,replay,demo,journal,receipt,recheck,route-coverage,coverage-drift,observe,verify}", help_text)
+        self.assertIn("{init,run,doctor,replay,demo,journal,receipt,recheck,route-coverage,coverage-drift,observe,verify}", help_text)
         self.assertIn("doctor", help_text)
         self.assertNotIn("qualify", help_text)
 
