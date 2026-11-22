@@ -11,6 +11,9 @@ import stat
 import time
 import tomllib
 
+from setrya.core.journal import _FIELDS
+from setrya.core.journal_chain import verify_snapshot
+from setrya.erasure.journal_merge import verify_seals
 from setrya.erasure.adapters import _require_sqlite_base_table, _sql_name
 from setrya.erasure.journal import identifier
 from setrya.offboarding.inputs import read_regular_bytes, require
@@ -106,6 +109,7 @@ def collector_scope(conn, subject, roster):
     expected = set(roster["expected_producers"])
     if {name for name, _ in seals} != expected or not {name for name, in observed} <= expected:
         raise IncompleteProducerCoverage("Expected a sealed packet from every declared producer and no other producers.")
+    verify_seals(conn, roster["run_id"], subject)
     require(all(isinstance(digest, str) and re.fullmatch("[0-9a-f]{64}", digest) for _, digest in seals),
             "Invalid sealed packet digest.")
     return sha256(json.dumps([subject, roster["run_id"], seals], separators=(",", ":")).encode()).hexdigest()
@@ -119,6 +123,7 @@ def journal_rows(conn, subject_ref, roster=None):
     sources = []
     if "copy_events" in names:
         _sqlite_table(conn, "copy_events")
+        verify_snapshot(conn, _FIELDS)
         sources.append("SELECT event,subject,store,copy_key,action FROM main.copy_events")
     if collected:
         _sqlite_table(conn, "journal_binding")

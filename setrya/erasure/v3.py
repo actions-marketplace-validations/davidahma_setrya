@@ -294,25 +294,39 @@ def run_shared(subject, *, case, application, output, mode="late-write", externa
                 return None
             worker["drained"] = observe("release_and_drain", release)
     final = _stage(subject, case, application, spec, observe, rules.discovered_keys(spec, baseline["scans"]))
-    coverage = events = None
+    coverage = events = chain = None
     if journal is not None:
         if expected and hasattr(application, "collect_journals"):
             observe("collect_journals", lambda: application.collect_journals(subject))
         budget = 2 * 1024 * 1024
         if expected:
             def snapshot():
-                manifest, rows = journal.snapshot(subject, run_id=run, expected_producers=expected, max_bytes=budget)
-                return manifest, [asdict(row) for row in rows]
+                if hasattr(journal, "verified_snapshot"):
+                    manifest, heads, rows = journal.verified_snapshot(subject, run_id=run, expected_producers=expected,
+                                                                        max_bytes=budget)
+                else:
+                    manifest, rows = journal.snapshot(subject, run_id=run, expected_producers=expected, max_bytes=budget)
+                    heads = dict.fromkeys(manifest["received"])
+                return manifest, heads, [row.wire() if hasattr(row, "wire") else asdict(row) for row in rows]
             observation = observe("journal", snapshot)
             if observation is not None:
-                coverage, events = observation
+                coverage, chain, events = observation
         else:
-            events = observe("journal", lambda: [asdict(row) for row in journal.history(subject, max_bytes=budget)])
+            def snapshot():
+                if hasattr(journal, "verified_history"):
+                    head, rows = journal.verified_history(subject, max_bytes=budget)
+                else:
+                    head, rows = None, journal.history(subject, max_bytes=budget)
+                return head, [row.wire() if hasattr(row, "wire") else asdict(row) for row in rows]
+            observation = observe("journal", snapshot)
+            if observation is not None:
+                chain, events = observation
     evidence = {"format": rules.EVIDENCE_FORMAT, "run": run, "scope": "person",
                 "observed_at": datetime.now(timezone.utc).isoformat(), "subject": asdict(subject),
                 "mode": mode, "case": spec, "worker": worker, "external": external,
-                "lineage": lineage, "baseline": baseline, "erased": erase, "immediate": immediate, "final": final,
-                "expected_producers": expected, "coverage": coverage, "journal": events,
+                "lineage": lineage, "baseline": rules.group_samples(baseline, spec), "erased": erase,
+                "immediate": rules.group_samples(immediate, spec), "final": rules.group_samples(final, spec),
+                "expected_producers": expected, "coverage": coverage, "journal": events, "journal_chain": chain,
                 "errors": errors, "drill_duration_ms": 0}
     receipt = rules.derive(evidence, "0" * 64)
     evidence["drill_duration_ms"] = receipt["drill_duration_ms"] = round((monotonic() - start) * 1000)

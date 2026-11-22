@@ -14,7 +14,7 @@ from setrya.drill import InputError
 
 from .elastic import ElasticsearchAdapter as ElasticsearchAdapter
 from .journal import identifier
-from .subject import Subject
+from .subject import Subject, checkpoint_thread as checkpoint_thread
 
 
 class ErasureAdapter(Protocol):
@@ -31,10 +31,6 @@ def _ref(subject):
     if not isinstance(subject, Subject):
         raise InputError("expected a tenant-scoped Subject")
     return subject.ref
-
-
-def checkpoint_thread(subject: Subject, thread: str) -> str:
-    return identifier(f"setrya:{_ref(subject)}:{identifier(thread, 'thread')}", "checkpoint thread")
 
 
 def memory_namespace(subject: Subject) -> tuple[str, str]:
@@ -248,6 +244,57 @@ def _checkpoint_rows(subject):
     return query, (prefix,) * len(_PG_CHECKPOINT_TABLES)
 
 
+_CHECKPOINT_BUDGET = 1 << 20
+_CHECKPOINT_ROWS = 4096
+
+
+def _pg_checkpoint_payloads(connection, thread):
+    """Read exact thread bytes, including orphan blobs and pending writes."""
+    identifier(thread, "checkpoint thread")
+    with _pg_connection(connection) as conn:
+        conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        for table in _PG_CHECKPOINT_TABLES:
+            _require_pg_base_table(conn, table)
+        with conn.cursor("setrya_checkpoint_read") as rows:
+            rows.itersize = 8
+            rows.execute("""
+                SELECT 'json' AS kind, NULL::bytea AS payload,
+                       CASE WHEN octet_length(checkpoint::text) + octet_length(metadata::text) <= %s
+                            THEN jsonb_build_array(checkpoint, metadata) END AS metadata
+                  FROM checkpoints WHERE thread_id COLLATE "C" = %s
+                UNION ALL
+                SELECT CASE WHEN octet_length(blob) > %s THEN NULL ELSE type END,
+                       CASE WHEN octet_length(blob) <= %s THEN blob END, NULL
+                  FROM checkpoint_blobs WHERE thread_id COLLATE "C" = %s
+                UNION ALL
+                SELECT CASE WHEN octet_length(blob) > %s THEN NULL ELSE type END,
+                       CASE WHEN octet_length(blob) <= %s THEN blob END, NULL
+                  FROM checkpoint_writes WHERE thread_id COLLATE "C" = %s
+                LIMIT 4097
+            """, (_CHECKPOINT_BUDGET, thread) + (_CHECKPOINT_BUDGET, _CHECKPOINT_BUDGET, thread) * 2)
+            records = []
+            size = 0
+            for row in rows:
+                kind, payload, metadata = row.values() if isinstance(row, Mapping) else row
+                if (len(records) >= _CHECKPOINT_ROWS or kind not in {"bytes", "msgpack", "json", "null", "empty"}
+                        or (payload is None and metadata is None and kind not in {"null", "empty"})):
+                    raise InputError("oversized checkpoint read or unsupported checkpoint encoding")
+                if kind == "json" and isinstance(payload, bytes):
+                    payload = json.loads(payload)
+                if isinstance(metadata, bytes):
+                    metadata = json.loads(metadata)
+                if isinstance(payload, bytes):
+                    # This reversible representation avoids importing the application's
+                    # deserializer. The fixture's ASCII marker remains searchable.
+                    payload = payload.decode("latin-1")
+                record = [kind, payload, metadata]
+                size += len(json.dumps(record))
+                if size > _CHECKPOINT_BUDGET:
+                    raise InputError("checkpoint read exceeds the observation budget")
+                records.append(record)
+        return records
+
+
 class LangGraphPostgresCheckpointAdapter(_Direct):
     """The full PostgresSaver layout, including blobs and writes orphaned from their checkpoints."""
 
@@ -262,6 +309,11 @@ class LangGraphPostgresCheckpointAdapter(_Direct):
             for table in _PG_CHECKPOINT_TABLES:
                 _require_pg_base_table(conn, table)
             return _keys(conn.execute(*_checkpoint_rows(subject)))
+
+    def read_thread(self, thread):
+        """Read the entire declared thread without interpreting serialized objects."""
+        with self.saver.lock:
+            return _pg_checkpoint_payloads(self.saver.conn, thread)
 
     def delete(self, subject):
         for thread in self.find(subject):

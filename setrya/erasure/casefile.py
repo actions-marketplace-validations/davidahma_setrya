@@ -222,17 +222,21 @@ class HttpApplication(StoreApplication):
 
 
 def stored_fact(marker, reviewed, settings):
-    fields(settings, (), ("present", "absent"))
+    fields(settings, (), ("present", "absent", "absent_sha256"))
     phrases = strings(settings.get("present", []), "stored positive phrases", minimum=0)
     present = tuple(dict.fromkeys((marker, *reviewed.present, *phrases)))
     absent = settings.get("absent", [])
-    if not isinstance(absent, list) or len(absent) > 32:
+    reviewed_digests = settings.get("absent_sha256", [])
+    if (not isinstance(absent, list) or not isinstance(reviewed_digests, list)
+            or len(absent) + len(reviewed_digests) > 32):
         raise InputError("supply at most 32 reviewed whole-payload absences per fact")
+    if any(not isinstance(value, str) or not re.fullmatch("[0-9a-f]{64}", value) for value in reviewed_digests):
+        raise InputError("reviewed whole-payload SHA-256 values must be 64 lowercase hexadecimal characters")
     try:
         digests = frozenset(sha256(content_bytes(value)).hexdigest() for value in (*reviewed.absent, *absent))
     except (TypeError, ValueError, UnicodeError):
         raise InputError("each reviewed stored absence must be a complete JSON-compatible value") from None
-    return StoredFact(present, digests)
+    return StoredFact(present, digests.union(reviewed_digests))
 
 
 def load_case(path, *, locate=False):
@@ -284,6 +288,8 @@ def load_case(path, *, locate=False):
         bindings.append(("inspect/scan " + name, envname(cfg["connection_env"]), ("stores", name, "connection_env")))
         if not isinstance(cfg["artifacts"], dict) or not cfg["artifacts"]:
             raise InputError("declare the keys and expected actions for each store")
+        if cfg["kind"] == "langgraph-checkpoint" and set(cfg["artifacts"]) != {cfg["scope"]}:
+            raise InputError("the checkpoint artifact key must equal the declared thread ID in scope")
         artifacts.extend(Artifact(name, key, action) for key, action in cfg["artifacts"].items())
     case = SharedCase(conversation=settings["conversation"], route=path_route(settings["read_route"]),
                       callers=tuple(callers), target_question=questions["target"][0], control_question=questions["control"][0],

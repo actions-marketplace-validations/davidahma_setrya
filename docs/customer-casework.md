@@ -7,7 +7,7 @@ A support lead answering a deletion ticket has two different kinds of evidence. 
 ```sh
 setrya demo --output workspace
 setrya receipt summary workspace/broken --audience engineer
-setrya receipt summary workspace/guarded --audience reviewer --format markdown
+setrya receipt summary workspace/guarded --audience reviewer --format md
 setrya receipt summary workspace/guarded --audience customer --case-id N-204
 ```
 

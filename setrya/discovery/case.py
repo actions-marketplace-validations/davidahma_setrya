@@ -210,10 +210,11 @@ def _endpoint(service, e):
     failures, gaps, pointers = set(), set(), []
     for stage in STAGES:
         sample = e[stage]
-        for i, (caller, _, role, _) in enumerate(v3_receipt.answer_slots(e["case"])):
-            row = sample["answers"][i] if sample else None
+        observations = v3_receipt.sample_rows(sample, e["case"], grouped=e["format"] == v3_receipt.EVIDENCE_FORMAT)
+        for (caller, _, role, _), (coordinates, row) in zip(v3_receipt.answer_slots(e["case"]), observations, strict=True):
             if row is not None:
-                pointers.append(_pointer(stage, "answers", i))
+                first, *rest = coordinates
+                pointers.append(_pointer(stage, "answers", first) + "".join(f"/{i}" for i in rest))
             if stage != "baseline" and e["erased"] is not None:
                 v3_receipt.answer_outcome(row, caller, role == "control", stage, failures, gaps)
     if e["erased"] is not True:
@@ -225,7 +226,7 @@ def _endpoint(service, e):
 def _baseline_status(service, evidence, direct, source):
     baseline = evidence["baseline"]
     if service["role"] == "endpoint":
-        samples = baseline["answers"]
+        samples = v3_receipt.answer_records(evidence, "baseline")
         if all(row and row[role + "_present"] is True for (_, _, role, _), row in
                zip(v3_receipt.answer_slots(evidence["case"]), samples)):
             return "CONFIRMED"

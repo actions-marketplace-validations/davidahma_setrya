@@ -3,7 +3,6 @@ import argparse
 import json
 from pathlib import Path
 
-from .receipt_summary import receipt_summary
 from .observe import observe
 from setrya.offboarding.inputs import publish_new
 
@@ -13,10 +12,12 @@ def command(argv):
     parser = argparse.ArgumentParser(prog=f"setrya {family}")
     commands = parser.add_subparsers(dest="action", required=True)
     if family == "receipt":
+        from setrya.erasure.render import receipt_summary
+
         render = commands.add_parser("summary", aliases=["summarize", "render"], help="summarize a replayed receipt")
         render.add_argument("bundle", type=Path)
         render.add_argument("--audience", choices=("engineer", "reviewer", "customer"), default="reviewer")
-        render.add_argument("--format", choices=("text", "markdown"), default="text", dest="output_format")
+        render.add_argument("--format", choices=("text", "md", "markdown"), default="text", dest="output_format")
         render.add_argument("--case-id", help="opaque reference for the customer copy")
         args = parser.parse_args(tail)
         print(receipt_summary(args.bundle, audience=args.audience, output_format=args.output_format, case_id=args.case_id))

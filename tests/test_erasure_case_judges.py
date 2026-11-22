@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
+from setrya.core.receipt_v3 import answer_records
 from setrya.erasure.judges import AnswerJudges, Entity, Marker, ModelDecision, ModelJudge, Regex, ReviewedAnswers, TextAnswer
 from setrya.erasure.subject import Subject
 from setrya.erasure.v3 import Artifact, ExternalItem, SharedCase, Stored, observe_baseline, run_shared
@@ -56,7 +57,7 @@ class CaseJudgesTests(TestCase):
         self.assertEqual((receipt["technical_verdict"], receipt["race"]), ("PASS", "not exercised"))
         self.assertEqual(receipt, replay(out))
         evidence = json.loads((out / "erasure-evidence.json").read_bytes())
-        answers = evidence["baseline"]["answers"]
+        answers = answer_records(evidence, "baseline")
         self.assertEqual([r["judgments"][role][0]["excerpt"] for r, role in zip(answers, ("target", "control"))],
                          ["ORCHID-7", "Juniper"])
         self.assertNotIn("What shipped?", json.dumps(evidence))
@@ -92,7 +93,7 @@ class CaseJudgesTests(TestCase):
             evidence = (out / "erasure-evidence.json").read_bytes()
             self.assertNotIn(b"ORCHID", evidence)
             self.assertNotIn(b"Juniper", evidence)
-            self.assertEqual(len(json.loads(evidence)["final"]["answers"]), 18)
+            self.assertEqual(len(answer_records(json.loads(evidence), "final")), 18)
             if residual:
                 self.assertIn("support recovered the erased finding at final read.", receipt["failures"])
         for invalid in ((), ("one", "one")):

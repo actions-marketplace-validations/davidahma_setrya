@@ -1,5 +1,7 @@
 """Read the versioned drill format and derive its text-free rules."""
 
+from .core.errors import InputError
+
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import re
@@ -9,10 +11,6 @@ DRILL_VERSION = 1
 
 _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,79}\Z")
 _FACTORY = re.compile(r"(?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*:[A-Za-z_]\w*\Z", re.ASCII)
-
-
-class InputError(ValueError):
-    """A safe, user-facing configuration or report error."""
 
 
 def label(value: object, field: str) -> str:

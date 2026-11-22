@@ -56,7 +56,8 @@ def _outcome(bundle, receipt):
         if stage is None:
             results.append(f"{label}, no observations were recorded.")
             continue
-        answers = [row for row in stage["answers"] if row is not None]
+        from setrya.core.receipt_v3 import answer_records
+        answers = [row for row in answer_records(observed, key) if row is not None]
         stores = [row for row in (*stage["stored"], *stage["discovered"]) if row is not None]
         for rows, name in ((stores, "stored records"), (answers, "answers")):
             target = Counter(row["target_present"] for row in rows)
@@ -67,7 +68,7 @@ def _outcome(bundle, receipt):
 
 
 def receipt_summary(bundle, *, audience="reviewer", output_format="text", case_id=None):
-    require(audience in ("engineer", "reviewer", "customer") and output_format in ("text", "markdown"),
+    require(audience in ("engineer", "reviewer", "customer") and output_format in ("text", "md", "markdown"),
             "Choose an audience and output format.")
     require(not case_id or audience == "customer", "A display case number applies only to the customer copy.")
     receipt = replay(bundle)
@@ -109,4 +110,4 @@ def receipt_summary(bundle, *, audience="reviewer", output_format="text", case_i
         sections.append(("Open items", items or ["No open items recorded."]))
     if controls:
         sections.append(("Customer control references", ["The case owner supplied these references.", *controls]))
-    return _format(title, sections, output_format == "markdown")
+    return _format(title, sections, output_format in ("md", "markdown"))

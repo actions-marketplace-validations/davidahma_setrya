@@ -3,7 +3,7 @@ import json
 from collections.abc import Mapping
 
 from setrya.drill import InputError
-from .adapters import _PG_CHECKPOINT_TABLES, _pg_connection, _require_pg_base_table, _scoped_memory_key, _sqlite_snapshot
+from .adapters import _pg_checkpoint_payloads, _pg_connection, _require_pg_base_table, _scoped_memory_key, _sqlite_snapshot
 from .canary import LIMIT, contains_marker, validate_probe
 from .journal import identifier
 
@@ -32,17 +32,9 @@ class PostgresCheckpointCanaryScanner:
 
     def find(self, *, scope: str, marker: str) -> set[str]:
         validate_probe(scope, marker)
-        with _pg_connection(self.db) as conn:
-            for table in _PG_CHECKPOINT_TABLES:
-                _require_pg_base_table(conn, table)
-            rows = conn.execute("""
-                SELECT 'json' AS type, NULL::bytea AS payload, jsonb_build_array(checkpoint, metadata) AS metadata
-                    FROM checkpoints WHERE thread_id COLLATE "C" = %s
-                UNION ALL SELECT type, blob, NULL FROM checkpoint_blobs WHERE thread_id COLLATE "C" = %s
-                UNION ALL SELECT type, blob, NULL FROM checkpoint_writes WHERE thread_id COLLATE "C" = %s
-                LIMIT 4097
-            """, (scope, scope, scope))
-            return _checkpoint_hits(rows, scope, marker)
+        rows = _pg_checkpoint_payloads(self.db, scope)
+        return {scope} if any(contains_marker(payload, marker) or contains_marker(metadata, marker)
+                              for _, payload, metadata in rows) else set()
 
 
 def _checkpoint_hits(rows, scope, marker):
@@ -89,22 +81,25 @@ class LangGraphMemoryCanaryScanner:
 class PostgresMemoryCanaryScanner:
     """Read stored LangGraph JSON values, including expired rows the Store API omits."""
 
-    def __init__(self, connection, *, namespace=()):
+    def __init__(self, connection, *, namespace=(), descendants=True):
         self.connection = connection
+        self.descendants = descendants
         self.namespace = tuple(identifier(part, "memory namespace") for part in namespace)
 
     def find(self, *, scope: str, marker: str) -> set[str]:
         validate_probe(scope, marker)
-        root = (*self.namespace, scope)
-        if any("." in part for part in root):
+        scope_parts = (scope,) if self.descendants else tuple(scope.split("."))
+        root = (*self.namespace, *scope_parts)
+        if any(not part or "." in part for part in root):
             raise InputError("LangGraph namespace components cannot contain periods")
         prefix = ".".join(root)
         with _pg_connection(self.connection) as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             _require_pg_base_table(conn, "store")
             rows = conn.execute("""
                 SELECT prefix, key, value FROM store WHERE prefix COLLATE "C" = %s
-                   OR starts_with(prefix, %s) LIMIT 4097
-            """, (prefix, prefix + "."))
+                   OR (%s AND starts_with(prefix, %s)) LIMIT 4097
+            """, (prefix, self.descendants, prefix + "."))
             found = set()
             for index, row in enumerate(rows):
                 if index >= LIMIT:

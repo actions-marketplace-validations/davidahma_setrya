@@ -109,6 +109,9 @@ class HttpCaseTests(unittest.TestCase):
             for hook in ("subject", "read/erase origin", "read as duty-agent", "erase authorization",
                          "inspect/scan memory", "hold", "checkpoint", "release_and_drain"):
                 self.assertIn(hook, message)
+            if name == "langgraph-postgres":
+                self.assertRegex(message, r"case.yml:\d+  inspect/scan checkpoints")
+                self.assertRegex(message, r"case.yml:\d+  inspect/scan vectors")
         self.assertEqual(self.erase_calls, 0)
 
     def test_doctor_names_key_scanner_and_source_lines(self):
@@ -302,6 +305,7 @@ class HttpCaseTests(unittest.TestCase):
         name = "fixture_" + uuid4().hex
         cfg["stores"]["memory"].update(kind="postgres", table=name, key_column="id", content_column="body",
                                        scope_column="ticket")
+        cfg["stores"] = {"memory": cfg["stores"]["memory"]}  # Existing one-store case files still work.
         path.write_text(self.yaml.safe_dump(cfg))
         table = Identifier(name)
         with psycopg.connect(dsn, autocommit=True) as conn:
@@ -346,22 +350,94 @@ class HttpCaseTests(unittest.TestCase):
                 db.execute(SQL("DROP TABLE {} CASCADE").format(table))
 
     @unittest.skipUnless(os.environ.get("SETRYA_PGVECTOR_DSN"), "requires isolated Postgres")
-    def test_native_langgraph_postgres_store(self):
+    def test_native_langgraph_checkpoint_memory_and_vector_recipe(self):
+        from hashlib import sha256
+        from typing import TypedDict
+        import psycopg
+        from langgraph.checkpoint.postgres import PostgresSaver
+        from langgraph.graph import END, START, StateGraph
         from langgraph.store.postgres import PostgresStore
+        from psycopg.sql import Identifier, SQL
+        from setrya.erasure.adapters import LangGraphPostgresCheckpointAdapter
+        from setrya.erasure.case_stores import content_bytes
+
+        class State(TypedDict):
+            summary: str
+
         dsn = os.environ["SETRYA_PGVECTOR_DSN"]
         path = self.case_file("langgraph-postgres")
         os.environ["SETRYA_TEST_POSTGRES_URL"] = dsn
         cfg = self.yaml.safe_load(path.read_text())
-        scope = cfg["stores"]["memory"]["scope"] = "ticket-" + uuid4().hex
-        path.write_text(self.yaml.safe_dump(cfg))
-        with PostgresStore.from_conn_string(dsn) as store:
+        scope = "ticket-" + uuid4().hex
+        retained = scope + ".other"
+        thread = {"configurable": {"thread_id": scope}}
+        table_name = "documents_" + uuid4().hex
+        table = Identifier(table_name)
+        for store in cfg["stores"].values():
+            store["scope"] = scope
+        cfg["stores"]["checkpoints"]["artifacts"] = {scope: "delete"}
+        cfg["stores"]["vectors"]["table"] = table_name
+        path.write_text(self.yaml.safe_dump(cfg, sort_keys=False))
+        with PostgresStore.from_conn_string(dsn) as store, PostgresSaver.from_conn_string(dsn) as checkpoints, \
+                psycopg.connect(dsn, autocommit=True) as vector:
             store.setup()
-            store.put((scope,), "note", {"memo": self.target})
-            self.on_erase = lambda: store.delete((scope,), "note")
+            checkpoints.setup()
+            vector.execute(SQL("CREATE TABLE {} (id text PRIMARY KEY, ticket_id text, body text, embedding vector(2))").format(table))
+            graph = StateGraph(State)
+            graph.add_node("save", lambda state: {"summary": state["summary"]})
+            graph.add_edge(START, "save")
+            graph.add_edge("save", END)
+            app = graph.compile(checkpointer=checkpoints)
+            adapter = LangGraphPostgresCheckpointAdapter(checkpoints)
             try:
+                for namespace in (scope, retained):
+                    store.put(tuple(namespace.split(".")), "note", {"memo": self.target})
+                    vector.execute(SQL("INSERT INTO {} VALUES (%s,%s,%s,'[1,0]')").format(table),
+                                   ("document" if namespace == scope else "retained-document", namespace, self.target))
+                    app.invoke({"summary": self.target}, {"configurable": {"thread_id": namespace}})
+                hint = self.cli(3, "doctor", "--case", path)
+                self.assertRegex(hint, r"case.yml:\d+  Review the full test checkpoint")
+                self.assertEqual(self.erase_calls, 0)
+                # The test owns these synthetic bytes. Approve the complete target-only
+                # thread and the separate vector row, never a marker-only negative.
+                snapshot = sorted(adapter.read_thread(scope), key=content_bytes)
+                self.assertIn(self.target.encode(), content_bytes(snapshot))
+                self.assertNotIn(self.control.encode(), content_bytes(snapshot))
+                control = cfg["facts"]["control"]["stored"]
+                control["absent_sha256"] = [sha256(content_bytes(snapshot)).hexdigest()]
+                control["absent"].append(self.target)
+                path.write_text(self.yaml.safe_dump(cfg, sort_keys=False))
+
+                def erase_rows():
+                    store.delete((scope,), "note")
+                    vector.execute(SQL("DELETE FROM {} WHERE ticket_id=%s").format(table), (scope,))
+
+                self.on_erase = erase_rows  # The graph thread remains readable after ordinary cleanup.
+                self.verify(path, 1)
+                broken = self.root / "receipt"
+                receipt = json.loads((broken / "erasure-receipt.json").read_text())
+                self.assertTrue(any(f"checkpoints/{scope}" in line for line in receipt["failures"]), receipt)
+                broken.rename(self.root / "broken")
+                self.deleted, self.erase_calls = False, 0
+                store.put((scope,), "note", {"memo": self.target})
+                vector.execute(SQL("INSERT INTO {} VALUES ('document',%s,%s,'[1,0]')").format(table),
+                               (scope, self.target))
+
+                def erase_all():
+                    erase_rows()
+                    checkpoints.delete_thread(scope)
+
+                self.on_erase = erase_all
                 self.verify(path)
+                self.assertIsNotNone(store.get((scope, "other"), "note"))
+                self.assertTrue(adapter.read_thread(retained))
+                self.assertEqual(vector.execute(SQL("SELECT id FROM {} WHERE ticket_id=%s").format(table),
+                                                (retained,)).fetchone(), ("retained-document",))
             finally:
-                store.delete((scope,), "note")
+                for namespace in (scope, retained):
+                    store.delete(tuple(namespace.split(".")), "note")
+                    checkpoints.delete_thread(namespace)
+                vector.execute(SQL("DROP TABLE {}").format(table))
 
     def test_language_neutral_case_against_node_application(self):
         node = shutil.which("node")

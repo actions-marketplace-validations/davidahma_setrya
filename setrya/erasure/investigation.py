@@ -360,7 +360,9 @@ def run_demo(output: Path, *, mode="late-write") -> int:
         print(f"{lane}: technical {receipt['technical_verdict']} · review {receipt['review_status']} · "
               f"drill duration {receipt['drill_duration_ms']} ms")
         evidence = json.loads((output / lane / "erasure-evidence.json").read_bytes())
-        for target, control in zip(evidence["final"]["answers"][::2], evidence["final"]["answers"][1::2]):
+        from setrya.core.receipt_v3 import answer_records
+        answers = answer_records(evidence, "final")
+        for target, control in zip(answers[::2], answers[1::2]):
             if target and control and target["sample"] == 1:
                 laptop = {True: "returned", False: "absent", None: "unknown"}[target["target_present"]]
                 reset = {True: "returned", False: "absent", None: "unknown"}[control["control_present"]]
