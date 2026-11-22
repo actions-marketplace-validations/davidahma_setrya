@@ -23,13 +23,13 @@ facts:
     answers:
       present: ["Harbor-17", "Harbor seventeen"]
       absent: ["Thursday", "No matching note."]
-  control:
+{target_stored}  control:
     marker: Thursday
     questions: ["When is dispatch?"]
     answers:
       present: ["Thursday"]
       absent: ["Harbor-17", "Harbor seventeen", "No matching note."]
-stores:
+{control_stored}stores:
   memory:
     kind: {stack}
     connection_env: {env}
@@ -47,7 +47,17 @@ def init_stack(path: Path, stack: str):
         "redis-cache": ("SETRYA_TEST_REDIS_URL", "ticket-204", "    prefix: support\n", "      note: delete"),
     }
     env, scope, options, artifacts = settings[stack]
-    body = _TEMPLATE.format(stack=stack, env=env, scope=scope, options=options, artifacts=artifacts)
+    target_stored = ""
+    control_stored = ""
+    if stack == "claude-agent":
+        target_stored = ('    stored:\n      absent:\n'
+                         f'        - [{{sessionId: "{scope}", message: {{content: Thursday}}}}]\n')
+    elif stack == "openai-agents":
+        control_stored = "    stored:\n      absent: [{role: user, content: Harbor-17}]\n"
+    elif stack == "langgraph-postgres":
+        control_stored = "    stored:\n      absent: [{memo: Harbor-17}]\n"
+    body = _TEMPLATE.format(stack=stack, env=env, scope=scope, options=options, artifacts=artifacts,
+                            target_stored=target_stored, control_stored=control_stored)
     path.mkdir(parents=True, exist_ok=False)
     target = path / "case.yml"
     target.write_text(body, encoding="utf-8")

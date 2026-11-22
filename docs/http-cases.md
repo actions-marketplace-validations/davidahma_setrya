@@ -19,7 +19,7 @@ Doctor names the environment bindings that still need values. It checks the call
 | `langgraph-postgres` | Values in one exact LangGraph PostgresStore long-term memory namespace. Set the dot-separated namespace as the scope and the memory item IDs as keys. Checkpoints and vector tables require separate fixture coverage. | `SETRYA_TEST_POSTGRES_URL`, PostgreSQL URL. Install `setrya[case-yaml,erasure-postgres]`. |
 | `redis-cache` | Strings at `prefix:scope:key` in a dedicated standalone Redis primary. The scanner supports up to 4,096 keys in the fixture database. | `SETRYA_TEST_REDIS_URL`, Redis URL. Install `setrya[case-yaml,redis]`. |
 
-For ordinary SQL, use store kind `sqlite` or `postgres`. Declare `table`, `key_column`, `content_column` and `scope_column` with the names of the application's key, text and scope fields. SQLite uses a path in the named environment variable. PostgreSQL uses a connection URL. The observer opens SQLite read-only, runs PostgreSQL reads in read-only transactions and reads Redis without mutating keys. Use a database account with read permissions for these observations.
+For ordinary SQL, use store kind `sqlite` or `postgres`. Declare `table`, `key_column`, `content_column` and `scope_column` with the names of the application's key, text and scope fields. SQLite uses a path in the named environment variable. PostgreSQL uses a connection URL. The observer opens SQLite read-only, runs PostgreSQL reads in read-only transactions and reads Redis without mutating keys. Use a database account with read permissions for these observations. Both SQL readers require a physical base table on each inspection and scan. A filtered view can hide a row that a soft delete left behind. The PostgreSQL reader also declines replicas, row-level security, and partitioned or inherited layouts. Scope identifiers match their exact text representation, so `001` and `1` are distinct.
 
 ## Use existing Python test hooks
 
@@ -35,6 +35,17 @@ Each stack starter also writes `test_erasure.py`. Its `open_fixture()` provides 
 | `DELETE` to `erase_route` with the erasure token and JSON fields `subject_ref` and `conversation` | HTTP 204 after the disposable app has applied the request. Set `subject_ref_env` to the synthetic subject's preseeded 64-character lowercase HMAC reference. |
 
 Declare the expected action for each known key as `delete`, `preserve` or `rewrite`. The scanner also looks for the target marker within the store scope. Each scan needs a positive baseline. The case checks actual answer text against the synthetic marker and the whole replies that a human classified as containing or excluding each fact. Include paraphrases you expect to encounter. A reply outside those judgments can leave the verdict **NOT TESTED**. The receipt records hashes of questions and answer observations.
+
+For each known key, a direct read looks for the marker and the fact’s reviewed positive replies anywhere in an individual text field or field name. A missing key establishes absence. An existing copy establishes absence only when its complete value matches a reviewed negative. The negative replies in `answers.absent` cover exact string values. Use `stored.absent` for a reviewed JSON object, array or differently worded summary. If a rewrite adds unreviewed text, the direct read stays uncertain even when the endpoint returns a clean answer. Unlisted keys are discovered by the synthetic marker.
+
+This example under `facts.target` gives the alternate depot name and the complete support record allowed after erasure.
+
+```yaml
+stored:
+  present: ["Dock 17"]
+  absent:
+    - {summary: "Dispatch is still on Thursday."}
+```
 
 ```sh
 setrya doctor --case setrya-case/case.yml

@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from collections.abc import Mapping
+from contextlib import contextmanager
 
 from setrya.drill import InputError
 from .adapters import _keys, _pg_connection, _sql_name
@@ -24,20 +25,35 @@ class SQLiteCanaryScanner:
         names = table, key, content, scope_column
         if any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", v) for v in names):
             raise InputError("expected explicit SQLite table and column names")
-        self.db = db
+        self.db, self.table = db, table
         # Use a qualified table name on every column so SQLite cannot treat a
         # misspelled double-quoted column as a literal string and return no hits.
         self.query = f"""
             SELECT CASE WHEN typeof(t."{content}") = 'text' THEN t."{key}" END AS copy_key
-            FROM "{table}" t WHERE t."{scope_column}" COLLATE BINARY=?
+            FROM main."{table}" t WHERE CAST(t."{scope_column}" AS TEXT) COLLATE BINARY=?
               AND (typeof(t."{content}") NOT IN ('text', 'null') OR instr(t."{content}",?)>0) LIMIT 4097
         """
 
-    def find(self, *, scope: str, marker: str) -> set[str]:
-        validate_probe(scope, marker)
+    @contextmanager
+    def snapshot(self):
         if self.db.in_transaction:
             raise InputError("commit application writes before scanning")
-        rows = self.db.execute(self.query, (scope, marker)).fetchall()
+        self.db.execute("BEGIN")
+        try:
+            cursor = self.db.cursor()
+            cursor.row_factory = None
+            relation = cursor.execute("SELECT type FROM pragma_table_list WHERE schema='main' AND name=?",
+                                      (self.table,)).fetchone()
+            if relation != ("table",):
+                raise InputError("direct SQLite observation requires a base table")
+            yield self.db
+        finally:
+            self.db.execute("ROLLBACK")
+
+    def find(self, *, scope: str, marker: str) -> set[str]:
+        validate_probe(scope, marker)
+        with self.snapshot() as conn:
+            rows = conn.execute(self.query, (scope, marker)).fetchall()
         if any((row["copy_key"] if isinstance(row, Mapping) else row[0]) is None for row in rows):
             raise InputError("expected a text canary column and non-null copy keys")
         keys = _keys(rows)
@@ -52,11 +68,30 @@ class PostgresCanaryScanner:
     def __init__(self, connection, *, table: str, key: str, content: str, scope_column: str,
                  jsonb: bool = False):
         self.connection = connection
+        self.table = _sql_name(table)
         self.jsonb = jsonb
         column = f"t.{_sql_name(content)}" + ("::jsonb::text" if jsonb else "")
         self.query = (f"SELECT t.{_sql_name(key)}::text AS copy_key FROM {_sql_name(table)} AS t "
                       f"WHERE t.{_sql_name(scope_column)}::text COLLATE \"C\" = %s "
                       f"AND strpos({column}, %s::text) > 0 LIMIT 4097")
+
+    @contextmanager
+    def snapshot(self):
+        with _pg_connection(self.connection) as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            # Pin the relation until the existence/content read completes. A
+            # view of active records or a lagging replica can hide live data.
+            conn.execute(f"SELECT 1 FROM ONLY {self.table} LIMIT 0")
+            cursor = conn.execute("""
+                SELECT NOT pg_catalog.pg_is_in_recovery() AND c.relkind = 'r'
+                       AND NOT c.relrowsecurity AND NOT c.relispartition
+                       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits WHERE inhparent = c.oid OR inhrelid = c.oid) AS visible
+                FROM pg_catalog.pg_class c WHERE c.oid = pg_catalog.to_regclass(%s)
+            """, (self.table,))
+            row = cursor.fetchone()
+            if row is None or (row["visible"] if isinstance(row, Mapping) else row[0]) is not True:
+                raise InputError("direct observation requires an unfiltered PostgreSQL primary base table")
+            yield conn
 
     def find(self, *, scope: str, marker: str) -> set[str]:
         validate_probe(scope, marker)
@@ -64,10 +99,11 @@ class PostgresCanaryScanner:
         # do not acquire an escape sequence in PostgreSQL's text rendering.
         if self.jsonb and not re.fullmatch(r"[A-Za-z0-9_.:@/+ -]+", marker):
             raise InputError("choose a plain ASCII synthetic marker for a JSONB scan")
-        with _pg_connection(self.connection) as conn:
-            keys = _keys(conn.execute(self.query, (scope, marker)))
-        if len(keys) > LIMIT:
-            raise InputError("canary scan exceeds the scoped key limit")
+        with self.snapshot() as conn:
+            rows = conn.execute(self.query, (scope, marker)).fetchall()
+            keys = _keys(rows)
+        if len(rows) > LIMIT or len(rows) != len(keys):
+            raise InputError("canary scan needs bounded and distinct scoped keys")
         return keys
 
 

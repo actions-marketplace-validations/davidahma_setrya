@@ -11,7 +11,7 @@ from typing import Callable
 from setrya.drill import InputError
 from setrya.offboarding.inputs import unique_fields
 from setrya.integrations.agent_harnesses import ClaudeTranscriptCanaryScanner, OpenAISessionCanaryScanner
-from .adapters import _pg_connection, _sql_name
+from .adapters import _sql_name
 from .canary import PostgresCanaryScanner, RedisCanaryScanner, SQLiteCanaryScanner, contains_marker
 from .v3 import Stored
 
@@ -23,6 +23,20 @@ STORE_OPTIONS = {
     "sqlite": SQL_COLUMNS, "postgres": SQL_COLUMNS, "redis-cache": {"prefix"},
     "langgraph-postgres": set(), "openai-agents": set(), "claude-agent": set(),
 }
+
+def content_bytes(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+
+
+@dataclass(frozen=True)
+class StoredFact:
+    present: tuple[str, ...]
+    absent_digests: frozenset[str] = frozenset()
+
+    def evaluate(self, value, digest):
+        if any(contains_marker(value, phrase) for phrase in self.present):
+            return True
+        return False if digest in self.absent_digests else None
 
 
 @dataclass
@@ -41,11 +55,15 @@ class Observer:
         # A missing or unreadable payload is never an observation of absence.
         if value is None:
             raise InputError("store row has no observable content")
-        payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        payload = content_bytes(value)
         if len(payload) > MAX_CONTENT:
             raise InputError("fixture copy exceeds the observation budget")
-        return Stored(key, True, contains_marker(value, target), contains_marker(value, control),
-                      sha256(payload).hexdigest())
+        digest = sha256(payload).hexdigest()
+        # A lone marker can establish presence. Only a reviewed whole payload can
+        # establish absence in an existing, potentially shared copy.
+        facts = (StoredFact((fact,)) if isinstance(fact, str) else fact for fact in (target, control))
+        target_present, control_present = (fact.evaluate(value, digest) for fact in facts)
+        return Stored(key, True, target_present, control_present, digest)
 
 
 def single(rows):
@@ -87,22 +105,27 @@ def open_observer(stack, config, location):
     if kind in ("openai-agents", "sqlite"):
         path = Path(location).resolve(strict=True)
         db = stack.enter_context(closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5)))
+        db.execute("PRAGMA trusted_schema=OFF")
         db.execute("PRAGMA query_only=ON")
         db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_CONTENT + 8192)
         if kind == "openai-agents":
             scanner = OpenAISessionCanaryScanner(db)
             def load(key):
-                value = single(db.execute("SELECT message_data FROM agent_messages WHERE session_id COLLATE BINARY=? "
-                                          "AND CAST(id AS TEXT)=? LIMIT 2", (scope, key)).fetchall())
+                with scanner.snapshot() as conn:
+                    value = single(conn.execute("SELECT message_data FROM main.agent_messages "
+                                                "WHERE CAST(session_id AS TEXT) COLLATE BINARY=? "
+                                                "AND CAST(id AS TEXT)=? LIMIT 2", (scope, key)).fetchall())
                 return json.loads(value, object_pairs_hook=unique_fields) if value is not MISSING else MISSING
         else:
             table, key_col, content, scope_col = columns(config)
             scanner = SQLiteCanaryScanner(db, table=config["table"], key=config["key_column"],
                                           content=config["content_column"], scope_column=config["scope_column"])
             def load(key):
-                return single(db.execute(f"SELECT t.{content} FROM {table} t WHERE t.{scope_col} COLLATE BINARY=? "
-                                         f"AND CAST(t.{key_col} AS TEXT) COLLATE BINARY=? LIMIT 2",
-                                         (scope, key)).fetchall())
+                with scanner.snapshot() as conn:
+                    return single(conn.execute(f"SELECT t.{content} FROM main.{table} t "
+                                               f"WHERE CAST(t.{scope_col} AS TEXT) COLLATE BINARY=? "
+                                               f"AND CAST(t.{key_col} AS TEXT) COLLATE BINARY=? LIMIT 2",
+                                               (scope, key)).fetchall())
         return Observer(scope, scanner, load)
 
     import psycopg
@@ -119,7 +142,7 @@ def open_observer(stack, config, location):
                                     content=values["content_column"], scope_column=values["scope_column"],
                                     jsonb=kind == "langgraph-postgres")
     def load(key):
-        with _pg_connection(db) as conn:
+        with scanner.snapshot() as conn:
             # A NULL here marks either genuine NULL or oversize. Both are gaps.
             rows = conn.execute(f"SELECT CASE WHEN octet_length(t.{content}::text) <= %s THEN t.{content} END "
                                 f"FROM {table} t WHERE t.{scope_col}::text COLLATE \"C\"=%s "

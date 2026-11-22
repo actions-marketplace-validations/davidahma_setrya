@@ -1,6 +1,7 @@
 """Run a trusted YAML case against synthetic data in a disposable application."""
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from hashlib import sha256
 from ipaddress import ip_address
 import json
 import os
@@ -10,7 +11,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 from setrya.drill import InputError
 from setrya.offboarding.inputs import read_regular_bytes, unique_fields
-from .case_stores import STORE_OPTIONS, open_observer
+from .case_stores import STORE_OPTIONS, StoredFact, content_bytes, open_observer
 from .journal import identifier
 from .judges import AnswerJudges, Marker, ReviewedAnswers, TextAnswer
 from .model import route_id
@@ -93,6 +94,7 @@ class HttpCase:
     case: SharedCase
     stores: dict
     markers: tuple
+    store_facts: tuple
     settings: dict
     bindings: list
 
@@ -129,7 +131,7 @@ class StoreApplication:
         self.spec, self.observers = spec, observers
 
     def inspect(self, subject, store, key):
-        return self.observers[store].inspect(key, *self.spec.markers)
+        return self.observers[store].inspect(key, *self.spec.store_facts)
 
     def scan(self, subject, store):
         return self.observers[store].scan(self.spec.markers[0])
@@ -171,6 +173,20 @@ class HttpApplication(StoreApplication):
                 raise InputError("expected 204 after the disposable app applied erasure")
 
 
+def stored_fact(marker, reviewed, settings):
+    fields(settings, (), ("present", "absent"))
+    phrases = strings(settings.get("present", []), "stored positive phrases", minimum=0)
+    present = tuple(dict.fromkeys((marker, *reviewed.present, *phrases)))
+    absent = settings.get("absent", [])
+    if not isinstance(absent, list) or len(absent) > 32:
+        raise InputError("supply at most 32 reviewed whole-payload absences per fact")
+    try:
+        digests = frozenset(sha256(content_bytes(value)).hexdigest() for value in (*reviewed.absent, *absent))
+    except (TypeError, ValueError, UnicodeError):
+        raise InputError("each reviewed stored absence must be a complete JSON-compatible value") from None
+    return StoredFact(present, digests)
+
+
 def load_case(path):
     settings = yaml_document(path)
     fields(settings, ("format", "conversation", "subject_ref_env", "origin_env", "read_route", "erase_route",
@@ -187,18 +203,20 @@ def load_case(path):
     settings["erase_route"] = path_route(settings["erase_route"])
     facts = settings["facts"]
     fields(facts, ("target", "control"))
-    questions, markers, judges_by_role = {}, {}, {}
+    questions, markers, judges_by_role, store_facts = {}, {}, {}, {}
     for role, fact in facts.items():
-        fields(fact, ("marker", "questions", "answers"))
+        fields(fact, ("marker", "questions", "answers"), ("stored",))
         marker = fact["marker"]
         if not isinstance(marker, str) or not re.fullmatch(r"[A-Za-z0-9_.:@/+ -]{8,128}", marker):
             raise InputError("use unique synthetic ASCII markers of 8–128 characters")
         markers[role] = marker
         questions[role] = strings(fact["questions"], "questions")
         fields(fact["answers"], ("present", "absent"))
-        judges_by_role[role] = (Marker(marker), ReviewedAnswers(
+        reviewed = ReviewedAnswers(
             present=strings(fact["answers"]["present"], "reviewed positive answers"),
-            absent=strings(fact["answers"]["absent"], "reviewed negative answers")))
+            absent=strings(fact["answers"]["absent"], "reviewed negative answers"))
+        judges_by_role[role] = (Marker(marker), reviewed)
+        store_facts[role] = stored_fact(marker, reviewed, fact.get("stored", {}))
     if markers["control"] == markers["target"]:
         raise InputError("use distinct synthetic target and control markers")
     judges = AnswerJudges(**judges_by_role)
@@ -221,4 +239,5 @@ def load_case(path):
                       samples=settings.get("samples", 3), target_variants=questions["target"][1:],
                       control_variants=questions["control"][1:])
     case.spec()
-    return HttpCase(case, stores, (markers["target"], markers["control"]), settings, bindings)
+    return HttpCase(case, stores, (markers["target"], markers["control"]),
+                    (store_facts["target"], store_facts["control"]), settings, bindings)

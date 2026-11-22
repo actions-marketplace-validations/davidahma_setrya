@@ -1,5 +1,5 @@
 """Exercise the public YAML contract using real authenticated requests and storage."""
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.util import find_spec
 from io import StringIO
@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 import sqlite3
 from tempfile import TemporaryDirectory
 from threading import Thread
@@ -129,6 +128,46 @@ class HttpCaseTests(unittest.TestCase):
         self.on_erase, self.leak = erase, True
         self.verify(path, 1)
 
+    def test_filtered_sqlite_view_cannot_certify_soft_deletion(self):
+        path = self.case_file("openai-agents")
+        config = self.yaml.safe_load(path.read_text())
+        store = config["stores"]["memory"]
+        store.update(kind="sqlite", table="active_memos", key_column="id", scope_column="scope", content_column="body")
+        path.write_text(self.yaml.safe_dump(config))
+        db = self.root / "app.sqlite"
+        os.environ[store["connection_env"]] = str(db)
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE notes (id text, scope text, body text, deleted integer)")
+            conn.execute("INSERT INTO notes VALUES ('1','ticket-204',?,0)", (self.target,))
+            conn.execute("CREATE VIEW active_memos AS SELECT * FROM notes WHERE deleted=0")
+        self.cli(2, "run", "--case", path, "--output", self.root / "receipt")
+        self.cli(2, "replay", self.root / "receipt")
+        self.assertEqual(self.erase_calls, 0)
+
+    def test_sqlite_scope_ignores_numeric_affinity_and_views_swapped_after_baseline(self):
+        from setrya.drill import InputError
+        from setrya.erasure.case_stores import open_observer
+        db = self.root / "app.sqlite"
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE notes (id text, scope integer, body text)")
+            conn.execute("INSERT INTO notes VALUES ('note', 1, ?)", (self.target,))
+        config = dict(kind="sqlite", scope="001", table="notes", key_column="id", content_column="body", scope_column="scope")
+        with ExitStack() as stack:
+            observer = open_observer(stack, config, str(db))
+            self.assertFalse(observer.inspect("note", self.target, self.control).exists)
+            self.assertEqual(observer.scan(self.target), set())
+            config["scope"] = "1"
+            actual = open_observer(stack, config, str(db))
+            self.assertTrue(actual.inspect("note", self.target, self.control).exists)
+            self.assertEqual(actual.scan(self.target), {"note"})
+            with sqlite3.connect(db) as conn:
+                conn.execute("ALTER TABLE notes RENAME TO real_notes")
+                conn.execute("CREATE VIEW notes AS SELECT * FROM real_notes WHERE 0")
+            with self.assertRaises(InputError):
+                actual.inspect("note", self.target, self.control)
+            with self.assertRaises(InputError):
+                actual.scan(self.target)
+
     def test_openai_session_history(self):
         path = self.case_file("openai-agents")
         db = self.root / "agent.sqlite"
@@ -216,6 +255,38 @@ class HttpCaseTests(unittest.TestCase):
                 self.verify(path)
             finally:
                 conn.execute(SQL("DROP TABLE {}").format(table))
+
+    @unittest.skipUnless(os.environ.get("SETRYA_PGVECTOR_DSN"), "requires isolated Postgres")
+    def test_postgres_filters_and_changed_visibility_fail_closed(self):
+        import psycopg
+        from psycopg.sql import Identifier, SQL
+        from setrya.drill import InputError
+        from setrya.erasure.case_stores import open_observer
+
+        dsn = os.environ["SETRYA_PGVECTOR_DSN"]
+        name = "fixture_" + uuid4().hex
+        table = Identifier(name)
+        view = Identifier(name + "_visible")
+        config = dict(kind="postgres", scope="ticket-204", table=name, key_column="id",
+                      content_column="body", scope_column="ticket")
+        with psycopg.connect(dsn, autocommit=True) as db:
+            db.execute(SQL("CREATE TABLE {} (id text, ticket text, body text)").format(table))
+            try:
+                db.execute(SQL("INSERT INTO {} VALUES ('note','ticket-204',%s)").format(table), (self.target,))
+                db.execute(SQL("CREATE VIEW {} AS SELECT * FROM {} WHERE FALSE").format(view, table))
+                with ExitStack() as stack:
+                    direct = open_observer(stack, config, dsn)
+                    filtered = open_observer(stack, dict(config, table=name + "_visible"), dsn)
+                    self.assertTrue(direct.inspect("note", self.target, self.control).exists)
+                    with self.assertRaises(InputError):
+                        filtered.scan(self.target)
+                    db.execute(SQL("ALTER TABLE {} ENABLE ROW LEVEL SECURITY").format(table))
+                    with self.assertRaises(InputError):
+                        direct.inspect("note", self.target, self.control)
+                    with self.assertRaises(InputError):
+                        direct.scan(self.target)
+            finally:
+                db.execute(SQL("DROP TABLE {} CASCADE").format(table))
 
     @unittest.skipUnless(os.environ.get("SETRYA_PGVECTOR_DSN"), "requires isolated Postgres")
     def test_native_langgraph_postgres_store(self):

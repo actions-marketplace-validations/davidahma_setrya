@@ -167,7 +167,7 @@ def key_reader(spec):
         eligible = db.execute("""
             SELECT NOT pg_is_in_recovery() AND NOT c.relrowsecurity AND NOT c.relispartition
                    AND c.relkind='r' AND c.relpersistence='p'
-                   AND NOT EXISTS (SELECT 1 FROM pg_inherits WHERE inhparent=c.oid)
+                   AND NOT EXISTS (SELECT 1 FROM pg_inherits WHERE inhparent=c.oid OR inhrelid=c.oid)
                    AND NOT (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication OR r.rolbypassrls)
                    AND NOT pg_has_role(current_user, c.relowner, 'MEMBER')
                    AND NOT has_table_privilege(c.oid, 'INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER')

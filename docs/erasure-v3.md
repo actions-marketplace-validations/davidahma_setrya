@@ -82,6 +82,8 @@ The `answer_sampling` section records the requested samples per question, judge 
 
 Supply up to eight unique questions per fact and one to 32 samples. Setrya bounds reads and judge evaluations per stage before calling the fixture. New person evidence uses `setrya.erasure.evidence.v3.sampled`. Historical single-read evidence replays with its issuing rules. Use a current reader for new sampled receipts.
 
+Choose the sample count for the failure you care about. If a route leaks on one in five independent requests, three reads have roughly a 49% chance of catching it at that stage. Fourteen reads raise that chance to about 96%. Cached responses or correlated generations can make repeated reads less informative. A PASS describes the answers actually observed.
+
 The default `capture="digest"` stores the answer and match digests, the rule identity and a bounded explanation. For a model judge the explanation in this mode is withheld and hashed. With `capture="excerpt"`, the evidence includes the reason and the first 256 matched characters. Use synthetic fixtures for shareable excerpts. Low-entropy facts can also be guessed from a digest.
 
 Setrya checks the maximum size of the planned answer evidence before taking a baseline or requesting erasure. If a large sample with excerpts exceeds the replay budget, use digest capture to keep the same reads and verdict rules.
