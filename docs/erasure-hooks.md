@@ -22,6 +22,47 @@ Create a persistent secret with at least 32 random bytes. Keep it with the appli
 
 In a Celery bound task, restore the subject with `Subject.from_metadata(self.request.headers)`. Bind it with `with subject.activate():` to make `Subject.current()` available in nested functions and async tasks. Accept these fields only from trusted application code. An inbound client header does not establish identity or authorization.
 
+## Identify the turn that handled a copy
+
+Keep the data subject and the initiating actor separate. `Turn` records the application-issued turn ID, initiator and agent, and can also identify the principal the agent represented and the parent turn. Use opaque IDs assigned by your application.
+
+```python
+from contextlib import nullcontext
+from setrya.erasure import Subject, Turn
+
+turn = Turn("turn-17", "operator-3", "summarizer", on_behalf_of="team-7")
+with subject.activate(), turn.activate():
+    summarize.apply_async(args=[opaque_chart_key], headers=subject.headers())
+
+# In the receiving Celery task, after authenticating the sender.
+subject = Subject.from_metadata(self.request.headers)
+received = Turn.from_metadata(self.request.headers)
+with subject.activate(), (received.activate() if received else nullcontext()):
+    summarize_chart(opaque_chart_key)
+```
+
+When a turn is active, `subject.langgraph_config()` includes the same fields in graph metadata and `subject.otel_context()` includes them in baggage. Restore them explicitly with `Turn.from_metadata(config["metadata"])` or `Turn.from_baggage(extracted_context)`. Use intentional trust boundaries for these labels. Start a fresh turn with `parent=turn.id` when a separate agent invocation should have its own identity. Journal observations retain turn metadata and older rows can still be read. The read set belongs to one local activation.
+
+## Infer lineage from the versions a turn reads
+
+Create `CopyHooks(journal, subject, infer_lineage=True)` to infer dependencies within a turn. Tagged LangChain retrieval supplies the exact physical key and chunk revision. For plain storage operations use the existing physical revision from the application.
+
+```python
+from setrya.erasure.hooks import CopyHooks
+from setrya.erasure.lineage import VersionRef
+
+hooks = CopyHooks(journal, subject, infer_lineage=True)
+with turn.activate():
+    note, note_revision = load_note("chart-17")
+    hooks.record_copy(VersionRef("notes", "chart-17", note_revision), action="retrieved")
+    new_revision = write_handoff("handoff-17", summarize(note))
+    hooks.record_copy(VersionRef("memory", "handoff-17", new_revision), action="derived")
+```
+
+A complete write with an exact revision records its dependencies on the versions already observed in that turn. Pass `copy_revision=` to `put_memory` or `invoke_graph` when the application can identify its saved revision. A new cache fill uses its recorded answer ID. Native provider hooks accept `input_versions=` to add exact inputs already known to the caller. These edges describe application observations and the references the hook receives. Provider retention remains configuration evidence.
+
+Use `hooks.lineage` as the application's `lineage(subject)` method and set `require_lineage=True` on the drill. A required rewrite needs a dependency path from an observed source revision to the same saved revision found in the baseline. Start separate turns for unrelated operations and instrument inputs before publishing a derived artifact. To scope several graphs in one journal, pass `lineage=VersionLineage(journal, namespace)`. An observed original can acquire another observed owner. An existing derived version keeps its inputs and requires a known path for the observed subject. When physical keys overlap across tenants, give each tenant a different graph namespace. For shared artifacts with explicit ownership or a graph spanning multiple processes, register the version edges and subject owners at their authoritative writes.
+
 ## Observe the writes and reads
 
 ```python
@@ -89,7 +130,7 @@ When LangChain owns the SDK call, pass `hooks.langchain_callback(store="bedrock"
 
 `journal.history(subject)` returns each event, including attempted writes and returned calls. `journal.copies(subject)` returns the latest observation at each store and key. Direct adapter scans can also discover locations that had no journal entry. A read-only provider, a missing hook, a payload copied to an untagged row, and an unlisted system each limit what a receipt can establish. Declare the actual storage and observation boundaries in the inventory. For application-owned writes, call `journal.record(subject, store="charts", key=opaque_key, source=source_key, action="stored")` at that boundary.
 
-To propagate the reference and label over an approved tracing link, inject `subject.otel_context()` with the OpenTelemetry W3C baggage propagator. Restore it with `Subject.from_baggage(extracted_context)`. Keep baggage inside the intended trust boundary. By default the journal writes only to the local SQLite file. `CopyJournal(path, export_trace_events=True)` also emits a `setrya.copy.v1` event on the current span. It contains the two subject fields, store, copy key, source, action, observed time and allowlisted details. Enable it only for a collector approved for this classification. A dropped or sampled span leaves the durable local journal intact.
+To propagate the reference and label over an approved tracing link, inject `subject.otel_context()` with the OpenTelemetry W3C baggage propagator. Restore it with `Subject.from_baggage(extracted_context)`. Keep baggage inside the intended trust boundary. By default the journal writes only to the local SQLite file. `CopyJournal(path, export_trace_events=True)` also emits a `setrya.copy.v1` event on the current span. It contains the subject and active turn fields, store, copy key, source, action, observed time and allowlisted details. Enable it only for a collector approved for this classification. A dropped or sampled span leaves the durable local journal intact.
 
 ## Collect journals across worker processes
 
@@ -116,3 +157,15 @@ coverage = collector.coverage(subject, run_id=run_id, expected_producers=("api",
 Pass `journal=collector`, `run_id=run_id`, and `expected_producers=("api", "summarizer")` to `run_shared` or `arun_shared`. For a live drill, use the optional `application.collect_journals(subject)` hook to flush, seal, and import packets **after the final endpoint and storage reads**. The checker can report a missing producer even when every direct read looked clear. Redelivering an identical packet is safe. Conflicting event identities or differing final packets from the same producer raise an error. The receiver trusts the authorized exporter to have instrumented its writes.
 
 A `WorkerJournal` constructed with `export_trace_events=True` includes the durable event identity in its OpenTelemetry `setrya.copy.v1` events. Pass a trusted event’s attributes to `collector.ingest_trace(attributes, producer="summarizer")` to record an observed copy. Only a sealed producer packet completes its coverage slot. A trace from an undeclared producer opens a coverage gap even if it records a previously observed key. Historical trace events lacking a run, producer or sequence cannot complete a distributed drill.
+
+## Verify a saved journal
+
+```sh
+setrya journal verify copies.sqlite
+setrya journal verify copies.sqlite --expected-head "$PREVIOUSLY_SAVED_HEAD" --json
+setrya journal verify collected.sqlite
+```
+
+A new journal records a SHA-256 link for each copy event and updates the saved head in the same SQLite transaction. Verification reports `verified`, `partial` after upgrading a journal that contains older unchained rows, or `unchained` when there are no hashed rows. A collector verifies the imported subject packet for each sealed producer and reports unsealed trace observations separately. Replayable v3.1 drills record the chain heads observed at issuance.
+
+Save a head separately or sign the receipt if another party needs to verify it. Someone able to rewrite both the journal and its head can recompute a matching chain. The hashes cover copy events. They carry no assertion about events the application never recorded.

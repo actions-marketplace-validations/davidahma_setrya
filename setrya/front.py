@@ -20,7 +20,8 @@ def help_parser():
         ("init", "create a working delete-only starter for your application"),
         ("run", "test erasure in a disposable application and save a receipt"),
         ("replay", "recompute the verdict from saved evidence"),
-        ("demo", "run the two-user workspace example or the analyst investigation"),
+        ("demo", "run the workspace, analyst or memory-files example"),
+        ("journal", "verify local journal integrity"),
         ("receipt", "summarize a replayed receipt for an engineer, reviewer or customer"),
         ("recheck", "recheck due follow-up items using read-only evidence"),
         ("route-coverage", "match changed routes and jobs to candidate evidence"),
@@ -40,7 +41,7 @@ def _start(command, args):
     parser.add_argument("--scope", choices=("person", "tenant"), default="person", help="deletion scope (default: person)")
     parser.add_argument("--output", type=Path, help="fresh output directory")
     if is_demo:
-        parser.add_argument("example", choices=("workspace", "analyst"), nargs="?", help="person example (default: workspace)")
+        parser.add_argument("example", choices=("workspace", "analyst", "memory-files"), nargs="?", help="person example (default: workspace)")
         parser.add_argument("--mode", choices=("deletion", "late-write"), help="person drill mode (default: late-write)")
     else:
         from .erasure.case_starters import STACKS
@@ -59,6 +60,9 @@ def _start(command, args):
         return main([command, *args], prog="setrya")
     if is_demo:
         mode = opts.mode or "late-write"
+        if opts.example == "memory-files":
+            from .examples.memory_files import demo
+            return demo(opts.output or Path("memory-files"), mode)
         if opts.example == "analyst":
             from .erasure.investigation import run_demo
             return run_demo(opts.output or Path("investigation"), mode=mode)
@@ -84,6 +88,9 @@ def dispatch(argv):
     options = {arg.partition("=")[0] for arg in args if arg.startswith("--")}
     first = args[0] if args else None
     try:
+        if cmd == "journal":
+            from .erasure.journal_cli import command
+            return command(args)
         if cmd == "route-coverage":
             from .route_coverage import main
             return main(args)

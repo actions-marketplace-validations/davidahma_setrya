@@ -35,13 +35,17 @@ def init_example(output):
     return destination
 
 
-@contextmanager
-def open_fixture(binding, *, guarded=True, connect_analyst_cache=True):
-    """Supply facts observed by the application independently of the submitted binding."""
+def _require_demo_dependencies():
     try:
         import langgraph.checkpoint.sqlite  # noqa: F401
     except ImportError:
         raise InputError("Install the LangGraph demo with python -m pip install 'setrya[erasure]'.") from None
+
+
+@contextmanager
+def open_fixture(binding, *, guarded=True, connect_analyst_cache=True):
+    """Supply facts observed by the application independently of the submitted binding."""
+    _require_demo_dependencies()
     # A fixed key on fictional identities keeps the packaged finding and fixture reproducible.
     subject, retained = (Subject.derive(bytes(range(32)), ENVIRONMENT, person, "restricted")
                          for person in ("person-one", "person-two"))
@@ -70,6 +74,7 @@ def run_demo(output):
     destination = Path(output)
     if destination.exists() or destination.is_symlink():
         raise FileExistsError(destination)
+    _require_demo_dependencies()
     destination.parent.mkdir(parents=True, exist_ok=True)
     messages = ["SEC-417 checks one source, two cached copies and the investigation reopened by two analysts."]
     with TemporaryDirectory(prefix=".setrya-demo-", dir=destination.parent) as temp:

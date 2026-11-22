@@ -8,7 +8,7 @@ Run the application fixture with a Setrya copy journal. In CI, compare the resul
 setrya coverage-drift --journal copies.sqlite --inventory inventory.toml
 ```
 
-Each journal is read in a single read-only transaction. Repeat `--journal` to include multiple producers, or point it at the combined SQLite journal after importing worker packets and trace events. Stack fixtures record the namespace of each successful inspection or scan, including a scan with zero matches. These coverage records carry no copy keys. Supply the original fixture journals to include those reads alongside imported copy packets. Existing rollback-mode SQLite journals are supported. Use `--json` for a list of observed boundaries with their owners and matching bindings.
+Each journal is read in a single read-only transaction. A broken copy chain or imported packet seal stops the coverage check. Older unchained records and trace-only events remain readable. Repeat `--journal` to include multiple producers, or point it at the combined SQLite journal after importing worker packets and trace events. Stack fixtures record the namespace of each successful inspection or scan, including a scan with zero matches. These coverage records carry no copy keys. Supply the original fixture journals to include those reads alongside imported copy packets. Existing rollback-mode SQLite journals are supported. Use `--json` for a list of observed boundaries with their owners and matching bindings.
 
 This inventory maps a trace store and one named Langfuse sink. Add one entry for each distinct trace sink or storage namespace seen in your fixture. Set the optional `sink=` argument on `langfuse_observation` when several projects share a logical store name. Its default is the journalled store name.
 

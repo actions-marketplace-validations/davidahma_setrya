@@ -116,6 +116,41 @@ class PostgresTest(unittest.TestCase):
                 scanner.find(scope="other", marker=MARKER)
 
 
+    @unittest.skipUnless(installed("langgraph.checkpoint.postgres"), "install erasure-postgres extra")
+    def test_checkpoint_and_pending_writes_match_utf8_bytes(self):
+        from typing import TypedDict
+
+        from langgraph.checkpoint.postgres import PostgresSaver
+        from langgraph.graph import END, START, StateGraph
+
+        from setrya.erasure.adapters import LangGraphPostgresCheckpointAdapter
+
+        class State(TypedDict):
+            summary: str
+
+        marker = "Zoë-café-17"
+        raw = b"\xff" + marker.encode()
+        saver = PostgresSaver(self.db)
+        saver.setup()
+        graph = StateGraph(State)
+        graph.add_node("save", lambda state: {"summary": state["summary"]})
+        graph.add_edge(START, "save")
+        graph.add_edge("save", END)
+        graph.compile(checkpointer=saver).invoke({"summary": marker}, {"configurable": {"thread_id": "checkpoint"}})
+        cfg = {"configurable": {"thread_id": "pending-only", "checkpoint_id": "pending", "checkpoint_ns": ""}}
+        saver.put_writes(cfg, [("notes", raw)], "queued")
+        scanner = PostgresCheckpointCanaryScanner(self.db)
+        adapter = LangGraphPostgresCheckpointAdapter(saver)
+        for thread in ("checkpoint", "pending-only"):
+            with self.subTest(thread=thread):
+                self.assertEqual(scanner.find(scope=thread, marker=marker), {thread})
+                self.assertEqual(scanner.find(scope=thread, marker=marker.encode().decode("latin-1")), set())
+        self.assertEqual(adapter.read_thread("pending-only"), [["bytes", raw.decode("latin-1"), None]])
+        saver.delete_thread("pending-only")
+        self.assertEqual(scanner.find(scope="pending-only", marker=marker), set())
+        self.assertEqual(scanner.find(scope="checkpoint", marker=marker), {"checkpoint"})
+
+
 
 @unittest.skipUnless(os.getenv("SETRYA_REDIS_URL") and installed("redis"), "configure disposable Redis")
 class RedisTest(unittest.TestCase):

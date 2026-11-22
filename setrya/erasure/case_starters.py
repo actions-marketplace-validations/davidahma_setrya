@@ -36,7 +36,8 @@ facts:
     scope: {scope}
 {options}    artifacts:
 {artifacts}
-"""
+{extra_stores}"""
+
 
 
 def init_stack(path: Path, stack: str):
@@ -49,15 +50,17 @@ def init_stack(path: Path, stack: str):
     env, scope, options, artifacts = settings[stack]
     target_stored = ""
     control_stored = ""
+    extra_stores = ""
     if stack == "claude-agent":
         target_stored = ('    stored:\n      absent:\n'
                          f'        - [{{sessionId: "{scope}", message: {{content: Thursday}}}}]\n')
     elif stack == "openai-agents":
         control_stored = "    stored:\n      absent: [{role: user, content: Harbor-17}]\n"
     elif stack == "langgraph-postgres":
-        control_stored = "    stored:\n      absent: [{memo: Harbor-17}]\n"
+        from .recipes.langgraph_postgres import CONTROL_STORED, STORES
+        control_stored, extra_stores = CONTROL_STORED, STORES
     body = _TEMPLATE.format(stack=stack, env=env, scope=scope, options=options, artifacts=artifacts,
-                            target_stored=target_stored, control_stored=control_stored)
+                            target_stored=target_stored, control_stored=control_stored, extra_stores=extra_stores)
     path.mkdir(parents=True, exist_ok=False)
     target = path / "case.yml"
     target.write_text(body, encoding="utf-8")

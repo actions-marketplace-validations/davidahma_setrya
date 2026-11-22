@@ -188,7 +188,9 @@ def demo(output, mode):
             receipt = run_shared(subject, case=CASE, application=app, external_items=items, output=directory,
                                  mode=mode, cancel_hold=app.cancel_and_drain)
         print(f"{receipt['technical_verdict']}  {lane} · {receipt['review_status']}")
-        observations = json.loads((directory / "erasure-evidence.json").read_text())["final"]["answers"]
+        from setrya.core.receipt_v3 import answer_records
+        evidence = json.loads((directory / "erasure-evidence.json").read_text())
+        observations = answer_records(evidence, "final")
         for target, control in zip(observations[::2], observations[1::2]):
             if target and control and target["sample"] == 1:
                 words = {True: "returned", False: "absent", None: "unknown"}

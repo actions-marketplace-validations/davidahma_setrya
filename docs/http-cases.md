@@ -16,7 +16,7 @@ Doctor prints the file and line for unconnected hooks, missing bindings, unread 
 | --- | --- | --- |
 | `openai-agents` | Message rows in one native Agents SQLiteSession. Use its session ID as the scope and its message row IDs as keys. | `SETRYA_TEST_AGENTS_DB`, path to the SQLite file |
 | `claude-agent` | JSONL records in one project transcript. Use a canonical session UUID as both scope and key. The example expects the shared transcript to be rewritten in place. | `SETRYA_TEST_TRANSCRIPTS`, project transcript directory |
-| `langgraph-postgres` | Values in one exact LangGraph PostgresStore long-term memory namespace. Set the dot-separated namespace as the scope and the memory item IDs as keys. Checkpoints and vector tables require separate fixture coverage. | `SETRYA_TEST_POSTGRES_URL`, PostgreSQL URL. Install `setrya[case-yaml,erasure-postgres]`. |
+| `langgraph-postgres` | The generated recipe reads an exact PostgresStore namespace, the full PostgreSQL checkpoint thread and one scoped SQL or pgvector table. Existing one-store cases still work. | `SETRYA_TEST_POSTGRES_URL`, PostgreSQL URL. Install `setrya[case-yaml,erasure-postgres]`. |
 | `redis-cache` | Strings at `prefix:scope:key` in a dedicated standalone Redis primary. The scanner supports up to 4,096 keys in the fixture database. | `SETRYA_TEST_REDIS_URL`, Redis URL. Install `setrya[case-yaml,redis]`. |
 
 For ordinary SQL, use store kind `sqlite` or `postgres`. Declare `table`, `key_column`, `content_column` and `scope_column` with the names of the application's key, text and scope fields. SQLite uses a path in the named environment variable. PostgreSQL uses a connection URL. The observer opens SQLite read-only, runs PostgreSQL reads in read-only transactions and reads Redis without mutating keys. Use a database account with read permissions for these observations. Both SQL readers require a physical base table on each inspection and scan. A filtered view can hide a row that a soft delete left behind. The PostgreSQL reader also declines replicas, row-level security, and partitioned or inherited layouts. Scope identifiers match their exact text representation, so `001` and `1` are distinct.
@@ -26,6 +26,11 @@ The generated Python and YAML runners journal target-linked observations from th
 These hooks see the keys inspected by the drill. For activity outside its read window, connect your application's own writer, retriever or tool callbacks to a durable `CopyJournal` using its original source IDs. [Application hooks](harnesses.md)
 
 ## Use existing Python test hooks
+
+
+The LangGraph recipe declares `memory`, `checkpoints` and `vectors` in `case.yml`. Set `scope` on each store, use the exact thread ID as its checkpoint key, and map the vector table's text, key and partition columns. Each scanner needs a positive marker in its own scope before the drill can proceed. Seed only disposable data and configure the observer URL with read-only credentials.
+
+A `delete` checkpoint must exclude the retained fact before erasure. A checkpoint that contains both facts needs a `rewrite` action and a reviewed retained-only result. Use `facts.control.stored.absent_sha256` for approved target-only snapshots and `facts.target.stored.absent_sha256` for approved retained-only snapshots. The corresponding marker still establishes presence if it appears. [Approve a checkpoint snapshot](langgraph-integration.md#approve-a-checkpoint-snapshot)
 
 Each stack starter also writes `test_erasure.py`. Its `open_fixture()` provides the same direct `inspect` and `scan` implementations as the YAML case. Configure the store and subject bindings, then run `setrya doctor --starter setrya-case/test_erasure.py`. It names the missing `read` and `erase` methods. Bind these to your application’s authenticated test client and erasure operation inside `open_fixture()`. A native Python fixture can bind worker hooks here too. The YAML path below uses HTTP to call the application instead.
 

@@ -11,8 +11,9 @@ from typing import Callable
 from setrya.drill import InputError
 from setrya.offboarding.inputs import unique_fields
 from setrya.integrations.agent_harnesses import ClaudeTranscriptCanaryScanner, OpenAISessionCanaryScanner
-from .adapters import _sql_name
+from .adapters import LangGraphPostgresCheckpointAdapter, _sql_name
 from .canary import PostgresCanaryScanner, RedisCanaryScanner, SQLiteCanaryScanner, contains_marker
+from .langgraph_canary import PostgresCheckpointCanaryScanner, PostgresMemoryCanaryScanner
 from .v3 import Stored
 
 
@@ -21,7 +22,7 @@ MAX_CONTENT = 1 << 20
 SQL_COLUMNS = {"table", "key_column", "content_column", "scope_column"}
 STORE_OPTIONS = {
     "sqlite": SQL_COLUMNS, "postgres": SQL_COLUMNS, "redis-cache": {"prefix"},
-    "langgraph-postgres": set(), "openai-agents": set(), "claude-agent": set(),
+    "langgraph-postgres": set(), "langgraph-checkpoint": set(), "openai-agents": set(), "claude-agent": set(),
 }
 
 def content_bytes(value):
@@ -134,15 +135,29 @@ def open_observer(stack, config, location):
     db = stack.enter_context(psycopg.connect(location, connect_timeout=5, autocommit=True))
     db.execute("SET default_transaction_read_only = on")
     db.execute("SET statement_timeout = 5000")
-    values = config
-    if kind == "langgraph-postgres":
-        values = {"table": "store", "key_column": "key", "content_column": "value", "scope_column": "prefix"}
+    if kind == "langgraph-checkpoint":
+        from langgraph.checkpoint.postgres import PostgresSaver
+
+        adapter = LangGraphPostgresCheckpointAdapter(PostgresSaver(db))
+        scanner = PostgresCheckpointCanaryScanner(db)
+
+        def load_thread(key):
+            if key != scope:
+                raise InputError("the checkpoint key must match its declared thread")
+            rows = adapter.read_thread(key)
+            return sorted(rows, key=content_bytes) if rows else MISSING
+
+        return Observer(scope, scanner, load_thread)
+
+    values = ({"table": "store", "key_column": "key", "content_column": "value", "scope_column": "prefix"}
+              if kind == "langgraph-postgres" else config)
     table, key_col, content, scope_col = columns(values)
-    scanner = PostgresCanaryScanner(db, table=values["table"], key=values["key_column"],
-                                    content=values["content_column"], scope_column=values["scope_column"],
-                                    jsonb=kind == "langgraph-postgres")
+    direct = PostgresCanaryScanner(db, table=values["table"], key=values["key_column"],
+                                  content=values["content_column"], scope_column=values["scope_column"],
+                                  jsonb=kind == "langgraph-postgres")
+    scanner = PostgresMemoryCanaryScanner(db, descendants=False) if kind == "langgraph-postgres" else direct
     def load(key):
-        with scanner.snapshot() as conn:
+        with direct.snapshot() as conn:
             # A NULL here marks either genuine NULL or oversize. Both are gaps.
             rows = conn.execute(f"SELECT CASE WHEN octet_length(t.{content}::text) <= %s THEN t.{content} END "
                                 f"FROM {table} t WHERE t.{scope_col}::text COLLATE \"C\"=%s "

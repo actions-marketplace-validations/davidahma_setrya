@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
+from setrya.core.receipt_v3 import answer_records
 from setrya.drill import InputError
 from setrya.erasure.canary import SQLiteCanaryScanner
 from setrya.erasure.investigation import (
@@ -154,10 +155,10 @@ class InvestigationTests(unittest.TestCase):
                     ev = json.loads(raw)
                     self.assertEqual(derive(ev, sha256(raw).hexdigest()), receipt)
                     self.assertEqual(ev["case"]["conversation"], CONVERSATION)
-                    self.assertEqual({q["caller"] for q in ev["final"]["answers"] if q}, set(CALLERS))
-                    self.assertEqual([r["target_present"] for r in ev["final"]["answers"]],
+                    self.assertEqual({q["caller"] for q in answer_records(ev, "final") if q}, set(CALLERS))
+                    self.assertEqual([r["target_present"] for r in answer_records(ev, "final")],
                                      [not guarded, False] * 6)
-                    self.assertEqual([r["control_present"] for r in ev["final"]["answers"]], [False, True] * 6)
+                    self.assertEqual([r["control_present"] for r in answer_records(ev, "final")], [False, True] * 6)
                     self.assertEqual(len(ev["baseline"]["scans"]["snapshots"]), 1)
                     self.assertFalse(ev["final"]["scans"]["snapshots"])
                     self.assertNotIn(TARGET_FACT.encode(), raw)

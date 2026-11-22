@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.0
+
+- Trace copy events to agent turns and opt in to source-revision lineage. The SQLite journal records a chain head, and merged worker packets retain one per producer. Run `setrya journal verify` to detect changed or missing records.
+- Run `setrya demo memory-files` to see a held writer restore deleted data. The drill checks working files and Git history, including reflog-reachable commits. A separate scanner reads Turso AgentFS snapshots.
+- The LangGraph/PostgreSQL starter checks checkpoints, long-term memory and a scoped SQL store. Doctor points to the related binding and reports missing baselines.
+- Evidence v3.1 groups repeated replies per question and records lexical-only judging and journal provenance. Older evidence still replays. Judge chains accept lists and pull-request comments keep their existing thread when the Action is upgraded.
+
 ## 1.2.0
 
 - Connect an existing application with journal-aware stack starters. Doctor names missing hooks, scoped store reads and scanner baselines. Run a declarative case directly with `setrya run case.yaml`.

@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
+from setrya.core.receipt_v3 import answer_records
 from setrya.cli import main
 from setrya import POSITIONING
 
@@ -27,8 +28,8 @@ class PublicCLI(unittest.TestCase):
             self.assertEqual(main(["replay", str(out / "guarded" / "erasure-receipt.json")]), 0)
             self.assertEqual(main(["replay", str(out / "guarded"), "--case-review"]), 3)
             result = json.loads((out / "broken/erasure-evidence.json").read_bytes())
-            self.assertEqual({row["caller"] for row in result["final"]["answers"]}, {"support-lead", "account-manager"})
-            for row in result["final"]["answers"][::2]:
+            self.assertEqual({row["caller"] for row in answer_records(result, "final")}, {"support-lead", "account-manager"})
+            for row in answer_records(result, "final")[::2]:
                 self.assertEqual(row["judgments"]["target"][0]["excerpt"], "cobalt-bridge.example")
             starter = Path(tmp, "starter")
             self.assertEqual(main(["init", "--output", str(starter)]), 0)
@@ -162,7 +163,7 @@ class PublicCLI(unittest.TestCase):
             main(["--help"])
         help_text = out.getvalue()
         self.assertIn(POSITIONING, help_text)
-        self.assertIn("{init,run,replay,demo,receipt,recheck,route-coverage,coverage-drift,observe,verify}", help_text)
+        self.assertIn("{init,run,replay,demo,journal,receipt,recheck,route-coverage,coverage-drift,observe,verify}", help_text)
         self.assertIn("doctor", help_text)
         self.assertNotIn("qualify", help_text)
 
@@ -202,9 +203,24 @@ class PublicCLI(unittest.TestCase):
                     action.comment()
                 with patch.dict(os.environ, {"SETRYA_SUMMARY": '[["arbitrary text","final",1]]'}), self.assertRaises(ValueError):
                     action.comment()
+                comments[-1]["body"] = action.LEGACY_MARKER + "\nPrevious release"
+                self.assertEqual(action.comment(), 0)
+                self.assertEqual(writes[-1][:2], ("PATCH", "repos/owner/repo/issues/comments/42"))
+                self.assertTrue(writes[-1][2]["body"].startswith(action.MARKER + "\n"))
                 head = "b" * 40
                 self.assertEqual(action.comment(), 0)
-                self.assertEqual(len(writes), 2)
+                self.assertEqual(len(writes), 3)
+
+    def test_action_routes_rest_calls_to_enterprise_api(self):
+        env = {"GITHUB_API_URL": "https://git.enterprise.example/api/v3/", "GH_TOKEN": "synthetic"}
+        with patch.dict(os.environ, env), patch.object(action, "build_opener") as opener:
+            response = opener.return_value.open.return_value
+            response.__enter__.return_value = StringIO('{"id": 42}')
+            result = action.api("PATCH", "repos/owner/repo/issues/comments/42", {"body": "verdict"})
+        request = opener.return_value.open.call_args.args[0]
+        self.assertEqual(request.full_url, "https://git.enterprise.example/api/v3/repos/owner/repo/issues/comments/42")
+        self.assertEqual(request.method, "PATCH")
+        self.assertEqual(result["id"], 42)
 
     def test_scoped_caller_and_discovered_store_link_to_the_decisive_read(self):
         receipt = {"case": {"callers": ["team/alice"], "artifacts": []},
@@ -239,8 +255,21 @@ class PublicCLI(unittest.TestCase):
         from setrya.discovery import demo
         with TemporaryDirectory() as tmp, contextlib.redirect_stdout(StringIO()) as out:
             folder = Path(tmp, "discovery-test")
-            with patch.object(demo, "open_fixture", side_effect=RuntimeError("fixture failed")):
+            with patch.object(demo, "_require_demo_dependencies"), \
+                    patch.object(demo, "open_fixture", side_effect=RuntimeError("fixture failed")):
                 with self.assertRaises(RuntimeError):
                     demo.run_demo(folder)
             self.assertFalse(folder.exists())
             self.assertEqual(out.getvalue(), "")
+
+    def test_discovery_extra_preflight_creates_no_parent(self):
+        from setrya.drill import InputError
+        from setrya.discovery import demo
+
+        with TemporaryDirectory() as tmp, contextlib.redirect_stdout(StringIO()) as stdout:
+            parent = Path(tmp, "new")
+            with patch.object(demo, "_require_demo_dependencies", side_effect=InputError("missing LangGraph extra")):
+                with self.assertRaisesRegex(InputError, "missing LangGraph extra"):
+                    demo.run_demo(parent / "evidence")
+            self.assertFalse(parent.exists())
+            self.assertEqual(stdout.getvalue(), "")

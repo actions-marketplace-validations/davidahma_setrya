@@ -81,6 +81,7 @@ class SampledAnswers(unittest.TestCase):
         summary = result["answer_sampling"]
         self.assertEqual(summary["samples_per_question"], 3)
         self.assertEqual(summary["target_coverage"], "reviewed-answers")
+        self.assertIs(result["lexical_only"], True)
         self.assertEqual(summary["stages"]["baseline"]["planned"], 24)
         self.assertEqual(summary["stages"]["immediate"]["observed"], 23)
         self.assertEqual(summary["stages"]["final"]["target_positive"], 1)
@@ -93,6 +94,7 @@ class SampledAnswers(unittest.TestCase):
         result, _ = self.run_case()
         self.assertEqual(result["technical_verdict"], "NOT TESTED")
         self.assertEqual(result["answer_sampling"]["target_coverage"], "lexical-only")
+        self.assertIs(result["lexical_only"], True)
         self.assertEqual(result["answer_sampling"]["stages"]["final"]["target_uncertain"], 24)
 
     def test_unrecognized_text_abstains_even_with_a_reviewed_answer_policy(self):
@@ -110,6 +112,20 @@ class SampledAnswers(unittest.TestCase):
         self.assertEqual(result["technical_verdict"], "FAIL")
         self.assertEqual(result["answer_sampling"]["target_coverage"], "paraphrase-aware")
 
+    def test_list_judge_chain_reports_paraphrased_leak_from_model(self):
+        def semantic(text):
+            return ModelDecision(True, "The saved host is present.", text) if text in (HOST, SPOKEN) else ModelDecision(
+                False, "The saved host is absent.")
+
+        self.case = replace(self.case, judges=AnswerJudges(
+            [Marker(HOST), ModelJudge("rubric/v1", semantic, paraphrase_aware=True)], [Marker(DATE)]))
+        self.app.leak = lambda c, q, n: SPOKEN if q == QUESTIONS[0] and n == 2 else None
+        result, _ = self.run_case()
+        self.assertEqual(result["technical_verdict"], "FAIL")
+        self.assertEqual(result["answer_sampling"]["target_coverage"], "paraphrase-aware")
+        self.assertEqual(result["answer_sampling"]["control_coverage"], "lexical-only")
+        self.assertIs(result["lexical_only"], False)
+
     def test_uncertain_model_vote_blocks_absence_after_lexical_negative(self):
         def uncertain(text):
             return ModelDecision(None, "The meaning is ambiguous.")
@@ -123,15 +139,17 @@ class SampledAnswers(unittest.TestCase):
         self.assertEqual(result["technical_verdict"], "PASS")
         sampled_format = e["format"]
         e["format"] = "setrya.erasure.evidence.v3"
+        chain = e.pop("journal_chain")
         with self.assertRaisesRegex(InvalidReport, "evidence format"):
             derive(e, "0" * 64)
         e["format"] = sampled_format
+        e["journal_chain"] = chain
         rows = e["final"]["answers"]
-        rows[4]["sample"] = 1
+        rows[1][1]["sample"] = 1
         with self.assertRaisesRegex(InvalidReport, "ordinal"):
             derive(e, "0" * 64)
-        rows[4]["sample"] = 2
-        rows[4]["judgments"]["target"].pop()
+        rows[1][1]["sample"] = 2
+        rows[1][1]["judgments"]["target"].pop()
         with self.assertRaisesRegex(InvalidReport, "slots"):
             derive(e, "0" * 64)
 

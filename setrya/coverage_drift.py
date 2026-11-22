@@ -6,9 +6,27 @@ import sqlite3
 from pathlib import Path
 
 from setrya.casework.stores import _sqlite_table, sqlite_reader
+from setrya.core.journal import _FIELDS
+from setrya.core.journal_chain import verify_snapshot
 from setrya.erasure.inventory import load_coverage
 from setrya.erasure.journal import identifier, validate_details
+from setrya.erasure.journal_merge import verify_seals
 from setrya.offboarding.inputs import require, unique_fields
+
+
+def _verify_journal(db, tables):
+    if "copy_events" in tables:
+        verify_snapshot(db, _FIELDS)
+    if "collected_events" in tables:
+        for table in ("journal_binding", "collected_seals"):
+            _sqlite_table(db, table)
+        binding = db.execute("SELECT role,run_id,producer FROM main.journal_binding LIMIT 2").fetchall()
+        require(len(binding) == 1 and binding[0][0] == "collector" and binding[0][2] is None,
+                "Invalid collector journal binding.")
+        refs = db.execute("SELECT DISTINCT ref FROM main.collected_seals LIMIT 257").fetchall()
+        require(len(refs) <= 256, "Collector exceeds the subject verification budget.")
+        for (ref,) in refs:
+            verify_seals(db, binding[0][1], ref)
 
 
 def observed(journals):
@@ -23,11 +41,13 @@ def observed(journals):
                 "collected_events": "SELECT NULL, ref, record FROM main.collected_events",
                 "lineage_versions": "SELECT store, NULL, NULL FROM main.lineage_versions",
             }
-            tables = db.execute("SELECT name FROM main.sqlite_schema WHERE name IN "
-                                "('copy_events','observed_boundaries','collected_events','lineage_versions')").fetchall()
+            tables = {name for name, in db.execute("SELECT name FROM main.sqlite_schema WHERE name IN "
+                                                  "('copy_events','observed_boundaries','collected_events','lineage_versions')")}
             require(tables, "Expected a concrete journal table.")
-            for (table,) in tables:
+            for table in tables:
                 _sqlite_table(db, table)
+            _verify_journal(db, tables)
+            for table in sorted(tables):
                 for store, subject, raw in db.execute(readers[table]):
                     total += 1
                     require(total <= 100_000, "Drift input exceeds the observation budget.")

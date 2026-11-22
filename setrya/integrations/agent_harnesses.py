@@ -39,12 +39,12 @@ class OpenAISessionCanaryScanner(SQLiteCanaryScanner):
 
 
 def openai_response(hooks: CopyHooks, client, request, *, store: str, key: str, source: str,
-                    invocation_logging=None, prompt_caching=None, sources=()):
+                    invocation_logging=None, prompt_caching=None, sources=(), input_versions=()):
     """Send a synchronous Responses SDK request. Provider-side retention stays external."""
     model = identifier(request.get("model"), "model")
     return hooks._provider(client.responses.create, request, provider="openai", model=model, region=None,
                            store=store, key=key, source=source, invocation_logging=invocation_logging,
-                           prompt_caching=prompt_caching, sources=sources, operation="responses.create")
+                           prompt_caching=prompt_caching, sources=sources, operation="responses.create", input_versions=input_versions)
 
 
 def claude_tool_hooks(hooks: CopyHooks, *, session: str, store: str, source: str):

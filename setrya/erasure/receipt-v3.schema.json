@@ -20,6 +20,17 @@
     }
   ],
   "$defs": {
+    "journalChain": {
+      "type": "object",
+      "properties": {
+        "status": { "enum": [ "unchained", "partial", "verified" ] },
+        "first_event": { "type": "integer", "minimum": 1 },
+        "last_event": { "type": "integer", "minimum": 0 },
+        "head": { "oneOf": [ { "type": "null" }, { "$ref": "#/$defs/sha256" } ] }
+      },
+      "required": [ "status", "first_event", "last_event", "head" ],
+      "additionalProperties": false
+    },
     "id": {
       "type": "string",
       "maxLength": 1024,
@@ -675,6 +686,21 @@
             "sha256"
           ],
           "additionalProperties": false
+        },
+        "lexical_only": { "type": "boolean" },
+        "journal_chain": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/journalChain" },
+            {
+              "type": "object",
+              "maxProperties": 256,
+              "propertyNames": { "$ref": "#/$defs/id" },
+              "additionalProperties": {
+                "oneOf": [ { "type": "null" }, { "$ref": "#/$defs/journalChain" } ]
+              }
+            }
+          ]
         },
         "answer_sampling": {
           "type": "object",

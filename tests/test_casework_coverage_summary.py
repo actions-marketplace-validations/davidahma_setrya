@@ -61,6 +61,15 @@ class ReceiptViews(unittest.TestCase):
             with self.assertRaisesRegex(InvalidReport, "differs"):
                 receipt_summary(bundle)
 
+    def test_markdown_cli_alias_uses_the_same_local_renderer(self):
+        from setrya.erasure.render import receipt_summary as render
+
+        bundle = Path(__file__).parent / "fixtures" / "erasure_v3_1_0_3"
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            self.assertEqual(main(["receipt", "summary", str(bundle), "--format", "md"]), 0)
+        self.assertEqual(stdout.getvalue(), render(bundle, output_format="markdown") + "\n")
+
     def test_all_audiences_can_render_a_linked_followup_without_a_run_id(self):
         from setrya.casework.recheck import recheck
         with TemporaryDirectory() as tmp, open_fixture(shared=True) as (subject, app, items):
@@ -170,6 +179,21 @@ class Drift(unittest.TestCase):
             with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
                 self.assertEqual(main(["coverage-drift", "--journal", str(root / "view.sqlite"), "--inventory", str(inv)]), 2)
 
+    def test_deleted_copy_event_blocks_coverage_pass(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subject = Subject.derive(b"a" * 32, "tenant", "person", "private")
+            journal = CopyJournal(root / "copies.sqlite")
+            journal.record(subject, store="notes", key="known", source="request", action="stored")
+            journal.record(subject, store="unmapped", key="extra", source="request", action="stored")
+            inv = root / "inventory.toml"
+            inv.write_text("version=1\n" + system("notes", "sqlite"))
+            self.assertEqual(compare([journal.path], inv)[1], 3)
+            with closing(sqlite3.connect(journal.path)) as db, db:
+                db.execute("DELETE FROM copy_events WHERE store='unmapped'")
+            with self.assertRaisesRegex(InvalidReport, "Missing journal rows"):
+                compare([journal.path], inv)
+
     def test_remote_trace_boundary_survives_packet_collection(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -188,3 +212,7 @@ class Drift(unittest.TestCase):
             self.assertEqual([r["name"] for r in report["boundaries"] if not r["mapped"]], ["remote-sink"])
             inv.write_text(stores + binding("traces", "trace", "remote-sink"))
             self.assertEqual(compare([collector.path], inv)[1], 0)
+            with closing(sqlite3.connect(collector.path)) as db, db:
+                db.execute("DELETE FROM collected_events WHERE producer='retriever'")
+            with self.assertRaisesRegex(InvalidReport, "differs from its seal"):
+                compare([collector.path], inv)

@@ -31,6 +31,10 @@ with TemporaryDirectory() as tmp:
     call(path, "replay", "follow-up", "--case-review", code=3)
     for audience in ("engineer", "reviewer", "customer"):
         call(path, "receipt", "summary", "follow-up", "--audience", audience, "--format", "markdown")
+    call(path, "demo", "memory-files")
+    call(path, "replay", "memory-files/broken", code=1)
+    call(path, "replay", "memory-files/guarded")
+    call(path, "receipt", "summary", "memory-files/guarded", "--format", "md")
     call(path, "init")
     # A consumer's fixture commonly lives in tests/ or setrya-case/ and imports
     # an application package in the root of a checkout that is not pip-installed.

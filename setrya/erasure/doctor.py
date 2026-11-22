@@ -122,6 +122,11 @@ def run(argv):
             def baseline_gap(hook, store, key, message):
                 fixture_location = store_location if store_location and hook in ("inspect", "scan") else location
                 gaps.add(f"{fixture_location.hook(hook, store, key, app)}  {hook}: {message}")
+                if (store_location and hook == "inspect" and "confirm the retained fact is absent" in message
+                        and store_location.case.stores[store]["kind"] == "langgraph-checkpoint"):
+                    place = store_location.yaml(("facts", "control", "stored", "absent_sha256"))
+                    gaps.add(f"{place}  Review the full test checkpoint before approving its digest, "
+                             "or declare a shared checkpoint as a rewrite.")
             observe_baseline(subject, case, app, external_items=items, on_gap=baseline_gap)
             if gaps:
                 print("NOT TESTED  Check these fixture locations:")
