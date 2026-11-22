@@ -19,6 +19,7 @@ def help_parser():
     for name, help_text in (
         ("init", "create a working delete-only starter for your application"),
         ("run", "test erasure in a disposable application and save a receipt"),
+        ("doctor", "check fixture wiring and observations before running a drill"),
         ("replay", "recompute the verdict from saved evidence"),
         ("demo", "run the workspace, analyst or memory-files example"),
         ("journal", "verify local journal integrity"),

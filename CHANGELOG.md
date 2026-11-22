@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.0
+
+- Check the complete local Git object store, including unreachable loose and packed blobs. Configured remote repositories become open follow-ups. File and Git scan budgets are configurable, and receipts record the effective boundary. Doctor identifies common in-scope file formats omitted by the include patterns.
+- Attribute a confirmed late residual to a recorded agent turn when the copy and revision agree. OpenAI Agents and Claude Agent SDK hooks supply turn context. Summaries show the scope, the sampled control results and the evidence digest.
+- The download for the first-PR workflow pins the exact released commit. The published Python extras cap SDK minors and CI qualifies candidates beyond those caps.
+
 ## 1.3.0
 
 - Trace copy events to agent turns and opt in to source-revision lineage. The SQLite journal records a chain head, and merged worker packets retain one per producer. Run `setrya journal verify` to detect changed or missing records.

@@ -146,7 +146,7 @@ jobs:
       pull-requests: write
     steps:
       # The write-enabled job validates bounded evidence signals and never checks out PR code.
-      - uses: davidahma/setrya@c9151e7c8043ed86d1e38d653690de9919c31b87
+      - uses: davidahma/setrya@9ae0d3ffbf78932bf3cc1d8fa8c1fe4d6593af76
         with:
           operation: comment
           token: ${{ github.token }}

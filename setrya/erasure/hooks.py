@@ -134,6 +134,8 @@ class CopyHooks:
             self._versions.observe_source(version, subject)
 
     def _record(self, store, key, source, action, *, version=None, inputs=(), **details):
+        if version is not None and action in ("stored", "derived") and details.get("stage") != "attempted":
+            details["revision"] = version.revision
         row = self.journal.record(self.subject, store=store, key=key, source=source, action=action, details=details)
         if action == "sent" or details.get("stage") != "attempted":
             self._infer(self.subject, action, version, inputs)

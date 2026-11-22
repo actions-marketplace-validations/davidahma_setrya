@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .errors import InputError
+from .inputs import require
 
 from .subject import Subject, Turn, _TURN_FIELDS, identifier
 from . import journal_chain
@@ -40,7 +41,7 @@ def validate_details(values: Mapping | None) -> dict:
         if key in {"invocation_logging", "prompt_caching"}:
             if value is not None and type(value) is not bool:
                 raise InputError(f"{key} must be a boolean or unknown (None)")
-        elif key in {"model", "provider", "region", "tool", "direction", "stage", "evidence_level", "operation", "boundary", "boundary_kind"}:
+        elif key in {"model", "provider", "region", "tool", "direction", "stage", "evidence_level", "operation", "boundary", "boundary_kind", "revision"}:
             if value is not None:
                 identifier(value, key)
         elif key == "payload_hmac":
@@ -187,6 +188,31 @@ class CopyJournal:
         """Read a verified chain checkpoint and subject observations in the same snapshot."""
         with journal_chain.reader(self.path) as db:
             return journal_chain.verify_snapshot(db, _FIELDS), self._rows(db, subject, False, max_bytes)
+
+    def mark(self):
+        """Record the current durable chain position without copying journal rows."""
+        with journal_chain.reader(self.path) as db:
+            return journal_chain.head(db)
+
+    def verified_window(self, subject, start, stop, *, max_bytes=None):
+        """Read the evidence and locate a pair of earlier marks in its verified chain."""
+        with journal_chain.reader(self.path) as db:
+            head = journal_chain.verify_snapshot(db, _FIELDS)
+            offsets = []
+            for first, sequence, digest in (start, stop):
+                require(first == head["first_event"] and first - 1 <= sequence <= head["last_event"],
+                        "Journal marks no longer refer to the observed chain.")
+                if sequence == first - 1:
+                    actual = (journal_chain.ZERO,)
+                else:
+                    actual = db.execute("SELECT row_hash FROM copy_events WHERE event=?", (sequence,)).fetchone()
+                require(actual == (digest,), "Journal marks no longer refer to the observed chain.")
+                count = db.execute("SELECT count(*) FROM copy_events WHERE subject=? AND event<=?",
+                                   (subject.ref, sequence)).fetchone()[0]
+                offsets.append(count)
+            require(offsets[0] <= offsets[1], "Journal marks are out of order.")
+            rows = self._rows(db, subject, False, max_bytes)
+            return head, rows, {"start": offsets[0], "stop": offsets[1]}
 
     def copies(self, subject: Subject) -> tuple[Copy, ...]:
         """Return one entry for each reported physical location, with its latest observation."""

@@ -18,7 +18,7 @@ from setrya.erasure.journal_merge import CollectedJournal, WorkerJournal
 from setrya.erasure.lineage import VersionLineage, VersionRef
 from setrya.erasure.subject import Subject
 from setrya.erasure.v3 import run_shared
-from setrya.examples.workspace import CASE, open_fixture
+from setrya.examples.workspace import CASE, SIMPLE, open_fixture
 from setrya.offboarding.inputs import InvalidReport
 from setrya.receipts import replay
 
@@ -50,7 +50,8 @@ class ReceiptViews(unittest.TestCase):
                         self.assertIn("platform-team", rendered)
                         self.assertIn(due, rendered)
                         self.assertIn("clause 4.2", rendered)
-                        self.assertIn("retained fact appeared", rendered)
+                        self.assertIn("confirmed in 6 of 6 control answers", rendered)
+                        self.assertIn("confirmed in 2 of 2 preservation checks", rendered)
                         self.assertIn("At the final read", rendered)
                         self.assertEqual(rendered.startswith("# "), output == "markdown")
                         if audience == "customer":
@@ -60,6 +61,36 @@ class ReceiptViews(unittest.TestCase):
             manifest.write_text(json.dumps(decision))
             with self.assertRaisesRegex(InvalidReport, "differs"):
                 receipt_summary(bundle)
+
+    def test_delete_only_summary_counts_preservation_separately(self):
+        with TemporaryDirectory() as tmp, open_fixture(shared=False, guarded=True) as (subject, app, items):
+            bundle = Path(tmp, "bundle")
+            receipt = run_shared(subject, case=SIMPLE, application=app, external_items=items,
+                                 mode="deletion", output=bundle)
+            self.assertEqual(receipt["technical_verdict"], "PASS")
+            text = receipt_summary(bundle, audience="reviewer", output_format="markdown")
+            self.assertIn("Person deletion drill", text)
+            self.assertNotIn("Shared-record", text)
+            self.assertIn("read 1 of 1 stored record.", text)
+            self.assertIn("read 6 of 6 answers.", text)
+            self.assertIn("confirmed in 3 of 3 control answers.", text)
+            self.assertNotIn("preservation checks", text)
+            self.assertIn("SHA-256 " + receipt["evidence"]["sha256"], text)
+            self.assertIn("Technical verdict PASS\n\nReview status", text)
+            customer = receipt_summary(bundle, audience="customer", output_format="md")
+            self.assertIn("Observation date: ", customer)
+            self.assertNotIn("&#58;", customer)
+
+    def test_readable_markdown_does_not_link_receipt_identifiers(self):
+        from setrya.casework.receipt_summary import _markdown
+
+        self.assertEqual(_markdown("Observation date: today"), "Observation date: today")
+        self.assertEqual(_markdown("blob:sha"), "blob:sha")
+        rendered = _markdown("https://example.invalid <b> @team [label](www.example.invalid)")
+        self.assertIn("https&#58;//example.invalid", rendered)
+        self.assertIn("&lt;b&gt;", rendered)
+        self.assertIn("&#64;team", rendered)
+        self.assertIn("www&#46;example.invalid", rendered)
 
     def test_markdown_cli_alias_uses_the_same_local_renderer(self):
         from setrya.erasure.render import receipt_summary as render

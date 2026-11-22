@@ -1,4 +1,5 @@
 """Drive a deletion or late-write drill against one shared conversation."""
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import os
@@ -8,7 +9,9 @@ from uuid import uuid4
 
 from setrya.offboarding.inputs import publish_new, publish_new_bytes, require
 from .judges import AnswerJudges, TextAnswer, consensus
-from .journal import identifier
+from .journal import CopyJournal, identifier
+from setrya.core import scan_scope
+from .fs_canary import CanaryMatches
 from .model import Drain, Hold, question_digest
 from .receipt import EVIDENCE, MAX_BUNDLE_FILE_BYTES, RECEIPT
 from .subject import Subject
@@ -118,15 +121,16 @@ def _check_answer_budget(spec, judges):
             "Answer evidence could exceed the replay size budget. Use digest capture or reduce samples, questions or judges.")
 
 
-def _stage(subject, case, application, spec, observe, discovered=None):
-    def inspect(store, key):
-        reading = application.inspect(subject, store, key)
-        if not isinstance(reading, Stored) or reading.key != key:
-            return None
-        row = {"store": store, **asdict(reading)}
-        rules.check_stored(row, store, key)
-        return row
+def _inspect(subject, application, store, key):
+    reading = application.inspect(subject, store, key)
+    if not isinstance(reading, Stored) or reading.key != key:
+        return None
+    row = {"store": store, **asdict(reading)}
+    rules.check_stored(row, store, key)
+    return row
 
+
+def _stage(subject, case, application, spec, observe, discovered=None):
     answers = []
     questions = dict(zip(spec["questions"], case.questions()))
     for caller, digest, _, ordinal in rules.answer_slots(spec):
@@ -152,8 +156,8 @@ def _stage(subject, case, application, spec, observe, discovered=None):
             rules.fact_flags(row)
             return row
         answers.append(observe("read", read))
-    stored = [observe("inspect", lambda: inspect(a.store, a.key)) for a in case.artifacts]
-    scans = {}
+    stored = [observe("inspect", lambda: _inspect(subject, application, a.store, a.key)) for a in case.artifacts]
+    scans, scan_details = {}, {}
     remaining_keys, remaining_bytes = 512, 256 * 1024
     for store in case.scan_stores:
         def scan():
@@ -164,15 +168,20 @@ def _stage(subject, case, application, spec, observe, discovered=None):
             remaining_keys -= len(valid)
             remaining_bytes -= sum(map(len, valid))
             require(remaining_keys >= 0 and remaining_bytes >= 0, "Canary scope exceeds the stage budget.")
+            if isinstance(keys, CanaryMatches):
+                candidate = {**scan_details, store: keys.coverage}
+                scan_scope.check_stage(candidate, {**scans, store: valid})
+                scan_details[store] = deepcopy(keys.coverage)
             return valid
         scans[store] = observe("scan", scan)
     if discovered is None:
         discovered = rules.discovered_keys(spec, scans)
-    found = [observe("inspect", lambda: inspect(store, key)) for store, key in discovered]
-    return {"answers": answers, "stored": stored, "scans": scans, "discovered": found}
+    found = [observe("inspect", lambda: _inspect(subject, application, store, key)) for store, key in discovered]
+    return {"answers": answers, "stored": stored, "scans": scans, "discovered": found,
+            **({"scan_details": scan_details} if scan_details else {})}
 
 
-def observe_baseline(subject, case, application, *, external_items=(), on_gap=None):
+def observe_baseline(subject, case, application, *, external_items=(), on_gap=None, on_warning=None):
     """Read the fixture without erasing or holding a worker. Optionally report individual gaps."""
     require(isinstance(subject, Subject) and isinstance(case, SharedCase), "Expected a subject and shared case.")
     spec = case.spec()
@@ -192,6 +201,12 @@ def observe_baseline(subject, case, application, *, external_items=(), on_gap=No
     baseline = _stage(subject, case, application, spec, observe)
     rules.check_stage(baseline, spec)
     issues = set(rules.baseline_issues(spec, baseline))
+    if on_warning is not None:
+        for store, details in baseline.get("scan_details", {}).items():
+            if details.get("skipped"):
+                counts = ", ".join(f"{name} ({amount})" for name, amount in sorted(details["skipped"].items()))
+                on_warning("scan", store, None, f"{store} has unmatched files in scan scope: {counts}. "
+                           "Review include patterns or configure a separate store scanner.")
     if on_gap is not None:
         for issue in sorted(issues):
             on_gap(*issue)
@@ -246,6 +261,8 @@ def run_shared(subject, *, case, application, output, mode="late-write", externa
     erase = None
     immediate = None
     lineage = None
+    release_mark = None
+    local_journal = isinstance(journal, CopyJournal) and not expected
     if mode == "late-write" and (authorize_hold is None or observe("authorize_hold", authorize_hold) is True):
         worker["held"] = observe("hold", lambda: held_by(application.hold))
     try:
@@ -277,6 +294,8 @@ def run_shared(subject, *, case, application, output, mode="late-write", externa
                 immediate = _stage(subject, case, application, spec, observe, rules.discovered_keys(spec, baseline["scans"]))
                 if mode == "late-write":
                     worker["pre_release"] = observe("checkpoint", lambda: held_by(application.checkpoint))
+                    if erase and worker["pre_release"] == worker["held"] and local_journal:
+                        release_mark = observe("journal_mark", journal.mark)
     finally:
         if worker["held"] is not None and cancel_hold is not None and (
             erase is not True or worker["pre_release"] != worker["held"]
@@ -293,8 +312,14 @@ def run_shared(subject, *, case, application, output, mode="late-write", externa
                     return result.attempt
                 return None
             worker["drained"] = observe("release_and_drain", release)
+    drain_mark = (observe("journal_mark", journal.mark)
+                  if release_mark is not None and worker["drained"] is not None else None)
     final = _stage(subject, case, application, spec, observe, rules.discovered_keys(spec, baseline["scans"]))
-    coverage = events = chain = None
+    late_residuals = []
+    if drain_mark is not None:
+        late_residuals = [observe("inspect_late_residual", lambda: _inspect(subject, application, store, key))
+                          for store, key in rules.new_residual_keys(spec, baseline["scans"], final["scans"])]
+    coverage = events = chain = window = None
     if journal is not None:
         if expected and hasattr(application, "collect_journals"):
             observe("collect_journals", lambda: application.collect_journals(subject))
@@ -313,14 +338,17 @@ def run_shared(subject, *, case, application, output, mode="late-write", externa
                 coverage, chain, events = observation
         else:
             def snapshot():
-                if hasattr(journal, "verified_history"):
+                bounds = None
+                if release_mark is not None and drain_mark is not None:
+                    head, rows, bounds = journal.verified_window(subject, release_mark, drain_mark, max_bytes=budget)
+                elif hasattr(journal, "verified_history"):
                     head, rows = journal.verified_history(subject, max_bytes=budget)
                 else:
                     head, rows = None, journal.history(subject, max_bytes=budget)
-                return head, [row.wire() if hasattr(row, "wire") else asdict(row) for row in rows]
+                return head, [row.wire() if hasattr(row, "wire") else asdict(row) for row in rows], bounds
             observation = observe("journal", snapshot)
             if observation is not None:
-                chain, events = observation
+                chain, events, window = observation
     evidence = {"format": rules.EVIDENCE_FORMAT, "run": run, "scope": "person",
                 "observed_at": datetime.now(timezone.utc).isoformat(), "subject": asdict(subject),
                 "mode": mode, "case": spec, "worker": worker, "external": external,
@@ -328,6 +356,10 @@ def run_shared(subject, *, case, application, output, mode="late-write", externa
                 "immediate": rules.group_samples(immediate, spec), "final": rules.group_samples(final, spec),
                 "expected_producers": expected, "coverage": coverage, "journal": events, "journal_chain": chain,
                 "errors": errors, "drill_duration_ms": 0}
+    if window and window["start"] < window["stop"]:
+        evidence["late_write_window"] = window
+        if late_residuals:
+            evidence["late_residuals"] = late_residuals
     receipt = rules.derive(evidence, "0" * 64)
     evidence["drill_duration_ms"] = receipt["drill_duration_ms"] = round((monotonic() - start) * 1000)
     receipt["evidence"]["sha256"] = publish_new(evidence, destination / EVIDENCE, max_bytes=MAX_BUNDLE_FILE_BYTES)

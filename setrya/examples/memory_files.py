@@ -117,11 +117,11 @@ class MemoryFiles:
             target.unlink()
             target.parent.rmdir()
             self._publish(self._sources())
+            # Each lane owns its disposable repository. Rewrite the synthetic
+            # history in both lanes so the broken scan must find the orphan blob.
+            self.git("reset", "--mixed", self.clean)
+            self.git("reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all")
             if self.guarded:
-                # This class created the repository in a private TemporaryDirectory.
-                # Retire only its synthetic commit; do not rewrite the caller's Git history.
-                self.git("reset", "--mixed", self.clean)
-                self.git("reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all")
                 self.git("prune", "--expire=now")
 
     def read(self, subject, caller, conversation, question):
@@ -134,10 +134,14 @@ class MemoryFiles:
         with self.lock:
             if store == "git":
                 commit, _, relative = key.partition(":")
-                if relative not in (TARGET_FILE, CONTROL_FILE):
-                    raise InputError("memory demo encountered an unexpected Git location")
-                commits = self.git("rev-list", "--all", "--reflog").decode().splitlines()
-                content = self.git("show", key) if commit in commits else None
+                if commit == "blob":
+                    objects = self.git("cat-file", "--batch-all-objects", "--batch-check=%(objectname)").decode().splitlines()
+                    content = self.git("cat-file", "blob", relative) if relative in objects else None
+                else:
+                    if relative not in (TARGET_FILE, CONTROL_FILE):
+                        raise InputError("memory demo encountered an unexpected Git location")
+                    commits = self.git("rev-list", "--all", "--reflog").decode().splitlines()
+                    content = self.git("show", key) if commit in commits else None
             else:
                 if key not in (TARGET_FILE, CONTROL_FILE, DERIVED_FILE):
                     raise InputError("memory demo encountered an unexpected file location")

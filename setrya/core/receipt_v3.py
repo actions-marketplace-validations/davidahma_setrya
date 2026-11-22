@@ -5,6 +5,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 
+from . import scan_scope
 from .inputs import keys_match, read_regular_bytes, require, unique_fields
 from .judges import check_observation, check_policy, coverage
 from .journal_chain import check_summary as check_chain
@@ -116,6 +117,10 @@ def discovered_keys(spec, scans):
     return sorted((store, key) for store, hits in scans.items() for key in (hits or []) if (store, key) not in known)
 
 
+def new_residual_keys(spec, baseline_scans, final_scans):
+    return sorted(set(discovered_keys(spec, final_scans)) - set(discovered_keys(spec, baseline_scans)))
+
+
 def answer_slots(spec):
     """Yield the declared caller, question digest, fact role and one-based sample ordinal."""
     plan = spec.get("sampling", {})
@@ -170,13 +175,16 @@ def answer_records(evidence, stage):
                                          grouped=evidence["format"] == EVIDENCE_FORMAT)]
 
 
-def check_stage(stage, spec, baseline_scans=None):
-    _fields(stage, "stored answers scans discovered")
+def check_stage(stage, spec, baseline_scans=None, *, scoped=True):
+    has_details = scoped and isinstance(stage, dict) and "scan_details" in stage
+    _fields(stage, "stored answers scans discovered" + (" scan_details" if has_details else ""))
     require(isinstance(stage["stored"], list) and len(stage["stored"]) == len(spec["artifacts"]), "Missing store slots.")
     for row, artifact in zip(stage["stored"], spec["artifacts"]):
         if row is not None:
             check_stored(row, artifact["store"], artifact["key"])
     require(keys_match(stage["scans"], spec["scan_stores"]), "Wrong scanner slots.")
+    if has_details:
+        scan_scope.check_stage(stage["scan_details"], stage["scans"])
     for values in stage["scans"].values():
         if values is not None:
             _unique_ids(values, 512, "scanner key")
@@ -416,6 +424,60 @@ def _after(stage, name, e, failures, gaps):
         answer_outcome(row, caller, role == "control", name, failures, gaps)
 
 
+def _write_attribution(e, race):
+    if "late_write_window" not in e:
+        return []
+    window, events = e["late_write_window"], e["journal"]
+    _fields(window, "start stop")
+    start, stop = window["start"], window["stop"]
+    require(race == "exercised" and e["erased"] is True and not e["expected_producers"]
+            and e["journal_chain"] is not None and e["journal_chain"]["status"] in ("verified", "partial")
+            and type(start) is int and type(stop) is int and 0 <= start < stop <= len(events),
+            "Invalid journal window for the observed release and drain.")
+    immediately = e["immediate"]
+    final = e["final"]
+    before = {(r["store"], r["key"]): r for r in immediately["stored"] + immediately["discovered"] if r}
+    late = e.get("late_residuals", [])
+    if "late_residuals" in e:
+        late_keys = new_residual_keys(e["case"], e["baseline"]["scans"], final["scans"])
+        require(isinstance(late, list) and len(late) == len(late_keys) and late, "Invalid late residual read slots.")
+        for (store, key), row in zip(late_keys, late, strict=True):
+            if row is not None:
+                check_stored(row, store, key)
+    after = {(r["store"], r["key"]): r for r in final["stored"] + final["discovered"] + late if r}
+    writes = defaultdict(list)
+    for i in range(start, len(events)):
+        event = events[i]
+        if event["action"] in ("stored", "derived"):
+            writes[event["store"], event["key"]].append((i, event))
+    result = []
+    for (store, key), row in sorted(after.items()):
+        earlier = before.get((store, key))
+        canary_match = key in (final["scans"].get(store) or ())
+        if not row["exists"] or not (row["target_present"] is True or canary_match):
+            continue
+        if store in final["scans"] and (immediately["scans"][store] is None or key in immediately["scans"][store]):
+            continue
+        if earlier is not None:
+            if earlier["exists"] and earlier["target_present"] is not False:
+                continue
+        elif not canary_match or not scan_scope.same_scope(immediately, final, store):
+            continue
+        candidates = writes[store, key]
+        completed = [(i, event) for i, event in candidates
+                     if event["details"].get("stage") in (None, "returned", "committed")]
+        if len(completed) != 1:
+            continue
+        i, event = completed[0]
+        if (i >= stop or "turn" not in event or event["details"].get("revision") != row["revision"]
+                or any(j >= i or other.get("turn") != event["turn"] or other["details"].get("stage") != "attempted"
+                       for j, other in candidates if j != i)):
+            continue
+        result.append({"store": store, "key": key, "revision": row["revision"], "turn": event["turn"],
+                       "agent": event["agent"], "initiator": event["initiator"], "journal_entry": i})
+    return result
+
+
 def _sampling_summary(e):
     spec = e["case"]
     policy = spec.get("judges")
@@ -480,7 +542,9 @@ def lineage_gaps(e, external):
 def derive(e, digest):
     modern = isinstance(e, dict) and e.get("format") == EVIDENCE_FORMAT
     _fields(e, "format run scope observed_at subject mode case worker external lineage baseline erased immediate final "
-               "expected_producers coverage journal errors drill_duration_ms" + (" journal_chain" if modern else ""))
+               "expected_producers coverage journal errors drill_duration_ms" + (" journal_chain" if modern else "")
+               + (" late_write_window" if modern and "late_write_window" in e else "")
+               + (" late_residuals" if modern and "late_write_window" in e and "late_residuals" in e else ""))
     require(e["format"] in (EVIDENCE_FORMAT, FLAT_EVIDENCE_FORMAT, LEGACY_EVIDENCE_FORMAT) and e["scope"] == "person" and _hex(digest, 64),
             "Invalid v3 evidence header.")
     identifier(e["run"], "run")
@@ -499,12 +563,15 @@ def derive(e, digest):
         e = dict(e)
         for phase in ("baseline", "immediate", "final"):
             if e[phase] is not None:
-                _fields(e[phase], "stored answers scans discovered")
+                _fields(e[phase], "stored answers scans discovered" +
+                        (" scan_details" if isinstance(e[phase], dict) and "scan_details" in e[phase] else ""))
                 e[phase] = {**e[phase], "answers": answer_records(e, phase)}
-    check_stage(e["baseline"], spec)
-    check_stage(e["final"], spec, e["baseline"]["scans"])
+    check_stage(e["baseline"], spec, scoped=modern)
+    check_stage(e["final"], spec, e["baseline"]["scans"], scoped=modern)
     if e["immediate"] is not None:
-        check_stage(e["immediate"], spec, e["baseline"]["scans"])
+        check_stage(e["immediate"], spec, e["baseline"]["scans"], scoped=modern)
+    scan_coverage, uninspected_remotes, scope_gaps = scan_scope.summarize(e)
+    open_items = e["external"] + uninspected_remotes
     _fields(e["worker"], "held checkpoint pre_release drained")
     worker = e["worker"]
     for attempt in worker.values():
@@ -516,7 +583,7 @@ def derive(e, digest):
     if e["erased"] is not None:
         require(armed, "Erase was attempted without the declared baseline and hold.")
     require((e["immediate"] is not None) == (e["erased"] is not None), "Inconsistent erasure stages.")
-    failures, gaps = set(), set()
+    failures, gaps = set(), set(scope_gaps)
     declared = {(a["store"], a["key"]) for a in spec["artifacts"]}
     declared.update(discovered_keys(spec, e["baseline"]["scans"]))
     external = {(x["store"], x["key"]) for x in e["external"]}
@@ -551,8 +618,11 @@ def derive(e, digest):
             gaps.add("An answer judge could not evaluate a required reply.")
     tech = "FAIL" if failures else "ERROR" if adapter_errors else "NOT TESTED" if gaps else "PASS"
 
-    review = "RESIDUAL_FOUND" if tech == "FAIL" else "OPEN_ITEMS" if external or tech != "PASS" else "READY_FOR_REVIEW"
+    review = "RESIDUAL_FOUND" if tech == "FAIL" else "OPEN_ITEMS" if open_items or tech != "PASS" else "READY_FOR_REVIEW"
     metadata = {}
+    attribution = _write_attribution(e, race)
+    if attribution:
+        metadata["write_attribution"] = attribution
     if modern:
         metadata["journal_chain"] = e["journal_chain"]
         if "judges" in spec:
@@ -563,7 +633,8 @@ def derive(e, digest):
             **({"answer_sampling": _sampling_summary(e)} if "sampling" in spec else {}),
             "format": RECEIPT_FORMAT, "version": 3, "scope": "person", "run": e["run"], "subject": e["subject"],
             "observed_at": e["observed_at"], "case": spec, "mode": e["mode"], "race": race,
-            "technical_verdict": tech, "review_status": review, "open_items": e["external"],
+            **({"scan_coverage": scan_coverage} if scan_coverage else {}),
+            "technical_verdict": tech, "review_status": review, "open_items": open_items,
             "artifact_checks": _artifact_index(e),
             "failures": sorted(failures), "gaps": sorted(gaps), "errors": errors, "drill_duration_ms": e["drill_duration_ms"],
             "evidence": {"file": EVIDENCE, "sha256": digest}}
@@ -589,6 +660,18 @@ def exit_code(receipt, *, case_review=False):
     return native
 
 
+def human_issue(text):
+    return text.replace(" at after erasure.", " after erasure.")
+
+
+def attribution_lines(receipt):
+    return [
+        f'{row["store"]}/{row["key"]} · turn {row["turn"]} · agent {row["agent"]} · initiator {row["initiator"]}. '
+        f'The journaled late write matches the residual revision ({EVIDENCE}#/journal/{row["journal_entry"]}).'
+        for row in receipt.get("write_attribution", ())
+    ]
+
+
 def summary(receipt):
     lines = [f"Technical verdict {receipt['technical_verdict']} · Review status {receipt['review_status']}",
              f"{receipt['case']['conversation']} · {receipt['mode']} · worker race {receipt['race']}",
@@ -603,7 +686,8 @@ def summary(receipt):
     for row in receipt["artifact_checks"]:
         if row["discovered_by"] == "canary":
             lines.append(f"Canary located {row['store']}/{row['key']}.")
-    lines.extend(receipt["failures"] + receipt["gaps"])
+    lines.extend(human_issue(text) for text in receipt["failures"] + receipt["gaps"])
+    lines.extend(attribution_lines(receipt))
     for err in receipt["errors"]:
         lines.append(f"{err['operation']} failed ({err['error']}).")
     for item in receipt["open_items"]:

@@ -43,7 +43,7 @@ jobs:
       - name: Install the latest published releases independently of Setrya's constraints
         run: |
           python -m pip install --upgrade openai-agents claude-agent-sdk langfuse langgraph
-          python scripts/check-latest-agent-sdks.py
+          python scripts/check-latest-agent-sdks.py --record "$RUNNER_TEMP/selected-sdk-versions.json"
           python -m pip check
       - name: Run native sessions, hooks and self-hosted trace tests
         run: python scripts/verify-agent-harnesses.py
@@ -52,6 +52,15 @@ jobs:
         run: |
           python -c 'from langgraph.graph import StateGraph; from langgraph.checkpoint.sqlite import SqliteSaver'
           python -m pytest -q tests/test_shared_investigation.py tests/test_erasure_trial.py
+
+      - name: Propose any upper-bound changes after all native checks pass
+        run: |
+          python scripts/check-latest-agent-sdks.py --qualified "$RUNNER_TEMP/selected-sdk-versions.json"             --output "$RUNNER_TEMP/qualified-sdk-caps.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: qualified-sdk-caps
+          path: ${{ runner.temp }}/qualified-sdk-caps.json
+          if-no-files-found: error
 
   report-regression:
     needs: latest-sdks

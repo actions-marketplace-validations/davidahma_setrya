@@ -1,5 +1,6 @@
 """Native working-tree, reflog and SQLite AgentFS evidence for a synthetic subject."""
 import asyncio
+from collections import Counter
 from contextlib import closing, redirect_stderr, redirect_stdout
 import importlib.util
 from io import StringIO
@@ -15,7 +16,7 @@ from unittest.mock import patch
 from setrya.cli import main
 from setrya.drill import InputError
 from setrya.erasure import Artifact, SharedCase, Stored, Subject, run_shared
-from setrya.erasure.canary import AgentFSCanaryScanner, FilesystemCanaryScanner, GitHistoryCanaryScanner
+from setrya.erasure.canary import AgentFSCanaryScanner, FilesystemCanaryScanner, GitHistoryCanaryScanner, ScanLimits
 from setrya.erasure.fs_canary import decode_scan_location, encode_scan_location
 from setrya.erasure.v3 import Answer
 from setrya.examples.memory_files import DERIVED_FILE, TARGET_FILE, _git_env
@@ -39,8 +40,7 @@ class WorkingTreeTests(unittest.TestCase):
                 self.scanner = FilesystemCanaryScanner(root)
 
             def scan(self, subject, store):
-                paths = self.scanner.find(scope=self.path.parent.name, marker=MARKER)
-                return {encode_scan_location(path) for path in paths}
+                return self.scanner.find(scope=self.path.parent.name, marker=MARKER).encode_keys()
 
             def inspect(self, subject, store, key):
                 path = self.root / decode_scan_location(key)
@@ -70,6 +70,7 @@ class WorkingTreeTests(unittest.TestCase):
                     run_shared(subject, case=case, application=app, output=bundle, mode="deletion")
                     receipt = replay(bundle)
                     self.assertEqual(receipt["technical_verdict"], expected)
+                    self.assertEqual(receipt["scan_coverage"]["files"]["patterns"], ["**/*.md", "**/*.jsonl"])
                     row = next(item for item in receipt["artifact_checks"] if item["discovered_by"] == "canary")
                     self.assertTrue(row["key"].startswith("path64:"))
                     self.assertEqual((app.root / decode_scan_location(row["key"])).resolve(), app.path.resolve())
@@ -95,10 +96,61 @@ class WorkingTreeTests(unittest.TestCase):
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text(MARKER)
             scanner = FilesystemCanaryScanner(folder)
-            self.assertEqual(scanner.find(scope="team", marker=MARKER), {"team/one/a.jsonl"})
+            results = scanner.find(scope="team", marker=MARKER)
+            self.assertEqual(results, {"team/one/a.jsonl"})
+            self.assertEqual(results.coverage["skipped"], {".txt": 1})
+            self.assertEqual(results.encode_keys().coverage["patterns"], ["**/*.md", "**/*.jsonl"])
             self.assertEqual(scanner.find(scope=".", marker=MARKER), {"top.md", "team/one/a.jsonl", "outside/b.md"})
             with self.assertRaises(InputError):
                 scanner.find(scope="team/../outside", marker=MARKER)
+
+    def test_doctor_warns_about_in_scope_file_types_without_reading_them(self):
+        from textwrap import dedent
+
+        fixture = dedent("""
+            from contextlib import contextmanager
+            from pathlib import Path
+            from setrya.erasure import Answer, Artifact, SharedCase, Stored, Subject
+            from setrya.erasure.canary import FilesystemCanaryScanner
+
+            ROOT = Path(__file__).parent
+            CASE = SharedCase("team", "/test", ("reader",), "What was deleted?", "What stayed?",
+                              [Artifact("files", "memory/note.md", "delete")], ("files",))
+
+            class App:
+                def read(self, subject, caller, conversation, question):
+                    return Answer(caller, conversation, "/test", question,
+                                  question == "What was deleted?", question == "What stayed?")
+
+                def scan(self, subject, store):
+                    return FilesystemCanaryScanner(ROOT).find(scope="memory", marker="erasure-canary-417")
+
+                def inspect(self, subject, store, key):
+                    return Stored(key, True, True, False, "baseline")
+
+                def erase(self, subject):
+                    raise RuntimeError("Doctor must never erase")
+
+            @contextmanager
+            def open_fixture():
+                yield Subject("2" * 64, "synthetic"), App(), []
+        """)
+        with TemporaryDirectory() as work, redirect_stdout(StringIO()) as stdout:
+            root = Path(work)
+            (root / "memory").mkdir()
+            (root / "outside.txt").write_text("outside declared scope")
+            for name in ("note.md", "ignored.json", "ignored.txt", "ignored.yaml", "ignored.sqlite"):
+                (root / "memory" / name).write_text(MARKER)
+            case = root / "fixture.py"
+            case.write_text(fixture)
+            self.assertEqual(main(["doctor", "--starter", str(case)]), 0, stdout.getvalue())
+            self.assertIn("WARNING", stdout.getvalue())
+            self.assertIn("fixture.py:", stdout.getvalue())
+            for extension in (".json", ".txt", ".yaml", ".sqlite"):
+                self.assertIn(f"{extension} (1)", stdout.getvalue())
+            self.assertNotIn("outside.txt", stdout.getvalue())
+            self.assertNotIn(MARKER, stdout.getvalue())
+            self.assertIn("READY", stdout.getvalue())
 
     def test_rechecks_earlier_files_before_claiming_absence(self):
         # Change the first file in place after its bytes and metadata were read.
@@ -135,9 +187,12 @@ class WorkingTreeTests(unittest.TestCase):
             with self.assertRaisesRegex(InputError, "symbolic"):
                 FilesystemCanaryScanner(root).find(scope=".", marker=MARKER)
             (root / "link").unlink()
-            (root / "large.md").write_bytes(b"x" * (1024 ** 2 + 1))
+            (root / "large.jsonl").write_bytes(b"x" * (1024 ** 2 + 1) + MARKER.encode())
+            self.assertEqual(FilesystemCanaryScanner(root).find(scope=".", marker=MARKER), {"large.jsonl"})
             with self.assertRaisesRegex(InputError, "budget"):
-                FilesystemCanaryScanner(root).find(scope=".", marker=MARKER)
+                FilesystemCanaryScanner(root, limits=ScanLimits(max_file_bytes=1024 ** 2)).find(scope=".", marker=MARKER)
+            with self.assertRaises(InputError):
+                ScanLimits(max_entries=0)
 
 
 @unittest.skipUnless(shutil.which("git"), "requires Git to test real local object history")
@@ -172,16 +227,84 @@ class GitHistoryTests(unittest.TestCase):
             self.assertEqual(scan.find(scope=".", marker=MARKER), {old + ":memory/first.md", old + ":second.md"})
             self.assertEqual(scan.find(scope="memory", marker=MARKER), {old + ":memory/first.md"})
             git("reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all")
-            self.assertEqual(scan.find(scope=".", marker=MARKER), set())
-            # Reachable content with only a raw tag and no commit:path is an explicit coverage gap.
             dangling_blob = git("rev-parse", old + ":second.md")
+            self.assertEqual(scan.find(scope=".", marker=MARKER), {f"blob:{dangling_blob}"})
+            self.assertEqual(scan.find(scope="memory", marker=MARKER), {f"blob:{dangling_blob}"})
             git("tag", "unaddressable", dangling_blob)
-            with self.assertRaisesRegex(InputError, "commit:path"):
-                scan.find(scope=".", marker=MARKER)
+            git("repack", "-ad")
+            self.assertEqual(scan.find(scope=".", marker=MARKER), {f"blob:{dangling_blob}"})
             git("tag", "-d", "unaddressable")
+            # This blob remains packed after its last reference is removed.
+            self.assertEqual(scan.find(scope=".", marker=MARKER), {f"blob:{dangling_blob}"})
+            git("repack", "-ad")
+            git("prune", "--expire=now")
+            self.assertEqual(scan.find(scope=".", marker=MARKER), set())
             (root / ".git" / "refs" / "external").symlink_to(root, target_is_directory=True)
             with self.assertRaisesRegex(InputError, "symbolic"):
                 scan.find(scope=".", marker=MARKER)
+
+    def test_large_history_visits_each_unique_tree_once_and_obeys_commit_budget(self):
+        from setrya.erasure import fs_canary
+        from setrya.examples.memory_files import open_fixture
+
+        with open_fixture(shutil.which("git"), guarded=True) as (_, app, _):
+            for i in range(50):
+                (app.root / f"entry-{i}.txt").write_text("unchanged")
+            app.git("add", ".")
+            app.git("commit", "--no-gpg-sign", "-m", "build tree once")
+            for i in range(100):
+                app.git("commit", "--allow-empty", "--no-gpg-sign", "-m", f"unchanged tree {i}")
+            calls = Counter()
+            original = fs_canary._git_read
+
+            def record(command, *args, **kwargs):
+                if "ls-tree" in command:
+                    calls[command[-1]] += 1
+                return original(command, *args, **kwargs)
+
+            with patch.object(fs_canary, "_git_read", record):
+                self.assertEqual(app.history.find(scope=".", marker=MARKER), set())
+            self.assertTrue(calls)
+            self.assertEqual(max(calls.values()), 1)
+            with self.assertRaisesRegex(InputError, "commits.*budget"):
+                GitHistoryCanaryScanner(app.root, limits=ScanLimits(max_commits=100)).find(scope=".", marker=MARKER)
+
+    def test_remote_is_open_item_without_remote_url_and_replays(self):
+        from setrya.examples.memory_files import open_fixture
+        from setrya.examples.memory_files import TARGET
+
+        with TemporaryDirectory() as work, open_fixture(shutil.which("git"), guarded=True) as (subject, app, items):
+            # The fixture has a local-only synthetic remote URI and never fetches.
+            app.git("remote", "add", "archive", "https://example.invalid/private-project")
+            app.history = GitHistoryCanaryScanner(app.root, remote_owner="records-team")
+            bundle = Path(work, "receipt")
+            run_shared(subject, case=app.case(), application=app, external_items=items, journal=app.journal,
+                       mode="deletion", output=bundle)
+            receipt = replay(bundle)
+            self.assertEqual(receipt["technical_verdict"], "PASS")
+            self.assertTrue(receipt["scan_coverage"]["git"]["remote_configured"])
+            item = next(item for item in receipt["open_items"] if item["store"] == "git")
+            self.assertEqual((item["evidence"], item["owner"]), ("remote-copies-uninspected", "records-team"))
+            for filename in bundle.iterdir():
+                self.assertNotIn("private-project", filename.read_text())
+            self.assertFalse(app.history.find(scope=".", marker=TARGET))
+
+    def test_changed_scan_scope_cannot_prove_a_clean_run(self):
+        from setrya.examples.memory_files import open_fixture, TARGET
+
+        with TemporaryDirectory() as work, open_fixture(shutil.which("git"), guarded=True) as (subject, app, items):
+            scan = app.scan
+            def moved_scope(subject, store):
+                if store == "files" and not (app.root / TARGET_FILE).exists():
+                    return app.files.find(scope="clients", marker=TARGET)
+                return scan(subject, store)
+            app.scan = moved_scope
+            bundle = Path(work, "receipt")
+            run_shared(subject, case=app.case(), application=app, external_items=items, journal=app.journal,
+                       mode="deletion", output=bundle)
+            receipt = replay(bundle)
+            self.assertEqual(receipt["technical_verdict"], "NOT TESTED")
+            self.assertIn("Canary scan scope changed or was missing for files.", receipt["gaps"])
 
     def test_demo_replays_the_same_drained_attempt_and_both_storage_boundaries(self):
         with TemporaryDirectory() as work:
@@ -210,7 +333,7 @@ class GitHistoryTests(unittest.TestCase):
                 self.assertEqual(set(e["baseline"]["scans"]["files"]), {TARGET_FILE, DERIVED_FILE})
                 self.assertFalse(e["immediate"]["scans"]["files"])
                 if lane == "broken":
-                    self.assertTrue(e["immediate"]["scans"]["git"][0].endswith(":" + TARGET_FILE))
+                    self.assertRegex(e["immediate"]["scans"]["git"][0], r"^blob:[0-9a-f]{40,64}$")
                     self.assertEqual(e["final"]["scans"]["files"], [DERIVED_FILE])
                     self.assertTrue(e["final"]["scans"]["git"])
                 else:

@@ -4,14 +4,16 @@ from __future__ import annotations
 import json
 import os
 import stat
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from setrya.drill import InputError
 from setrya.offboarding.inputs import unique_fields
 from setrya.erasure.adapters import _sql_name
 from setrya.erasure.canary import LIMIT, SQLiteCanaryScanner, contains_marker, validate_probe
+from setrya.erasure import Turn
+from setrya.erasure.fs_canary import _stable
 from setrya.erasure.hooks import CopyHooks
 from setrya.erasure.journal import identifier
 
@@ -22,10 +24,13 @@ async def run_openai_agent(hooks: CopyHooks, agent, inputs, *, session, store: s
     if not isinstance(session, SQLiteSession):
         raise InputError("provide an OpenAI Agents SQLiteSession")
     key = identifier(session.session_id, "OpenAI Agents session ID")
-    hooks._attempt(store, key, source, "stored", operation="agents.session")
-    result = await Runner.run(agent, inputs, session=session, **options)
-    hooks._record(store, key, source, "stored", stage="returned", operation="agents.session")
-    return result
+    active = Turn.current()
+    turn_scope = nullcontext() if active else Turn(uuid4().hex, "application", "openai-agents").activate()
+    with turn_scope:
+        hooks._attempt(store, key, source, "stored", operation="agents.session")
+        result = await Runner.run(agent, inputs, session=session, **options)
+        hooks._record(store, key, source, "stored", stage="returned", operation="agents.session")
+        return result
 
 
 class OpenAISessionCanaryScanner(SQLiteCanaryScanner):
@@ -48,10 +53,11 @@ def openai_response(hooks: CopyHooks, client, request, *, store: str, key: str, 
 
 
 def claude_tool_hooks(hooks: CopyHooks, *, session: str, store: str, source: str):
-    """Return native ClaudeAgentOptions.hooks. Scope each tool input and result to the run."""
+    """Return one native hook mapping for a Claude invocation with a declared session."""
     from claude_agent_sdk import HookMatcher
 
     identifier(session, "Claude session ID")
+    turn = Turn.current() or Turn(uuid4().hex, "application", "claude-agent-sdk")
 
     async def observe(event, tool_use_id, context):
         if event["session_id"] != session:
@@ -59,14 +65,16 @@ def claude_tool_hooks(hooks: CopyHooks, *, session: str, store: str, source: str
         name = identifier(event["tool_name"], "Claude tool name")
         call_id = identifier(tool_use_id or event.get("tool_use_id"), "Claude tool use ID")
         base = f"{session}/{call_id}"
-        if event["hook_event_name"] == "PreToolUse":
-            hooks._attempt(store, base + "/input", source, "sent", tool=name, direction="input",
-                           **hooks._fingerprint(event["tool_input"]))
-        elif event["hook_event_name"] == "PostToolUse":
-            hooks._record(store, base + "/result", source, "derived", stage="returned", tool=name,
-                          direction="result", **hooks._fingerprint(event["tool_response"]))
-        else:
-            raise InputError("unexpected Claude hook event")
+        scope = nullcontext() if Turn.current() == turn else turn.activate()
+        with scope:
+            if event["hook_event_name"] == "PreToolUse":
+                hooks._attempt(store, base + "/input", source, "sent", tool=name, direction="input",
+                               **hooks._fingerprint(event["tool_input"]))
+            elif event["hook_event_name"] == "PostToolUse":
+                hooks._record(store, base + "/result", source, "derived", stage="returned", tool=name,
+                              direction="result", **hooks._fingerprint(event["tool_response"]))
+            else:
+                raise InputError("unexpected Claude hook event")
         return {}
 
     return {name: [HookMatcher(hooks=[observe])] for name in ("PreToolUse", "PostToolUse")}
@@ -89,21 +97,29 @@ class ClaudeTranscriptCanaryScanner:
         except ValueError:
             raise InputError("expected a canonical Claude session UUID") from None
         path = self.directory / (scope + ".jsonl")
-        if path.is_symlink():
-            raise InputError("a Claude transcript must be a regular file in the declared directory")
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         try:
-            fd = os.open(path, flags)
-        except FileNotFoundError:
-            if not self.directory.is_dir():
-                raise InputError("the transcript directory is unavailable") from None
-            return None
-        with os.fdopen(fd, "rb") as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                raise InputError("a Claude transcript must be a regular file")
-            raw = stream.read(16 * 1024 * 1024 + 1)
-        if len(raw) > 16 * 1024 * 1024:
-            raise InputError("Claude transcript exceeds the byte budget")
+            directory = self.directory.stat(follow_symlinks=False)
+            if not stat.S_ISDIR(directory.st_mode) or path.is_symlink():
+                raise InputError("a Claude transcript must be a regular file in the declared directory")
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            try:
+                fd = os.open(path, flags)
+            except FileNotFoundError:
+                if _stable(self.directory.stat(follow_symlinks=False)) != _stable(directory):
+                    raise InputError("the transcript directory changed during the scan")
+                return None
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise InputError("a Claude transcript must be a regular file")
+                if info.st_size > 16 * 1024 * 1024:
+                    raise InputError("Claude transcript exceeds the byte budget")
+                raw = stream.read(info.st_size + 1)
+                if (len(raw) != info.st_size or _stable(info) != _stable(os.fstat(stream.fileno()))
+                        or _stable(info) != _stable(path.stat(follow_symlinks=False))):
+                    raise InputError("the Claude transcript changed during the scan")
+        except OSError:
+            raise InputError("the Claude transcript could not be read consistently") from None
         records = []
         for line in raw.splitlines():
             value = json.loads(line, object_pairs_hook=unique_fields)

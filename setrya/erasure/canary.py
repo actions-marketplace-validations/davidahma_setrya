@@ -8,7 +8,7 @@ from contextlib import contextmanager
 
 from setrya.drill import InputError
 from .adapters import _keys, _pg_connection, _require_pg_base_table, _sql_name, _sqlite_snapshot
-from .fs_canary import AgentFSCanaryScanner, FilesystemCanaryScanner, GitHistoryCanaryScanner
+from .fs_canary import AgentFSCanaryScanner, FilesystemCanaryScanner, GitHistoryCanaryScanner, ScanLimits
 from .journal import identifier
 
 
