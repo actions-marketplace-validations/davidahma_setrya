@@ -124,6 +124,31 @@ def run():
     append("GITHUB_STEP_SUMMARY", summary(str(code), review) + "\n\n" + detail_lines(encoded))
     return code
 
+def conformance():
+    code, review = 2, "UNAVAILABLE"
+    details = "No signed conformance evidence was produced."
+    try:
+        require_version()
+        from setrya.receipts import exit_code
+        from setrya.vendor.cli import run_and_sign
+        from setrya.vendor.report import TARGETS, summary as vendor_summary
+
+        target = os.environ["SETRYA_CONFORMANCE_TARGET"]
+        key = os.environ["SETRYA_CONFORMANCE_KEY"]
+        keyless = os.environ["SETRYA_CONFORMANCE_KEYLESS"]
+        if target not in TARGETS or keyless not in ("true", "false") or bool(key) == (keyless == "true"):
+            raise ValueError("choose a supported conformance target and one signing policy")
+        receipt = run_and_sign(target, Path(os.environ["SETRYA_OUTPUT"]).absolute(),
+                               key=Path(key) if key else None)
+        if receipt is not None:
+            code, review = exit_code(receipt), receipt["review_status"]
+            details = vendor_summary(receipt)
+    except Exception as exc:
+        print(f"Setrya conformance error ({type(exc).__name__}).", file=sys.stderr)
+    append("GITHUB_OUTPUT", f"exit-code={code}\nreview-status={review}\nevidence-summary=[]")
+    append("GITHUB_STEP_SUMMARY", "### Setrya vendor conformance\n\n```text\n" + details + "\n```")
+    return code
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -190,7 +215,7 @@ def comment():
 
 if __name__ == "__main__":
     try:
-        raise SystemExit({"run": run, "comment": comment}[sys.argv[1]]())
+        raise SystemExit({"run": run, "conformance": conformance, "comment": comment}[sys.argv[1]]())
     except (KeyError, TypeError, OSError, ValueError) as exc:
         print(f"Setrya action error ({type(exc).__name__}).", file=sys.stderr)
         raise SystemExit(2)

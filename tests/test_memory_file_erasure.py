@@ -29,9 +29,11 @@ MARKER = "erasure-canary-417"
 class WorkingTreeTests(unittest.TestCase):
     def test_native_paths_roundtrip_through_a_receipt(self):
         class Application:
-            def __init__(self, root, *, erase_file):
+            def __init__(self, root, *, erase_file, scanner_only=False, lose_control=False):
                 self.root = root
                 self.erase_file = erase_file
+                self.scanner_only = scanner_only
+                self.lose_control = lose_control
                 self.erased = False
                 self.path = root / "Team Montréal" / "Alice Smith.md"
                 self.path.parent.mkdir(parents=True)
@@ -56,6 +58,10 @@ class WorkingTreeTests(unittest.TestCase):
             def erase(self, subject):
                 if self.erase_file:
                     self.path.unlink()
+                if self.scanner_only:
+                    self.path.with_name("forgotten.md").write_text(MARKER)
+                if self.lose_control:
+                    (self.root / "control.md").unlink()
                 self.erased = True
 
         with TemporaryDirectory() as work:
@@ -74,6 +80,21 @@ class WorkingTreeTests(unittest.TestCase):
                     row = next(item for item in receipt["artifact_checks"] if item["discovered_by"] == "canary")
                     self.assertTrue(row["key"].startswith("path64:"))
                     self.assertEqual((app.root / decode_scan_location(row["key"])).resolve(), app.path.resolve())
+
+            from setrya.casework.receipt_summary import receipt_summary
+
+            for scanner_only, lose_control in ((True, False), (False, True), (True, True)):
+                with self.subTest(scanner_only=scanner_only, lose_control=lose_control):
+                    bundle = folder / f"summary-{scanner_only}-{lose_control}"
+                    app = Application(bundle.with_suffix(".app"), erase_file=True,
+                                      scanner_only=scanner_only, lose_control=lose_control)
+                    run_shared(subject, case=case, application=app, output=bundle, mode="deletion")
+                    text = receipt_summary(bundle, audience="customer")
+                    self.assertEqual(replay(bundle)["technical_verdict"], "FAIL")
+                    self.assertIn("The erased fact appeared in 0 of those reads.", text)
+                    self.assertEqual("scanners found the erased fact in 1 location." in text, scanner_only)
+                    self.assertEqual("a copy or an answer that should have been erased" in text, scanner_only)
+                    self.assertEqual("information meant to remain was lost" in text, lose_control)
 
     def test_path_codec_preserves_safe_keys_and_reserves_its_prefix(self):
         for location in ("notes.md", "path64:event.md", "aaab:Team Montréal/Alice Smith.md"):
@@ -229,15 +250,26 @@ class GitHistoryTests(unittest.TestCase):
             git("reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all")
             self.assertEqual(scan.find(scope="memory", marker=MARKER), {old + ":memory/first.md"})
             git("update-ref", "-d", "ORIG_HEAD")
-            dangling_blob = git("rev-parse", old + ":second.md")
-            self.assertEqual(scan.find(scope=".", marker=MARKER), {f"blob:{dangling_blob}"})
-            self.assertEqual(scan.find(scope="memory", marker=MARKER), {f"blob:{dangling_blob}"})
-            git("tag", "unaddressable", dangling_blob)
+            self.assertEqual(scan.find(scope=".", marker=MARKER), {old + ":memory/first.md", old + ":second.md"})
+            self.assertEqual(scan.find(scope="memory", marker=MARKER), {old + ":memory/first.md"})
+
+            detached_blob = subprocess.check_output(
+                ["git", "hash-object", "-w", "--stdin"], input=MARKER.encode() + b"\nextra",
+                cwd=root, env=_git_env(), timeout=10,
+            ).decode().strip()
+            detached_tree = subprocess.check_output(
+                ["git", "mktree"], input=f"100644 blob {detached_blob}\tsaved.md\n".encode(),
+                cwd=root, env=_git_env(), timeout=10,
+            ).decode().strip()
+            self.assertEqual(scan.find(scope="memory", marker=MARKER),
+                             {old + ":memory/first.md", f"tree:{detached_tree}:saved.md"})
+            git("tag", "unaddressable", detached_blob)
             git("repack", "-ad")
-            self.assertEqual(scan.find(scope=".", marker=MARKER), {f"blob:{dangling_blob}"})
+            git("prune", "--expire=now")
+            self.assertEqual(scan.find(scope=".", marker=MARKER), {f"blob:{detached_blob}"})
             git("tag", "-d", "unaddressable")
             # This blob remains packed after its last reference is removed.
-            self.assertEqual(scan.find(scope=".", marker=MARKER), {f"blob:{dangling_blob}"})
+            self.assertEqual(scan.find(scope=".", marker=MARKER), {f"blob:{detached_blob}"})
             git("repack", "-ad")
             git("prune", "--expire=now")
             self.assertEqual(scan.find(scope=".", marker=MARKER), set())
@@ -265,7 +297,7 @@ class GitHistoryTests(unittest.TestCase):
             self.assertEqual(app.git("show", "ORIG_HEAD:scoped/note.md").decode(), MARKER)
             self.assertEqual(app.history.find(scope="scoped", marker=MARKER), {old + ":scoped/note.md"})
             app.git("update-ref", "-d", "ORIG_HEAD")
-            self.assertEqual(app.history.find(scope="scoped", marker=MARKER), set())
+            self.assertEqual(app.history.find(scope="scoped", marker=MARKER), {old + ":scoped/note.md"})
 
     def test_large_history_visits_each_unique_tree_once_and_obeys_commit_budget(self):
         from setrya.erasure import fs_canary
@@ -357,7 +389,8 @@ class GitHistoryTests(unittest.TestCase):
                 self.assertEqual(set(e["baseline"]["scans"]["files"]), {TARGET_FILE, DERIVED_FILE})
                 self.assertFalse(e["immediate"]["scans"]["files"])
                 if lane == "broken":
-                    self.assertRegex(e["immediate"]["scans"]["git"][0], r"^blob:[0-9a-f]{40,64}$")
+                    self.assertRegex(e["immediate"]["scans"]["git"][0], r"^[0-9a-f]{40,64}:")
+                    self.assertTrue(e["immediate"]["scans"]["git"][0].endswith(":" + TARGET_FILE))
                     self.assertEqual(e["final"]["scans"]["files"], [DERIVED_FILE])
                     self.assertTrue(e["final"]["scans"]["git"])
                 else:

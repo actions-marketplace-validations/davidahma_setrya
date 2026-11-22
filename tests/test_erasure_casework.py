@@ -48,7 +48,7 @@ class CustomerReceipt(unittest.TestCase):
         from setrya.receipt_format import FORMAT_V3
         result = {"format": FORMAT_V3, "profile": "discovery", "case_id": "N-204", "observed_at": "2020-08-12T22:00:00Z",
                   "services": [], "technical_verdict": "NOT TESTED", "review_status": "OPEN_ITEMS", "open_items": []}
-        with patch("setrya.casework.customer.replay", return_value=result):
+        with patch("setrya.casework.receipt_summary.replay", return_value=result):
             self.assertIn("2020-08-12. No deletion drill was run.", customer_receipt("deferred-case"))
             result["drill_observed_at"] = "2024-08-13T09:15:00Z"
             text = customer_receipt("completed-case")

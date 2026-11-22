@@ -19,7 +19,7 @@ def replay_bytes(directory, raw, *, expected_request=None, expected_job=None):
     require(isinstance(document, dict), "Expected a receipt object.")
     from .casework import profiles
     if (name == v2.RECEIPT and document.get("format") == v3.RECEIPT_FORMAT
-            and document.get("profile") in (profiles.OBSERVED, profiles.FOLLOWUP)):
+            and document.get("profile") in profiles.PROFILES):
         require(expected_request is None and expected_job is None, "Request and job pins apply to original tenant receipts.")
         return profiles.replay_bytes(folder, raw)
     if name == v2.RECEIPT and document.get("format") == v3.RECEIPT_FORMAT and document.get("scope") == "tenant":
@@ -83,7 +83,7 @@ def check_scope(receipt, expected_scope):
 def summary(receipt):
     """Render an evaluated receipt, including its engineering verdict and any case obligations."""
     from .casework import profiles
-    if receipt.get("profile") in (profiles.OBSERVED, profiles.FOLLOWUP):
+    if receipt.get("profile") in profiles.PROFILES:
         return profiles.summary(receipt)
     if receipt.get("profile") == "discovery" or receipt.get("format") == "setrya.discovery.result":
         from setrya.discovery.case import summary as discovery_summary

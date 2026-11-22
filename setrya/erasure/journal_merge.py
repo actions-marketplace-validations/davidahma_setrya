@@ -182,26 +182,35 @@ class CollectedJournal:
                        (producer, ref, digest, _encode(chain) if chain is not None else None))
 
     def ingest_trace(self, attributes, *, producer):
-        """Import one setrya.copy.v1 span event emitted by WorkerJournal; call after authenticating its origin."""
+        """Import one authenticated setrya.copy.v1 span event."""
+        self.ingest_traces((attributes,), producer=producer)
+
+    def ingest_traces(self, events, *, producer):
+        """Import a bounded batch atomically. Trace observations never seal a subject."""
         producer = identifier(producer, "producer")
-        require(attributes.get("setrya_run") == self.run_id and attributes.get("setrya_producer") == producer,
-                "Unexpected trace producer or run.")
-        subject = Subject.from_metadata(attributes)
-        details = attributes.get("details_json")
-        require(isinstance(details, str) and len(details.encode()) <= MAX_BYTES, "Oversized or missing trace details.")
-        turn = Turn.from_metadata(attributes)
-        seq, record = _decode_event({"sequence": attributes.get("setrya_sequence"), "store": attributes.get("store"),
-                                     "key": attributes.get("copy_key"), "source": attributes.get("source"),
-                                     "action": attributes.get("action"), "classification": subject.classification,
-                                     "observed_at": attributes.get("observed_at"),
-                                     "details": json.loads(details, object_pairs_hook=unique_fields),
-                                     **(turn.copy_fields() if turn else {})}, subject.ref)
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
-            if db.execute("SELECT 1 FROM collected_seals WHERE producer=? AND ref=?", (producer, subject.ref)).fetchone():
-                require(db.execute("SELECT 1 FROM collected_events WHERE producer=? AND sequence=?",
-                                   (producer, seq)).fetchone(), "Trace event absent from finalized packet.")
-            self._insert(db, producer, seq, subject.ref, record)
+            for count, attributes in enumerate(events, start=1):
+                require(count <= MAX_EVENTS, "Too many copy events in the trace packet.")
+                require(attributes.get("setrya_run") == self.run_id and attributes.get("setrya_producer") == producer,
+                        "Unexpected trace producer or run.")
+                subject = Subject.from_metadata(attributes)
+                details = attributes.get("details_json")
+                require(isinstance(details, str) and len(details.encode()) <= MAX_BYTES, "Oversized or missing trace details.")
+                turn = Turn.from_metadata(attributes)
+                seq, record = _decode_event({
+                    "sequence": attributes.get("setrya_sequence"), "store": attributes.get("store"),
+                    "key": attributes.get("copy_key"), "source": attributes.get("source"),
+                    "action": attributes.get("action"), "classification": subject.classification,
+                    "observed_at": attributes.get("observed_at"),
+                    "details": json.loads(details, object_pairs_hook=unique_fields),
+                    **(turn.copy_fields() if turn else {}),
+                }, subject.ref)
+                if db.execute("SELECT 1 FROM collected_seals WHERE producer=? AND ref=?",
+                              (producer, subject.ref)).fetchone():
+                    require(db.execute("SELECT 1 FROM collected_events WHERE producer=? AND sequence=?",
+                                       (producer, seq)).fetchone(), "Trace event absent from finalized packet.")
+                self._insert(db, producer, seq, subject.ref, record)
 
     def coverage(self, subject, *, run_id, expected_producers):
         with closing(sqlite3.connect(self.path)) as db:

@@ -17,9 +17,619 @@
     },
     {
       "$ref": "#/$defs/followup"
-    }
+    },
+    { "$ref": "#/$defs/branchLineage" },
+    { "$ref": "#/$defs/cryptoErasure" },
+    { "$ref": "#/$defs/vendorConformance" }
   ],
   "$defs": {
+    "branchLineage": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "setrya.erasure.receipt.v3"
+        },
+        "version": {
+          "const": 3
+        },
+        "scope": {
+          "const": "person"
+        },
+        "profile": {
+          "const": "branch-lineage"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "technical_verdict": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT TESTED",
+            "ERROR"
+          ]
+        },
+        "review_status": {
+          "enum": [
+            "READY_FOR_REVIEW",
+            "RESIDUAL_FOUND",
+            "OPEN_ITEMS"
+          ]
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "open_items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "store": {
+                "$ref": "#/$defs/id"
+              },
+              "kind": {
+                "enum": [
+                  "restore-window",
+                  "configuration"
+                ]
+              },
+              "owner": {
+                "$ref": "#/$defs/id"
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "follow_up": {
+                "type": "string",
+                "format": "date"
+              }
+            },
+            "required": [
+              "store",
+              "kind",
+              "owner",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/observedDeletion/properties/evidence"
+        },
+        "case_id": {
+          "$ref": "#/$defs/id"
+        },
+        "journal_head": {
+          "$ref": "#/$defs/sha256"
+        },
+        "erased_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "branches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "parent": {
+                "$ref": "#/$defs/id"
+              },
+              "child": {
+                "$ref": "#/$defs/id"
+              },
+              "as_of": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "enum": [
+                  "RESIDUAL",
+                  "GONE",
+                  "POST_ERASURE",
+                  "UNKNOWN"
+                ]
+              },
+              "observer": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/id"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "turn": {
+                "type": "object",
+                "properties": {
+                  "turn": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "initiator": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "agent": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "on_behalf_of": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "parent_turn": {
+                    "$ref": "#/$defs/id"
+                  }
+                },
+                "required": [
+                  "turn",
+                  "initiator",
+                  "agent"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "parent",
+              "child",
+              "as_of",
+              "status",
+              "observer"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "scanners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "kind": {
+                "enum": [
+                  "sqlite",
+                  "git-clones",
+                  "git-worktrees",
+                  "neon"
+                ]
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "remote": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "complete",
+              "remote"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 64
+        },
+        "restore_windows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "owner": {
+                "$ref": "#/$defs/id"
+              },
+              "store": {
+                "$ref": "#/$defs/id"
+              },
+              "seconds": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "elapsed": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "owner",
+              "store",
+              "seconds",
+              "expires_at",
+              "elapsed"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "format",
+        "version",
+        "scope",
+        "profile",
+        "observed_at",
+        "technical_verdict",
+        "review_status",
+        "failures",
+        "gaps",
+        "open_items",
+        "evidence",
+        "case_id",
+        "journal_head",
+        "erased_at",
+        "branches",
+        "scanners",
+        "restore_windows"
+      ],
+      "additionalProperties": false
+    },
+    "cryptoErasure": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "setrya.erasure.receipt.v3"
+        },
+        "version": {
+          "const": 3
+        },
+        "scope": {
+          "const": "person"
+        },
+        "profile": {
+          "const": "crypto-erasure"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "technical_verdict": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT TESTED",
+            "ERROR"
+          ]
+        },
+        "review_status": {
+          "enum": [
+            "READY_FOR_REVIEW",
+            "RESIDUAL_FOUND",
+            "OPEN_ITEMS"
+          ]
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "open_items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "store": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "owner": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "kind": {
+                "enum": [
+                  "verification",
+                  "coverage"
+                ]
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1
+              },
+              "key_sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            },
+            "required": [
+              "store",
+              "owner",
+              "kind",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/observedDeletion/properties/evidence"
+        },
+        "subject": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "ref"
+          ],
+          "additionalProperties": false
+        },
+        "capture_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "inventory_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "key_arn": {
+          "type": "string",
+          "minLength": 1
+        },
+        "key_status": {
+          "enum": [
+            "deleted",
+            "available",
+            "unproven"
+          ]
+        },
+        "key_event": {
+          "type": "object",
+          "properties": {
+            "event_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "occurred_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "event_id",
+            "occurred_at"
+          ],
+          "additionalProperties": false
+        },
+        "copies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "store": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "key_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "ciphertext_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "status": {
+                "enum": [
+                  "crypto-erased",
+                  "absent",
+                  "recoverable",
+                  "unknown"
+                ]
+              }
+            },
+            "required": [
+              "store",
+              "key_sha256",
+              "ciphertext_sha256",
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 1024,
+          "minItems": 1
+        }
+      },
+      "required": [
+        "format",
+        "version",
+        "scope",
+        "profile",
+        "observed_at",
+        "technical_verdict",
+        "review_status",
+        "failures",
+        "gaps",
+        "open_items",
+        "evidence",
+        "subject",
+        "capture_manifest_sha256",
+        "inventory_sha256",
+        "key_arn",
+        "key_status",
+        "copies"
+      ],
+      "additionalProperties": false
+    },
+    "vendorConformance": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "setrya.erasure.receipt.v3"
+        },
+        "version": {
+          "const": 3
+        },
+        "scope": {
+          "const": "vendor"
+        },
+        "profile": {
+          "const": "vendor-conformance"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "technical_verdict": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT TESTED",
+            "ERROR"
+          ]
+        },
+        "review_status": {
+          "enum": [
+            "READY_FOR_REVIEW",
+            "RESIDUAL_FOUND",
+            "OPEN_ITEMS"
+          ]
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "open_items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "store": {
+                "$ref": "#/$defs/id"
+              },
+              "kind": {
+                "const": "coverage"
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "store",
+              "kind",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/observedDeletion/properties/evidence"
+        },
+        "target": {
+          "enum": [
+            "pgvector",
+            "langgraph-store",
+            "mem0"
+          ]
+        },
+        "versions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1
+          }
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "surface": {
+                "$ref": "#/$defs/id"
+              },
+              "status": {
+                "enum": [
+                  "PASS",
+                  "FAIL",
+                  "NOT TESTED"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "surface",
+              "status",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 7,
+          "minItems": 6
+        },
+        "certification": {
+          "const": "UNQUALIFIED"
+        }
+      },
+      "required": [
+        "format",
+        "version",
+        "scope",
+        "profile",
+        "observed_at",
+        "technical_verdict",
+        "review_status",
+        "failures",
+        "gaps",
+        "open_items",
+        "evidence",
+        "target",
+        "versions",
+        "checks",
+        "certification"
+      ],
+      "additionalProperties": false
+    },
     "journalChain": {
       "type": "object",
       "properties": {
@@ -586,14 +1196,15 @@
         },
         "objects": {"const": "all-local-blobs"},
         "remote_configured": {"type": "boolean"},
-        "remote_owner": {"$ref": "#/$defs/id"}
+        "remote_owner": {"$ref": "#/$defs/id"},
+        "locations_incomplete": {"const": true}
       },
       "required": ["kind", "scope"],
       "oneOf": [
         {
           "properties": {"kind": {"const": "filesystem"}},
           "required": ["patterns", "skipped"],
-          "not": {"anyOf": [{"required": ["objects"]}, {"required": ["remote_configured"]}, {"required": ["remote_owner"]}]}
+          "not": {"anyOf": [{"required": ["objects"]}, {"required": ["remote_configured"]}, {"required": ["remote_owner"]}, {"required": ["locations_incomplete"]}]}
         },
         {
           "properties": {"kind": {"const": "git"}},

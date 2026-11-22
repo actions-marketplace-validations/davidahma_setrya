@@ -5,7 +5,7 @@ import re
 
 from setrya.offboarding.inputs import require
 from setrya.receipt_format import FORMAT_V3
-from setrya.receipts import replay
+from .profiles import BRANCHES, CRYPTO, VENDOR
 
 
 def _count(number, singular, plural=None):
@@ -13,12 +13,28 @@ def _count(number, singular, plural=None):
 
 
 def customer_receipt(bundle, *, case_id=None):
-    return customer_text(replay(bundle), case_id=case_id)
+    from .receipt_summary import receipt_summary
+
+    return receipt_summary(bundle, audience="customer", case_id=case_id)
 
 
-def customer_text(receipt, *, case_id=None):
+def _failure_text(kinds):
+    lines = []
+    if "residual" in kinds:
+        lines.append("At least one check found a copy or an answer that should have been erased.")
+    if "control-loss" in kinds:
+        lines.append("At least one check found that information meant to remain was lost.")
+    if "other" in kinds or not lines:
+        lines.append("At least one recorded check failed its requirement.")
+    return " ".join(lines)
+
+
+def customer_text(receipt, *, case_id=None, failure_kinds=()):
     require(receipt.get("format") == FORMAT_V3, "Customer rendering requires a v3 receipt and its evidence.")
-    attached = receipt.get("case_id") or receipt.get("request_id")
+    profile = receipt.get("profile")
+    attached = receipt.get("request_id")
+    if profile not in (BRANCHES, "follow-up"):
+        attached = attached or receipt.get("case_id")
     if case_id:
         require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", case_id), "Use an opaque customer case number.")
         require(attached in (None, case_id), "Case number differs from the replayed evidence.")
@@ -43,6 +59,12 @@ def customer_text(receipt, *, case_id=None):
         lines.append(f"The observer checked {_count(len(receipt['checks']), 'recorded copy', 'recorded copies')} for the completed request.")
     elif receipt.get("profile") == "follow-up":
         lines.append("This review revisited outstanding items from an earlier deletion record.")
+    elif receipt.get("profile") == BRANCHES:
+        lines.append(f"The review examined {_count(len(receipt['branches']), 'branch', 'branches')} and the declared restore windows.")
+    elif receipt.get("profile") == CRYPTO:
+        lines.append(f"The observer checked key destruction for {_count(len(receipt['copies']), 'ciphertext copy', 'ciphertext copies')}.")
+    elif receipt.get("profile") == VENDOR:
+        lines.append(f"A synthetic fixture checked the declared surfaces for {receipt['target']}.")
     elif receipt["scope"] == "tenant":
         lines.append(f"The tenant review covered {len(receipt['probes'])} recorded application checks.")
     else:
@@ -64,7 +86,7 @@ def customer_text(receipt, *, case_id=None):
     verdict = receipt["technical_verdict"]
     lines.append({
         "PASS": "The recorded checks met their deletion and preservation requirements.",
-        "FAIL": "At least one check found information that should have disappeared or lost information that should remain.",
+        "FAIL": _failure_text(failure_kinds),
         "ERROR": "An error prevented a reliable conclusion.",
         "NOT TESTED": "The evidence was insufficient to confirm the requested checks.",
     }[verdict])
@@ -72,7 +94,7 @@ def customer_text(receipt, *, case_id=None):
         lines.append({"exercised": "The drill also checked what happened after a delayed worker resumed.",
                       "incomplete": "The delayed-worker check could not be completed.",
                       "not exercised": "This run did not test a delayed worker."}[receipt["race"]])
-    items = receipt["open_items"]
+    items = receipt.get("open_items", [])
     if items:
         lines.append(f"{_count(len(items), 'follow-up item')} {'remains' if len(items) == 1 else 'remain'}.")
         groups = Counter()
@@ -81,6 +103,8 @@ def customer_text(receipt, *, case_id=None):
             status = item.get("status", "").lower()
             if item.get("evidence") == "remote-copies-uninspected":
                 label = "Remote copies were not inspected"
+            elif kind == "restore-window":
+                label = "Backup restore window"
             elif "retain" in status or kind in ("retained", "backup") or "retention" in status:
                 label = "Record retention"
             elif kind in ("configuration", "provider") or status == "configuration":

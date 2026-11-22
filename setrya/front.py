@@ -21,8 +21,12 @@ def help_parser():
         ("run", "test erasure in a disposable application and save a receipt"),
         ("doctor", "check fixture wiring and observations before running a drill"),
         ("replay", "recompute the verdict from saved evidence"),
-        ("demo", "run the workspace, analyst or memory-files example"),
-        ("journal", "verify local journal integrity"),
+        ("demo", "run the workspace, analyst, memory-files or branches example"),
+        ("journal", "verify journal integrity or import copy events from OTLP"),
+        ("branches", "check live forks and disclosed restore windows"),
+        ("conformance", "run a replayable vendor self-check"),
+        ("crypto-erasure", "observe AWS KMS key destruction using read-only credentials"),
+        ("mcp", "serve local erasure tools over MCP stdio"),
         ("receipt", "summarize a replayed receipt for an engineer, reviewer or customer"),
         ("recheck", "recheck due follow-up items using read-only evidence"),
         ("route-coverage", "match changed routes and jobs to candidate evidence"),
@@ -42,7 +46,7 @@ def _start(command, args):
     parser.add_argument("--scope", choices=("person", "tenant"), default="person", help="deletion scope (default: person)")
     parser.add_argument("--output", type=Path, help="fresh output directory")
     if is_demo:
-        parser.add_argument("example", choices=("workspace", "analyst", "memory-files"), nargs="?", help="person example (default: workspace)")
+        parser.add_argument("example", choices=("workspace", "analyst", "memory-files", "branches"), nargs="?", help="person example (default: workspace)")
         parser.add_argument("--mode", choices=("deletion", "late-write"), help="person drill mode (default: late-write)")
     else:
         from .erasure.case_starters import STACKS
@@ -56,6 +60,11 @@ def _start(command, args):
         print(f"Created {case}. Configure the disposable app and storage bindings.")
         print(join(["setrya", "doctor", "--case", str(case)]))
         return 0
+    if is_demo and opts.example == "branches":
+        if opts.scope != "person" or opts.mode is not None:
+            raise InputError("The branch demo supplies its own fork and restore schedule.")
+        from .branches.demo import demo
+        return demo(opts.output or Path("branches"))
     if opts.scope == "tenant":
         from .erasure.cli import main
         return main([command, *args], prog="setrya")
@@ -89,6 +98,18 @@ def dispatch(argv):
     options = {arg.partition("=")[0] for arg in args if arg.startswith("--")}
     first = args[0] if args else None
     try:
+        if cmd == "branches":
+            from .branches.cli import command
+            return command(args)
+        if cmd == "conformance":
+            from .vendor.cli import command
+            return command(args)
+        if cmd == "crypto-erasure":
+            from .casework.crypto_erasure import command
+            return command(args)
+        if cmd == "mcp":
+            from .mcp_server import command
+            return command(args)
         if cmd == "journal":
             from .erasure.journal_cli import command
             return command(args)
