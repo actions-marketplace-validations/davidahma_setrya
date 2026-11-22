@@ -1,10 +1,10 @@
 """Observe EDK references in ciphertext envelopes from a read-only SQLite snapshot."""
-from hashlib import sha256
-from io import BytesIO
-from pathlib import Path
 import re
 import sqlite3
 import time
+from hashlib import sha256
+from io import BytesIO
+from pathlib import Path
 
 from setrya.erasure.adapters import _sql_name
 from setrya.offboarding.inputs import require
@@ -94,6 +94,11 @@ def observe_store(config, base, store, expected):
         if expected:
             lookup = " OR copy_ref COLLATE BINARY IN (" + ",".join("?" for _ in expected) + ")"
         try:
+            malformed = conn.execute(f"""
+                SELECT 1 FROM main.{table}
+                WHERE typeof(copy_ref) != 'text' OR typeof(subject_ref) != 'text' LIMIT 1
+            """).fetchone()
+            require(malformed is None, "Ambiguous SQLite subject or ciphertext key encoding.")
             rows = conn.execute(f"""
                 SELECT copy_ref, subject_ref, ciphertext FROM main.{table}
                 WHERE subject_ref COLLATE BINARY IN (?, ?) {lookup} LIMIT {MAX_COPIES * 2 + 2}

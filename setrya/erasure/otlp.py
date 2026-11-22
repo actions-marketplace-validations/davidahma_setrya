@@ -4,6 +4,7 @@ import json
 import re
 
 from setrya.offboarding.inputs import read_regular_bytes, require, unique_fields
+
 from .journal_merge import MAX_BYTES, MAX_EVENTS
 
 EVENT = "setrya.copy.v1"

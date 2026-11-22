@@ -33,7 +33,7 @@ def customer_text(receipt, *, case_id=None, failure_kinds=()):
     require(receipt.get("format") == FORMAT_V3, "Customer rendering requires a v3 receipt and its evidence.")
     profile = receipt.get("profile")
     attached = receipt.get("request_id")
-    if profile not in (BRANCHES, "follow-up"):
+    if profile != BRANCHES:
         attached = attached or receipt.get("case_id")
     if case_id:
         require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", case_id), "Use an opaque customer case number.")

@@ -1,11 +1,15 @@
 """Replay observations of branches and declared point-in-time restore windows."""
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
 
 from setrya.casework.profiles import fields, stamp
+from setrya.core.branch_journal import (
+    MAX_BRANCHES,
+    branch_head,
+    check_graph,
+    validate_branch,
+)
 from setrya.core.inputs import require
 from setrya.core.subject import identifier
-
-from setrya.core.branch_journal import MAX_BRANCHES, branch_head, check_graph, validate_branch
 
 PROFILE = "branch-lineage"
 FORMAT = "setrya.branch-lineage.v1"
@@ -42,12 +46,13 @@ def _topology(edges, root):
     return reachable
 
 
-def _check_status(age, incomplete, observed, erased):
+def _check_status(age, incomplete, observed, erased, origin_confirmed):
     if observed == "gone":
         return "GONE"
     if age is not None and age < erased:
         return "RESIDUAL" if observed == "live" else "UNKNOWN"
-    return "POST_ERASURE" if observed == "live" and not incomplete and age is not None and age > erased else "UNKNOWN"
+    return ("POST_ERASURE" if observed == "live" and origin_confirmed and not incomplete
+            and age is not None and age > erased else "UNKNOWN")
 
 
 def _scan_rows(scanners, root, edges):
@@ -71,7 +76,7 @@ def _scan_rows(scanners, root, edges):
             require(state in ("live", "gone", "unknown") and child != root and child not in checks,
                     "Repeated or invalid branch observation.")
             require(state != "gone" or scan["complete"], "An incomplete scan cannot establish that a branch is gone.")
-            checks[child] = (name, state)
+            checks[child] = (name, state, scan["kind"] == "neon" and "edge" in check)
             if "edge" in check:
                 new = check["edge"]
                 validate_branch(new)
@@ -85,7 +90,7 @@ def _scan_rows(scanners, root, edges):
                     if (previous["parent"] != new["parent"] or new["as_of"] is not None
                             and previous["as_of"] != new["as_of"]):
                         findings.append(f"Branch {child} has conflicting ancestry.")
-                        checks[child] = (name, "unknown")
+                        checks[child] = (name, "unknown", False)
                 else:
                     edges[child] = new
             require(child in edges, "Branch observation has no ancestry event.")
@@ -97,7 +102,10 @@ def _windows(rows, erased, observed, root):
     require(isinstance(rows, list) and len(rows) <= MAX_SCANNERS, "Invalid restore window list.")
     seen = set()
     for spec in rows:
-        fields(spec, "id store owner seconds")
+        fields(spec, "id store owner seconds", ("postgres_archiving",))
+        archiving = spec.get("postgres_archiving")
+        if "postgres_archiving" in spec:
+            require(archiving in ("unavailable", "off", "on", "always"), "Invalid PostgreSQL archive mode.")
         name = identifier(spec["id"], "restore window ID")
         store = identifier(spec["store"], "restore window store")
         identifier(spec["owner"], "restore window owner")
@@ -108,6 +116,9 @@ def _windows(rows, erased, observed, root):
         expires = erased + timedelta(seconds=seconds)
         elapsed = seconds == 0 or observed >= expires
         windows.append({**spec, "expires_at": expires.isoformat(), "elapsed": elapsed})
+        if archiving == "unavailable":
+            items.append({"store": store, "kind": "configuration", "owner": spec["owner"],
+                          "evidence": "postgres-archive-setting-unavailable"})
         if not elapsed:
             items.append({"store": store, "kind": "restore-window", "owner": spec["owner"],
                           "expires_at": expires.isoformat(), "follow_up": expires.date().isoformat(),
@@ -120,7 +131,7 @@ def derive_branches(evidence):
     require(evidence["format"] == FORMAT, "Unsupported branch lineage evidence.")
     root = identifier(evidence["store"], "original store")
     erased, observed = (_timestamp(evidence[name]) for name in ("erased_at", "observed_at"))
-    require(erased <= observed, "Branch observations cannot precede the erasure.")
+    require(erased <= observed <= datetime.now(UTC), "Branch observations must fall between erasure and the verifier clock.")
     journal = evidence["journal"]
     require(isinstance(journal, list) and len(journal) <= MAX_BRANCHES, "Invalid store branch journal.")
     edges = {}
@@ -137,13 +148,13 @@ def derive_branches(evidence):
     reachable = _topology(edges, root)
     failures, branches = [], []
     for child in sorted((set(reachable) - {root}) | (set(checks) - set(reachable))):
-        scanner, observation = checks.get(child, (None, "unknown"))
+        scanner, observation, origin_confirmed = checks.get(child, (None, "unknown", False))
         if child not in reachable:
             status = "UNKNOWN"
             gaps.append(f"Branch {child} is in the scanned inventory but does not have a path to {root}.")
         else:
             age, incomplete = reachable[child]
-            status = _check_status(age, incomplete, observation, erased)
+            status = _check_status(age, incomplete, observation, erased, origin_confirmed)
             if status == "UNKNOWN":
                 gaps.append(f"Branch {child} has no decisive copy time or live-state observation.")
             elif status == "RESIDUAL":
@@ -170,6 +181,8 @@ def observations(receipt):
                      + (f"  turn {turn}" if turn else ""))
     lines.extend(f"Declared restore window for {item['store']} expires {item['expires_at']}."
                  for item in receipt["restore_windows"] if item["seconds"])
+    lines.extend(f"PostgreSQL archiving setting for {item['store']}: {item['postgres_archiving']}."
+                 for item in receipt["restore_windows"] if "postgres_archiving" in item)
     return lines
 
 

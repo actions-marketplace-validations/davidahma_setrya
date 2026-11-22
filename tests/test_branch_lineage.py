@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from setrya.branches.cli import check_branches
 from setrya.core.branch_journal import read_branches
-from setrya.branches.scanners import neon_branches
+from setrya.branches.scanners import neon_branches, postgres_archiving
 from setrya.casework import recheck
 from setrya.casework.receipt_summary import receipt_summary
 from setrya.cli import main
@@ -88,7 +88,7 @@ class BranchLineage(unittest.TestCase):
         self.assertEqual(replay(case.root / "receipt"), receipt)
         self.assertNotIn("synthetic-only", (case.root / "receipt" / "observation-evidence.json").read_text())
 
-    def test_unjournalled_backup_unknown_and_valid_post_erasure_copy_distinguished(self):
+    def test_unjournalled_backup_and_mutable_post_erasure_alias_are_unknown(self):
         case = self.case
         inventory(case)
         case.journal.record_branch("app-db", "backup", case.snapshot)
@@ -98,8 +98,42 @@ class BranchLineage(unittest.TestCase):
         receipt = run(case)
         self.assertEqual(receipt["technical_verdict"], "NOT TESTED")
         rows = {b["child"]: b["status"] for b in receipt["branches"]}
-        self.assertEqual(rows["restored"], "POST_ERASURE")
-        self.assertEqual(list(rows.values()).count("UNKNOWN"), 1)
+        self.assertEqual(rows["restored"], "UNKNOWN")
+        self.assertEqual(list(rows.values()).count("UNKNOWN"), 2)
+
+    def test_in_place_restore_cannot_use_the_older_alias_generation(self):
+        case = self.case
+        inventory(case)
+        snapshot = case.root / "before.sqlite"
+        current = case.backups / "restored.sqlite"
+        database(snapshot)
+        database(current)
+        with sqlite3.connect(current) as live:
+            live.execute("DELETE FROM subjects")
+        case.journal.record_branch("app-db", "restored", case.erased + timedelta(seconds=1))
+        with closing(sqlite3.connect(snapshot)) as original, closing(sqlite3.connect(current)) as live:
+            original.backup(live)
+            self.assertEqual(live.execute("SELECT id FROM subjects").fetchone(), ("synthetic-only",))
+        result = run(case)
+        self.assertEqual(result["technical_verdict"], "NOT TESTED")
+        self.assertEqual(replay(case.root / "receipt"), result)
+
+    @unittest.skipUnless(os.environ.get("SETRYA_PGVECTOR_DSN"), "requires disposable PostgreSQL")
+    def test_native_archive_mode(self):
+        self.assertIn(postgres_archiving("SETRYA_PGVECTOR_DSN"), ("off", "on", "always"))
+
+    def test_postgres_archive_mode_is_configuration_only(self):
+        case = self.case
+        inventory(case, seconds=3600)
+        with case.inventory.open("a", encoding="utf-8") as stream:
+            stream.write('postgres_dsn_env = "TRIAL_DSN"\n')
+        with patch("setrya.branches.cli.postgres_archiving", return_value="on") as observe:
+            result = run(case)
+        observe.assert_called_once_with("TRIAL_DSN")
+        self.assertEqual(result["restore_windows"][0]["postgres_archiving"], "on")
+        self.assertEqual(result["review_status"], "OPEN_ITEMS")
+        self.assertEqual(result["open_items"][0]["evidence"], "declared-postgres-restore-window")
+        self.assertEqual(replay(case.root / "receipt"), result)
 
     def test_missing_scanner_root_preserves_other_residual(self):
         case = self.case
@@ -144,11 +178,14 @@ class BranchLineage(unittest.TestCase):
         self.assertEqual(followup["items"][0]["status"], "verified")
         self.assertEqual(followup["items"][0]["kind"], "restore-window")
         self.assertEqual(followup["review_status"], "READY_FOR_REVIEW")
-        self.assertEqual(replay(closed), followup)
-        parent = closed / "parent" / "parent" / "observation-evidence.json"
-        parent.write_text(parent.read_text() + "\n")
-        with self.assertRaisesRegex(InvalidReport, "differs"):
+        with self.assertRaisesRegex(InvalidReport, "ahead of the verifier clock"):
             replay(closed)
+        with patch.object(recheck, "datetime", Clock):
+            self.assertEqual(replay(closed), followup)
+            parent = closed / "parent" / "parent" / "observation-evidence.json"
+            parent.write_text(parent.read_text() + "\n")
+            with self.assertRaisesRegex(InvalidReport, "differs"):
+                replay(closed)
 
     def test_incomplete_copy_and_exact_erasure_time_stay_unknown(self):
         case = self.case
@@ -161,6 +198,14 @@ class BranchLineage(unittest.TestCase):
         receipt = run(case)
         self.assertEqual(receipt["technical_verdict"], "NOT TESTED")
         self.assertEqual({row["status"] for row in receipt["branches"]}, {"UNKNOWN"})
+
+    def test_empty_branch_checkpoint_can_be_pinned(self):
+        case = self.case
+        inventory(case)
+        receipt = run(case)
+        with redirect_stdout(StringIO()):
+            self.assertEqual(main(["journal", "verify", str(case.journal.path),
+                                   "--expected-branch-head", receipt["journal_head"]]), 0)
 
     def test_journal_keeps_original_edge_and_rejects_cycles(self):
         case = self.case

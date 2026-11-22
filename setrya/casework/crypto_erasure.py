@@ -1,10 +1,11 @@
 """Capture ciphertext references and verify AWS KMS destruction without writes."""
 import argparse
+import os
+import sqlite3
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-import sqlite3
 
 from setrya.drill import InputError
 from setrya.offboarding.inputs import InvalidReport, publish_new, read_json, require
@@ -19,7 +20,7 @@ _EVIDENCE = "setrya.crypto-erasure.v1"
 
 
 def _now(now):
-    when = now or datetime.now(timezone.utc)
+    when = now or datetime.now(UTC)
     require(when.tzinfo is not None, "Crypto-erasure observations require a timezone.")
     return when
 
@@ -74,9 +75,16 @@ def _baseline(doc):
 
 
 def _load_inventory(path):
-    config, digest = read_json(Path(path), "crypto-erasure inventory")
+    path = Path(path)
+    config, digest = read_json(path, "crypto-erasure inventory")
     inventory(config)
-    return config, digest
+    binding = sha256(b"setrya.crypto-inventory-bindings.v1\x00" + bytes.fromhex(digest))
+    for name, store in sorted(config["stores"].items()):
+        database = path.parent / store["database"]
+        actual = database.parent.resolve() / database.name
+        store["database"] = str(actual)
+        binding.update(name.encode("ascii") + b"\x00" + os.fsencode(actual) + b"\x00")
+    return config, binding.hexdigest()
 
 
 def capture(*, inventory_path, output, observer=None, now=None):
@@ -232,8 +240,8 @@ def summary(receipt):
     counts = Counter(row["status"] for row in receipt["copies"])
     lines = [f"Technical verdict {receipt['technical_verdict']} · Review status {receipt['review_status']}",
              f"KMS key {receipt['key_status']}. Examined {len(receipt['copies'])} captured or newly observed copies.",
-             f"{counts['crypto-erased']} crypto-erased · {counts['absent']} absent · "
-             f"{counts['recoverable']} have an available key · {counts['unknown']} unknown"]
+             (f"{counts['crypto-erased']} crypto-erased · {counts['absent']} absent · "
+              f"{counts['recoverable']} have an available key · {counts['unknown']} unknown")]
     lines.extend(receipt["failures"] + receipt["gaps"])
     return "\n".join(lines)
 

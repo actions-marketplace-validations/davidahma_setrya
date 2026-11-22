@@ -1,12 +1,12 @@
 """Run built-in conformance cases against disposable backend resources."""
 
-from datetime import datetime, timezone
-from importlib.metadata import PackageNotFoundError, version
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from datetime import UTC, datetime
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from ._mem0 import observation
@@ -49,7 +49,7 @@ def pgvector(evidence):
         evidence["versions"]["vector"] = extension
         if namespace in ("pg_catalog", "pg_temp"):
             raise MissingDSN
-        from psycopg.sql import Identifier, SQL
+        from psycopg.sql import SQL, Identifier
 
         extension_schema = Identifier(namespace)
         sql.execute(SQL(
@@ -133,9 +133,9 @@ def run_fixture(target):
         evidence["error"] = "missing-dsn"
     except (ModuleNotFoundError, PackageNotFoundError):
         evidence["error"] = "missing-extra" if not evidence["observations"] else "fixture-error"
-    except Exception:
+    except Exception:  # noqa: BLE001
         # SDK exceptions may include a DSN or credentials. Keep observations
         # already taken and report only this fixed diagnostic.
         evidence["error"] = "fixture-error"
-    evidence["observed_at"] = datetime.now(timezone.utc).isoformat()
+    evidence["observed_at"] = datetime.now(UTC).isoformat()
     return evidence

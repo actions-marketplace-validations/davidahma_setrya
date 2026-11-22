@@ -1,13 +1,13 @@
 """Metadata-only readers for explicitly scoped branch inventories."""
-from contextlib import closing
-from fnmatch import fnmatchcase
-from hashlib import sha256
 import json
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
+from contextlib import closing
+from fnmatch import fnmatchcase
+from hashlib import sha256
+from pathlib import Path
 from subprocess import SubprocessError
 from time import monotonic
 from urllib.error import URLError
@@ -15,11 +15,10 @@ from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from setrya.casework.profiles import stamp
+from setrya.core.branch_journal import MAX_BRANCHES, branch
 from setrya.core.errors import InputError
 from setrya.core.inputs import require, unique_fields
 from setrya.erasure.fs_canary import _git_env, _git_read
-
-from setrya.core.branch_journal import MAX_BRANCHES, branch
 
 MAX_FILES = 4096
 MAX_RESPONSE = 2 * 1024 * 1024
@@ -268,3 +267,23 @@ def observe(spec, root, known, erased):
     except (InputError, OSError, SubprocessError, URLError, ValueError):
         return metadata
     return {**metadata, "complete": complete, "remote": remote, "checks": checks}
+
+
+
+def postgres_archiving(dsn_env):
+    """Observe the effective PostgreSQL archive mode using one read-only transaction."""
+    dsn = os.environ.get(dsn_env)
+    if not dsn:
+        return "unavailable"
+    try:
+        import psycopg
+
+        with psycopg.connect(dsn, connect_timeout=5) as db:
+            db.read_only = True
+            db.execute("SET LOCAL statement_timeout = '5s'")
+            value, = db.execute("SELECT current_setting('archive_mode')").fetchone()
+    except ImportError:
+        return "unavailable"
+    except (psycopg.Error, OSError, ValueError, TypeError):
+        return "unavailable"
+    return value if value in ("off", "on", "always") else "unavailable"

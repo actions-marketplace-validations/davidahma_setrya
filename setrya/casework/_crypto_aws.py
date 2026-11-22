@@ -1,7 +1,7 @@
 """Read an exact AWS KMS key lifecycle without accessing its key material."""
-from datetime import datetime, timedelta
 import re
 import time
+from datetime import datetime, timedelta
 
 from setrya.offboarding.inputs import InvalidReport, require
 

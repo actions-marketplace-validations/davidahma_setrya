@@ -1,21 +1,20 @@
 """Local MCP tools for reviewing erasure evidence and running approved fixtures."""
 
 import argparse
-from contextlib import contextmanager, ExitStack
-from hashlib import sha256
 import os
-from pathlib import Path
 import re
-from selectors import DefaultSelector, EVENT_READ
 import signal
 import stat
 import subprocess
 import sys
+from contextlib import ExitStack, contextmanager
+from hashlib import sha256
+from pathlib import Path
+from selectors import EVENT_READ, DefaultSelector
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from time import monotonic
 
 from .drill import InputError
-
 
 _LIMIT = 16 * 1024
 _TIMEOUT = 120
@@ -130,7 +129,8 @@ def command(argv):
         output: str
 
     from .casework.receipt_summary import receipt_summary as render
-    from .receipts import exit_code, replay as evaluate, summary
+    from .receipts import exit_code, summary
+    from .receipts import replay as evaluate
 
     root = args.root.resolve(strict=True)
     if not root.is_dir():

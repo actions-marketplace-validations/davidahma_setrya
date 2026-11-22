@@ -258,3 +258,29 @@ def test_receipt_authenticates_offline_with_cosign(aws, fixture, tmp_path, monke
     cli = [sys.executable, "-m", "setrya"]
     subprocess.run([*cli, "erasure", "sign", *common, "--key", str(key.with_suffix(".key"))], check=True)
     subprocess.run([*cli, "verify", *common, "--key", str(key.with_suffix(".pub"))], check=True)
+
+
+
+def test_sqlite_blob_subject_cannot_hide_a_recoverable_copy(aws, fixture):
+    pin = _capture(aws, fixture)
+    path, _, _, _ = fixture
+    with sqlite3.connect(path) as db:
+        db.execute("INSERT INTO copies VALUES (?, ?, ?)", (NEW, SUBJECT.encode(), _message(CONTROL)))
+    receipt = _verify(aws, fixture, pin, event=_event())
+    assert receipt["technical_verdict"] == "NOT TESTED"
+    assert all(row["status"] == "unknown" for row in receipt["copies"])
+
+
+
+def test_relocated_inventory_cannot_verify_a_different_sqlite_store(aws, fixture, tmp_path):
+    pin = _capture(aws, fixture)
+    path, inventory, manifest, output = fixture
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / path.name).write_bytes(path.read_bytes())
+    moved = staging / inventory.name
+    moved.write_bytes(inventory.read_bytes())
+    with pytest.raises(InvalidReport, match="different ciphertext inventory"):
+        observe(inventory_path=moved, manifest_path=manifest, expect_manifest=pin, output=output,
+                observer=aws[0], now=CHECKED)
+    assert not output.exists()

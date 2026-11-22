@@ -39,7 +39,8 @@ def command(argv):
         result = {}
         if "copy_events" in tables:
             result.update(verify_snapshot(db, _FIELDS))
-        if {"store_branches", "store_branch_chain"} & tables:
+        if ({"store_branches", "store_branch_chain"} & tables
+                or args.expected_branch_head and "copy_events" in tables):
             _, result["branch_chain"] = verify_branches(db)
         if {"collected_events", "collected_seals"} & tables:
             require({"journal_binding", "collected_events", "collected_seals"} <= tables, "Incomplete collector journal.")

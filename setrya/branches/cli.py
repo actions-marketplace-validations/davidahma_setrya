@@ -1,18 +1,18 @@
 """Issue replayable branch observations from a trusted local inventory."""
 import argparse
+import re
+import tomllib
 from datetime import UTC, datetime
 from fnmatch import fnmatchcase
 from pathlib import Path
-import re
-import tomllib
 
 from setrya.casework.profiles import fields, issue, new_bundle, stamp
+from setrya.core.branch_journal import read_branch_snapshot
 from setrya.core.inputs import read_regular_bytes, require
 from setrya.core.subject import identifier
 
-from setrya.core.branch_journal import read_branch_snapshot
 from .receipt import FORMAT, KIND, MAX_SCANNERS, MAX_WINDOW_SECONDS, PROFILE
-from .scanners import observe
+from .scanners import observe, postgres_archiving
 
 
 def _inventory(path):
@@ -55,9 +55,13 @@ def _inventory(path):
             require(all(any(fnmatchcase(name, p) for p in spec["patterns"]) for name in spec["aliases"]),
                     "A SQLite branch alias does not match the scanner's patterns.")
     for spec in windows:
-        fields(spec, "id owner seconds")
+        fields(spec, "id owner seconds", ("postgres_dsn_env",))
         identifier(spec["id"], "restore window ID")
         identifier(spec["owner"], "restore window owner")
+        if "postgres_dsn_env" in spec:
+            name = spec["postgres_dsn_env"]
+            require(isinstance(name, str) and re.fullmatch(r"[A-Z_][A-Z0-9_]{0,127}", name),
+                    "The PostgreSQL read-only DSN must be named by an environment variable.")
         require(type(spec["seconds"]) is int and 0 <= spec["seconds"] <= MAX_WINDOW_SECONDS,
                 "Restore windows must be given in seconds, up to ten years.")
     return scanners, windows
@@ -73,6 +77,11 @@ def check_branches(*, store, erased_at, inventory, journal, output, expect_journ
         rows, _ = read_branch_snapshot(journal)
         known = {row["child"] for row in rows}
         scans = [observe(spec, root, known, erased) for spec in scanners]
+        restore_settings = []
+        for window in windows:
+            name = window.pop("postgres_dsn_env", None)
+            restore_settings.append({"store": root, **window,
+                                     **({"postgres_archiving": postgres_archiving(name)} if name else {})})
         # A copy created while the scan ran must be surfaced as unknown unless
         # a declared scanner has decisively observed it.
         latest, checkpoint = read_branch_snapshot(journal)
@@ -81,7 +90,7 @@ def check_branches(*, store, erased_at, inventory, journal, output, expect_journ
         evidence = {"format": FORMAT, "store": root, "erased_at": erased.isoformat(),
                     "observed_at": datetime.now(UTC).isoformat(), "journal": latest,
                     "journal_head": checkpoint["head"], "scanners": scans,
-                    "windows": [{"store": root, **item} for item in windows]}
+                    "windows": restore_settings}
         return issue(PROFILE, evidence, bundle)
 
 

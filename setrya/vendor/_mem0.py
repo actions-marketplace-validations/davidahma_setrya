@@ -1,12 +1,12 @@
 """Mem0's disposable local Qdrant and history run in an isolated child process."""
 
-from contextlib import closing
-from importlib.metadata import version
 import json
 import os
-from pathlib import Path
 import sqlite3
 import sys
+from contextlib import closing
+from importlib.metadata import version
+from pathlib import Path
 
 
 def observation(records, identities, text, marker, phase):
@@ -98,6 +98,6 @@ if __name__ == "__main__":
     try:
         text, marker = json.load(sys.stdin)
         observe(result, text, marker)
-    except Exception:
+    except Exception:  # noqa: BLE001 - Keep provider exception details out of evidence.
         result["error"] = "fixture-error"
     print(json.dumps(result))

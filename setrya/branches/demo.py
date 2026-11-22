@@ -1,9 +1,9 @@
 """Demonstrate a live SQLite fork and a restored copy serving erased data."""
+import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from shlex import join
-import sqlite3
 
 from setrya.core.journal import CopyJournal
 from setrya.core.subject import Turn
@@ -65,7 +65,7 @@ seconds = 86400
     print(f"Alice's finding after source erasure · source {'present' if _visible(main) else 'absent'} · "
           f"live fork {'present' if _visible(fork) else 'absent'} · "
           f"restored copy {'present' if _visible(restored) else 'absent'}")
-    options = dict(store="security-db", erased_at=erased, inventory=inventory, journal=journal.path)
+    options = {"store": "security-db", "erased_at": erased, "inventory": inventory, "journal": journal.path}
     broken = check_branches(**options, output=output / "broken")
     print(summary(broken))
     for candidate in (backup, fork, restored):

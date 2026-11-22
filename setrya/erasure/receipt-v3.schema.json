@@ -257,6 +257,9 @@
               },
               "elapsed": {
                 "type": "boolean"
+              },
+              "postgres_archiving": {
+                "enum": ["unavailable", "off", "on", "always"]
               }
             },
             "required": [

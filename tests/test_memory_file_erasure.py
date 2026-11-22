@@ -345,6 +345,15 @@ class GitHistoryTests(unittest.TestCase):
                 self.assertNotIn("private-project", filename.read_text())
             self.assertFalse(app.history.find(scope=".", marker=TARGET))
 
+    def test_worktree_config_keeps_remote_review_open(self):
+        from setrya.examples.memory_files import open_fixture
+
+        with open_fixture(shutil.which("git"), guarded=True) as (_, app, _):
+            app.git("config", "extensions.worktreeConfig", "true")
+            app.git("config", "--worktree", "remote.archive.url", "https://example.invalid/worktree")
+            observed = app.history.find(scope=".", marker=MARKER)
+            self.assertTrue(observed.coverage["remote_configured"])
+
     def test_changed_scan_scope_cannot_prove_a_clean_run(self):
         from setrya.examples.memory_files import open_fixture, TARGET
 

@@ -8,7 +8,7 @@ Use a customer-managed, single-Region symmetric AWS KMS key with AWS-generated k
 
 The first adapter reads a rollback-mode SQLite database in a read-only snapshot. Map the application-owned table with `copy_ref TEXT PRIMARY KEY`, `subject_ref TEXT NOT NULL` and `ciphertext BLOB NOT NULL`. `copy_ref` is a 64-character lowercase hex opaque reference that stays fixed for that store key. `subject_ref` is the same tenant-scoped HMAC used in the app's journal. Give each database one unrelated, retained row under its own subject reference and KMS key. Keep the retained row unchanged so it proves the verifier read the same store. An index on `subject_ref` helps SQLite find the copies in larger tables.
 
-Put the following in `crypto-inventory.json`. Replace the example references, ARNs and store mapping with trusted values from your application. Relative database paths are relative to this file.
+Put the following in `crypto-inventory.json`. Replace the example references, ARNs and store mapping with trusted values from your application. Relative database paths are resolved from this file when the capture is made. Keep the same resolved database locations for verification.
 
 ```json
 {

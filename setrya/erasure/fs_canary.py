@@ -404,7 +404,8 @@ class GitHistoryCanaryScanner:
             keys = [entry.partition(b"\n")[0].lower() for entry in raw.split(b"\x00") if entry]
             if any(key == b"include.path" or key.startswith(b"includeif.") for key in keys):
                 raise InputError("Git canary requires standalone configuration without includes")
-            return any(key.startswith(b"remote.") and key.count(b".") >= 2 for key in keys)
+            return (b"extensions.worktreeconfig" in keys
+                    or any(key.startswith(b"remote.") and key.count(b".") >= 2 for key in keys))
 
         def commit_roots(objects):
             commits, trees = set(), set()
@@ -449,12 +450,12 @@ class GitHistoryCanaryScanner:
             _check_local_git_files(directory, deadline, self.limits)
             remotes = remote_configured()
             objects = inventory()
-            roots = commit_roots(objects)
             needle = marker.encode()
             hits = {oid for oid, content in _git_objects(git, objects, b"blob", self.limits)
                     if needle in content}
             incomplete = False
             try:
+                roots = commit_roots(objects)
                 original_roots = {tree: refs.copy() for tree, refs in roots.items()}
                 reachable = {oid for refs in roots.values() for oid in refs}
                 dangling = {oid for oid, (kind, _) in objects.items() if kind == b"commit"} - reachable

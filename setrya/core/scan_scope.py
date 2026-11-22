@@ -53,7 +53,8 @@ def same_scope(first, last, store):
     """Compare two completed scans with recorded native scope."""
     earlier = first.get("scan_details", {}).get(store)
     later = last.get("scan_details", {}).get(store)
-    return earlier is not None and later is not None and _policy(earlier) == _policy(later)
+    return (earlier is not None and later is not None and not earlier.get("locations_incomplete")
+            and not later.get("locations_incomplete") and _policy(earlier) == _policy(later))
 
 
 def summarize(evidence):

@@ -10,7 +10,7 @@ from setrya.evidence import bundle_manifest
 from setrya.offboarding.inputs import InvalidReport, MAX_JSON_BYTES, publish_new_bytes, require
 from setrya.receipt_format import FORMAT_V3, MAX_BUNDLE_FILE_BYTES, RECEIPT
 from .observe import key_digest
-from .profiles import CRYPTO, EVIDENCE, FOLLOWUP, PROFILES, VENDOR, day, decode, fields, issue, new_bundle, sha, snapshot, stamp
+from .profiles import BRANCHES, CRYPTO, EVIDENCE, FOLLOWUP, PROFILES, VENDOR, day, decode, fields, issue, new_bundle, sha, snapshot, stamp
 from .stores import journal_rows, key_reader, observer_config, sqlite_reader
 
 PARENT = "parent"
@@ -203,6 +203,8 @@ def derive_followup(e, folder):
                     "Follow-up read target differs from the original obligation.")
         else:
             require(target is None, "Unexpected follow-up target.")
+        if reason == "configured-window-elapsed":
+            require(observed <= datetime.now(UTC), "Restore window follow-up is ahead of the verifier clock.")
         verified = reason == "configured-window-elapsed" or direct is False and scan is False
         found |= direct is True or scan is True
         reason = reason or ("residual-found" if direct is True or scan is True else
@@ -214,8 +216,9 @@ def derive_followup(e, folder):
     original_verdict = parent["technical_verdict"]
     verdict = "FAIL" if found else original_verdict
     review = "RESIDUAL_FOUND" if verdict == "FAIL" else "OPEN_ITEMS" if remaining or verdict != "PASS" else "READY_FOR_REVIEW"
+    references = ("request_id",) if parent.get("profile") == BRANCHES else ("case_id", "request_id")
     return {"scope": parent["scope"], **({"subject": {"ref": subject}} if subject else {}),
-            **{key: parent[key] for key in ("case_id", "request_id") if key in parent},
+            **{key: parent[key] for key in references if key in parent},
             "parent_sha256": digest, "observed_at": e["observed_at"], "original_verdict": original_verdict,
             "technical_verdict": verdict, "review_status": review, "items": items, "open_items": remaining,
             **({"controls": parent["controls"]} if "controls" in parent else {})}

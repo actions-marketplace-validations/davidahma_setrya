@@ -45,6 +45,8 @@ patterns = ["*.sqlite", "*.db"]
 id = "postgres-pitr"
 owner = "platform-db"
 seconds = 604800
+# Optional read-only connection to observe PostgreSQL's effective archive_mode.
+# postgres_dsn_env = "BRANCH_OBSERVER_DSN"
 ```
 
 ```sh
@@ -71,10 +73,10 @@ The Neon scanner sends `GET` requests to the fixed Management API host, follows 
 ## Interpret the result
 
 - `FAIL` means a scanned live branch descends from pre-erasure state. The verifier treats it as a residual until the operator removes the copy. The receipt identifies the ancestry and the observed agent turn where available.
-- `NOT TESTED` means some necessary branch metadata was unavailable, unbound or ambiguous. File modification time and Neon branch creation time cannot establish a copy's source timestamp.
+- `NOT TESTED` means some necessary branch metadata was unavailable, unbound or ambiguous. File modification time and Neon branch creation time cannot establish a copy's source timestamp. A local clone, worktree, or SQLite file can be replaced under the same name. A local alias for a fork made after erasure stays unknown without evidence for the current generation.
 - `PASS` means no pre-erasure live branch was found within the declared and successfully scanned boundaries. External copies and disclosed restore windows remain visible under open items.
 
-Postgres restore windows are operator-declared configuration evidence. This check reads the local declaration instead of connecting to the Postgres server or its backup system. Declare seconds using the retention configuration for your base backups and WAL archive. `wal_keep_size` is a size setting for replication, and it cannot establish the effective backup retention period. A nonzero window gives the reviewer an expiry timestamp and owner. `setrya recheck` automatically closes the configuration item after that exact time using a linked receipt. It closes the declared interval without reading archives or proving physical destruction. [Postgres point-in-time recovery](https://www.postgresql.org/docs/current/continuous-archiving.html)
+Declare the restore window in seconds from the retention configuration for your base backups and WAL archive. With `postgres_dsn_env`, Setrya also reads the effective PostgreSQL `archive_mode` in a read-only transaction. Use the `setrya[erasure-postgres]` extra and a separate read-only connection. The receipt records only the setting value or an unavailable observation. Server archiving settings and `wal_keep_size` cannot establish which copies your backup service retains. A nonzero window gives the reviewer an expiry timestamp and owner. `setrya recheck` automatically closes the configuration item after that exact time using a linked receipt. It closes the declared interval without reading archives or proving physical destruction. [Postgres point-in-time recovery](https://www.postgresql.org/docs/current/continuous-archiving.html)
 
 ```sh
 setrya recheck branch-evidence --output branch-follow-up
