@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import UUID
 
 from setrya.drill import InputError
+from setrya.offboarding.inputs import unique_fields
 from setrya.erasure.adapters import _sql_name
 from setrya.erasure.canary import LIMIT, SQLiteCanaryScanner, contains_marker, validate_probe
 from setrya.erasure.hooks import CopyHooks
@@ -105,7 +106,7 @@ class ClaudeTranscriptCanaryScanner:
             raise InputError("Claude transcript exceeds the byte budget")
         records = []
         for line in raw.splitlines():
-            value = json.loads(line)
+            value = json.loads(line, object_pairs_hook=unique_fields)
             if not isinstance(value, dict) or value.get("sessionId", scope) != scope:
                 raise InputError("unexpected Claude transcript record or session")
             records.append(value)

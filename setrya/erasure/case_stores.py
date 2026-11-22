@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from typing import Callable
 
 from setrya.drill import InputError
+from setrya.offboarding.inputs import unique_fields
 from setrya.integrations.agent_harnesses import ClaudeTranscriptCanaryScanner, OpenAISessionCanaryScanner
 from .adapters import _pg_connection, _sql_name
 from .canary import PostgresCanaryScanner, RedisCanaryScanner, SQLiteCanaryScanner, contains_marker
@@ -93,7 +94,7 @@ def open_observer(stack, config, location):
             def load(key):
                 value = single(db.execute("SELECT message_data FROM agent_messages WHERE session_id COLLATE BINARY=? "
                                           "AND CAST(id AS TEXT)=? LIMIT 2", (scope, key)).fetchall())
-                return json.loads(value) if value is not MISSING else MISSING
+                return json.loads(value, object_pairs_hook=unique_fields) if value is not MISSING else MISSING
         else:
             table, key_col, content, scope_col = columns(config)
             scanner = SQLiteCanaryScanner(db, table=config["table"], key=config["key_column"],

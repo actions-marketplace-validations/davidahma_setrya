@@ -31,6 +31,13 @@ class HarnessTests(unittest.TestCase):
         self.journal = CopyJournal(self.root / "journal.sqlite")
         self.hooks = CopyHooks(self.journal, self.subject)
 
+    def test_transcript_with_ambiguous_object_keys_cannot_establish_absence(self):
+        from setrya.offboarding.inputs import InvalidReport
+        scope = str(uuid4())
+        (self.root / (scope + ".jsonl")).write_text('{"tool":{"result":"fixture:lost-source-6732","result":"clean"}}\n')
+        with self.assertRaisesRegex(InvalidReport, "Duplicate JSON field"):
+            ClaudeTranscriptCanaryScanner(self.root).find(scope=scope, marker=MARKER)
+
     @unittest.skipUnless(importlib.util.find_spec("agents"), "install agent-openai")
     def test_native_runner_local_session_and_responses_request(self):
         import httpx

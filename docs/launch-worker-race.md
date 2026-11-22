@@ -1,6 +1,6 @@
 # The source row was gone. The assistant still knew the hostname.
 
-A customer asked us to delete their onboarding notes. In our test workspace, the deletion succeeded. Then yesterday’s handoff job finished. Two teammates reopened the handoff and asked which hostname the customer had used. Both got `cobalt-bridge.example`.
+In Setrya’s sample workspace, a customer’s onboarding notes were deleted. Then a handoff job that had already read those notes finished. Two teammates reopened the handoff and asked which hostname the customer had used. Both got `cobalt-bridge.example`.
 
 That is the failure the Setrya demo reproduces. It pauses a real worker in the example application, applies deletion, lets the worker finish and asks again. The fixed worker checks the revisions it read before it publishes. Both teammates lose the hostname and can still retrieve the team's launch date, October 18.
 
