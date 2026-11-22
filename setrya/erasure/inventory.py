@@ -34,7 +34,29 @@ def systems(value):
 
 
 def load(path: Path):
+    return load_coverage(path)[0]
+
+
+def load_coverage(path):
     value = tomllib.loads(read_regular_bytes(path, "inventory").decode("utf-8"))
-    require(set(value) == {"version", "systems"} and type(value["version"]) is int and value["version"] == 1,
-            "Expected inventory version 1.")
-    return systems(value["systems"])
+    require(isinstance(value, dict) and {"version", "systems"} <= value.keys()
+            and not value.keys() - {"version", "systems", "coverage"}
+            and type(value["version"]) is int and value["version"] == 1, "Expected inventory version 1.")
+    declared = systems(value["systems"])
+    rows = value.get("coverage", [])
+    require(isinstance(rows, list) and len(rows) <= 1024, "Invalid inventory coverage list.")
+    mapped = {}
+    for row in rows:
+        require(isinstance(row, dict) and {"store", "kind", "name"} <= row.keys()
+                and not row.keys() - {"store", "kind", "name", "adapter", "scanner"},
+                "Invalid coverage boundary fields.")
+        store = identifier(row["store"], "coverage store")
+        kind = row["kind"]
+        name = identifier(row["name"], "coverage boundary")
+        require(store in declared and kind in ("store", "namespace", "trace")
+                and (kind != "store" or name == store), "Invalid inventory coverage boundary.")
+        key = store, kind, name
+        require(key not in mapped, "Duplicate coverage boundary.")
+        mapped[key] = tuple(identifier(row[k], k) for k in ("adapter", "scanner")
+                            if k in row and row[k] != "none")
+    return declared, mapped

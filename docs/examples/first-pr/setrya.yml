@@ -18,9 +18,9 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.13'
-      - run: python -m pip install setrya==1.1.0
+      - run: python -m pip install setrya==1.2.0
       - id: erasure
-        uses: davidahma/setrya@0f03f4778640fdd1b308a09369cfeb69d97436de # 1.1.0
+        uses: davidahma/setrya@ece14daa47dac822524800e93027f66be80511f4 # 1.2.0
         with:
           starter: setrya-case/test_erasure.py
           mode: deletion
@@ -37,16 +37,16 @@ jobs:
     concurrency:
       group: setrya-verdict-${{ github.event.pull_request.number }}
       cancel-in-progress: false
-    if: ${{ !cancelled() && needs.drill.outputs.code != '' && github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
     steps:
-      - uses: davidahma/setrya@0f03f4778640fdd1b308a09369cfeb69d97436de # 1.1.0
+      - uses: davidahma/setrya@ece14daa47dac822524800e93027f66be80511f4 # 1.2.0
         with:
           operation: comment
           token: ${{ github.token }}
-          exit-code: ${{ needs.drill.outputs.code }}
-          review-status: ${{ needs.drill.outputs.review }}
+          exit-code: ${{ needs.drill.outputs.code || '2' }}
+          review-status: ${{ needs.drill.outputs.review || 'UNAVAILABLE' }}
           evidence-summary: ${{ needs.drill.outputs.evidence }}
           artifact-id: ${{ needs.drill.outputs.artifact }}

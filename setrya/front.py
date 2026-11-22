@@ -2,7 +2,6 @@
 import argparse
 from importlib.resources import files
 from pathlib import Path
-import runpy
 from shlex import join
 import sys
 
@@ -22,76 +21,14 @@ def help_parser():
         ("run", "test erasure in a disposable application and save a receipt"),
         ("replay", "recompute the verdict from saved evidence"),
         ("demo", "run the two-user workspace example or the analyst investigation"),
-        ("receipt", "render a customer summary from replayed evidence"),
+        ("receipt", "summarize a replayed receipt for an engineer, reviewer or customer"),
+        ("recheck", "recheck due follow-up items using read-only evidence"),
+        ("coverage-drift", "find journalled systems without inspection or scanning coverage"),
         ("observe", "check known keys for completed deletion requests with read-only credentials"),
         ("verify", "authenticate a receipt and check its evidence against a trusted signer"),
     ):
         commands.add_parser(name, help=help_text)
     return parser
-
-
-def doctor(argv):
-    from .erasure.v3 import SharedCase, observe_baseline
-
-    parser = argparse.ArgumentParser(prog="setrya doctor", description="Read a trusted fixture's baseline before erasure.")
-    source_arg = parser.add_mutually_exclusive_group(required=True)
-    source_arg.add_argument("--starter", type=Path, help="trusted Python starter or YAML case")
-    source_arg.add_argument("--case", type=Path, help="trusted declarative YAML case")
-    parser.add_argument("--mode", choices=("deletion", "late-write"), default="deletion")
-    args = parser.parse_args(argv)
-    if args.case and args.case.suffix.lower() not in (".yaml", ".yml"):
-        raise InputError("Use a .yaml or .yml file with --case.")
-    source = (args.case or args.starter).resolve()
-    if not source.is_file():
-        raise InputError("Supply a trusted application case or starter file.")
-    original = sys.path
-    try:
-        sys.path = [str(source.parent), str(Path.cwd()), *original]
-        if args.case or source.suffix.lower() in (".yml", ".yaml"):
-            from .erasure.casefile import load_case
-            parsed = load_case(source)
-            missing = parsed.missing()
-            if args.mode == "late-write":
-                missing.extend(("hold", "checkpoint", "release_and_drain"))
-            if missing:
-                print("NOT TESTED  Missing fixture hooks or bindings: " + ", ".join(missing))
-                return 3
-            case, open_fixture = parsed.case, parsed.open_fixture
-        else:
-            hooks = runpy.run_path(str(source))
-            case, open_fixture = hooks.get("CASE"), hooks.get("open_fixture")
-        if not isinstance(case, SharedCase) or not callable(open_fixture):
-            raise InputError("The trusted starter must define a SharedCase named CASE and open_fixture().")
-        case.spec()
-        with open_fixture() as (subject, app, items):
-            required = ["inspect", "read", "erase"]
-            if case.scan_stores:
-                required.append("scan")
-            if case.require_lineage:
-                required.append("lineage")
-            if args.mode == "late-write":
-                required += ["hold", "checkpoint", "release_and_drain"]
-            missing = [name for name in required if not callable(getattr(app, name, None))]
-            if missing:
-                print("NOT TESTED  Missing fixture methods: " + ", ".join(missing))
-                return 3
-            if not observe_baseline(subject, case, app, external_items=items):
-                print("NOT TESTED  The baseline could not establish the declared keys, callers, questions or scans.")
-                return 3
-            print(f"READY  Read {len(case.artifacts)} declared keys and all declared questions for {len(case.callers)} caller(s).")
-            print("Erasure and worker hooks will be exercised by setrya run.")
-            return 0
-    except NotImplementedError as exc:
-        import traceback
-        hooks = {"open_fixture", "inspect", "read", "erase", "scan", "lineage"}
-        missing = next((f.name for f in reversed(traceback.extract_tb(exc.__traceback__)) if f.name in hooks),
-                       "open_fixture")
-        print(f"NOT TESTED  Connect {missing} to your disposable application.")
-        return 3
-    except SystemExit:
-        raise InputError("The starter exited before its baseline could be checked.") from None
-    finally:
-        sys.path = original
 
 
 def _start(command, args):
@@ -146,11 +83,18 @@ def dispatch(argv):
     options = {arg.partition("=")[0] for arg in args if arg.startswith("--")}
     first = args[0] if args else None
     try:
+        if cmd == "coverage-drift":
+            from .coverage_drift import main
+            return main(args)
+        if cmd == "recheck":
+            from .casework.recheck import command
+            return command(args)
         if cmd in ("receipt", "observe"):
             from .casework.cli import command
             return command(argv)
         if cmd == "doctor":
-            return doctor(args)
+            from .erasure.doctor import run
+            return run(args)
         if cmd in ("run", "verify"):
             from .erasure.cli import main
             return main([cmd, *args], prog="setrya")

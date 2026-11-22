@@ -1,5 +1,5 @@
 """Exercise the public YAML contract using real authenticated requests and storage."""
-from contextlib import ExitStack, redirect_stderr, redirect_stdout
+from contextlib import chdir, ExitStack, redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.util import find_spec
 from io import StringIO
@@ -110,6 +110,59 @@ class HttpCaseTests(unittest.TestCase):
                          "inspect/scan memory", "hold", "checkpoint", "release_and_drain"):
                 self.assertIn(hook, message)
         self.assertEqual(self.erase_calls, 0)
+
+    def test_doctor_names_key_scanner_and_source_lines(self):
+        path = self.case_file("openai-agents")
+        config = self.yaml.safe_load(path.read_text())
+        store = config["stores"]["memory"]
+        store.update(kind="sqlite", table="memo", key_column="id", scope_column="scope", content_column="body")
+        path.write_text(self.yaml.safe_dump(config, sort_keys=False))
+        db = self.root / "app.sqlite"
+        os.environ[store["connection_env"]] = str(db)
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE memo (id TEXT PRIMARY KEY, scope TEXT, body TEXT)")
+        output = self.cli(3, "doctor", "--case", path)
+        for hook, text in (("inspect", "memory/1: required key was missing"),
+                           ("scan", "memory: scanner needs a positive marker baseline")):
+            self.assertRegex(output, rf"case.yml:\d+  {hook}: {text}")
+        self.assertEqual(self.erase_calls, 0)
+        db.unlink()
+        output = self.cli(3, "doctor", "--case", path)
+        self.assertRegex(output, r"case.yml:\d+  memory: observer could not open \(FileNotFoundError\)")
+        starter_output = self.cli(3, "doctor", "--starter", path.with_name("test_erasure.py"))
+        self.assertRegex(starter_output, r"test_erasure.py:\d+  Connect read")
+        self.assertRegex(starter_output, r"test_erasure.py:\d+  Connect erase")
+        self.assertRegex(starter_output, r"case.yml:\d+  memory: observer could not open")
+
+    def test_positional_case_saves_same_receipt_and_records_observed_keys(self):
+        from setrya.erasure import CopyJournal, Subject
+        path = self.case_file("openai-agents")
+        cfg = self.yaml.safe_load(path.read_text())
+        store = cfg["stores"]["memory"]
+        store.update(kind="sqlite", table="memo", key_column="id", scope_column="scope", content_column="body")
+        path.write_text(self.yaml.safe_dump(cfg, sort_keys=False))
+        db, journal = self.root / "app.sqlite", self.root / "copies.sqlite"
+        os.environ[store["connection_env"]] = str(db)
+        os.environ["SETRYA_COPY_JOURNAL"] = str(journal)
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE memo(id TEXT PRIMARY KEY, scope TEXT, body TEXT)")
+            conn.execute("INSERT INTO memo VALUES ('1','ticket-204',?)", (self.target,))
+        def erase():
+            with sqlite3.connect(db) as conn:
+                conn.execute("DELETE FROM memo WHERE id='1'")
+        self.on_erase = erase
+        with chdir(self.root):
+            self.cli(0, "run", path)
+            self.cli(0, "replay", "setrya-receipt")
+            self.cli(2, "run", path)
+            self.cli(2, "run", path, "--case", path)
+        self.assertEqual(self.erase_calls, 1)
+        evidence = json.loads((self.root / "setrya-receipt" / "erasure-evidence.json").read_text())
+        self.assertEqual({(r["action"], r["details"]["operation"], r["store"], r["key"]) for r in evidence["journal"]},
+                         {("retrieved", op, "memory", "1") for op in ("fixture.inspect", "fixture.scan")})
+        events = CopyJournal(journal).history(Subject(self.subject, "synthetic-test"))
+        self.assertEqual([event.details for event in events], [row["details"] for row in evidence["journal"]])
+        self.assertTrue(all(event.details["boundary"] == "ticket-204" for event in events))
 
     def test_sqlite_read_and_residual_answer(self):
         path = self.case_file("openai-agents")

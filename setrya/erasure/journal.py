@@ -35,11 +35,15 @@ def validate_details(values: Mapping | None) -> dict:
         if fields.get("evidence_level", "configuration") != "configuration":
             raise InputError("provider settings support configuration evidence only")
         fields["evidence_level"] = "configuration"
+    if {"boundary", "boundary_kind"} & fields.keys():
+        identifier(fields.get("boundary"), "observed boundary")
+        if fields.get("boundary_kind") not in ("trace", "namespace"):
+            raise InputError("observed boundary requires kind trace or namespace")
     for key, value in fields.items():
         if key in {"invocation_logging", "prompt_caching"}:
             if value is not None and type(value) is not bool:
                 raise InputError(f"{key} must be a boolean or unknown (None)")
-        elif key in {"model", "provider", "region", "tool", "direction", "stage", "evidence_level", "operation"}:
+        elif key in {"model", "provider", "region", "tool", "direction", "stage", "evidence_level", "operation", "boundary", "boundary_kind"}:
             if value is not None:
                 identifier(value, key)
         elif key == "payload_hmac":

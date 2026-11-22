@@ -1,5 +1,6 @@
 """Direct existence reads. Neither backend accepts SQL or callbacks from a request."""
 from contextlib import closing, contextmanager
+from datetime import date
 import os
 from pathlib import Path
 import re
@@ -8,6 +9,7 @@ import stat
 import time
 import tomllib
 
+from setrya.erasure.journal import identifier
 from setrya.offboarding.inputs import read_regular_bytes, require
 
 
@@ -22,7 +24,18 @@ def inventory(path):
         kind = spec.get("kind")
         require(kind in ("sqlite", "postgres"), "Observer stores must be sqlite or postgres.")
         fields = {"path"} if kind == "sqlite" else {"dsn_env", "schema"}
-        require(set(spec) == common | fields, "Unexpected or missing observer store settings.")
+        optional = {"owner", "follow_up", "subject_column", "control_subject_ref"}
+        require(common | fields <= set(spec) <= common | fields | optional, "Unexpected or missing observer store settings.")
+        require(("subject_column" in spec) == ("control_subject_ref" in spec),
+                "Scope scans need both a subject column and its retained control reference.")
+        if "subject_column" in spec:
+            require(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", spec["subject_column"])
+                    and re.fullmatch(r"[0-9a-f]{64}", spec["control_subject_ref"]),
+                    "Supply a subject column and tenant-bound retained control reference.")
+        if "owner" in spec:
+            identifier(spec["owner"], "observer owner")
+        if "follow_up" in spec:
+            require(date.fromisoformat(spec["follow_up"]).isoformat() == spec["follow_up"], "Supply an ISO follow-up date.")
         require(all(isinstance(v, str) and 0 < len(v) <= 1024 and v.isprintable() for v in spec.values()),
                 "Invalid observer settings.")
         for field in ("table", "key_column", *(("schema",) if kind == "postgres" else ())):
@@ -127,9 +140,11 @@ def journal_rows(conn, subject_ref):
 
 
 @contextmanager
-def key_reader(spec):
+def key_reader(spec, *, scan=False):
     if spec["kind"] == "sqlite":
         with sqlite_reader(spec["path"]) as db:
+            deadline = time.monotonic() + 5
+            db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
             table, column = spec["table"], spec["key_column"]
             _sqlite_table(db, table)
             columns = db.execute("SELECT name, UPPER(type) FROM pragma_table_info(?) WHERE pk>0", (table,)).fetchall()
@@ -149,7 +164,21 @@ def key_reader(spec):
             def exists(key):
                 return db.execute(query, (key,)).fetchone() is not None
             require(exists(spec["control_key"]), "The positive visibility control was missing.")
-            yield exists
+            if scan:
+                field = spec["subject_column"]
+                dtype = db.execute("SELECT UPPER(type) FROM pragma_table_info(?) WHERE name=?", (table, field)).fetchone()
+                require(dtype == ("TEXT",), "Use a TEXT subject column.")
+                # A BLOB can inhabit a SQLite TEXT column and compare differently.
+                malformed = db.execute(f'SELECT 1 FROM main."{table}" WHERE "{field}" IS NOT NULL '
+                                       f'''AND typeof("{field}") != 'text' LIMIT 1''').fetchone()
+                require(malformed is None, "Ambiguous SQLite subject encoding.")
+                ctrl = db.execute(f'SELECT "{field}" FROM main."{table}" WHERE "{column}" COLLATE BINARY=?',
+                                  (spec["control_key"],)).fetchone()
+                require(ctrl == (spec["control_subject_ref"],), "Missing retained subject scan control.")
+                yield lambda subject: db.execute(f'SELECT 1 FROM main."{table}" WHERE "{field}" COLLATE BINARY=? LIMIT 1',
+                                                 (subject,)).fetchone() is not None
+            else:
+                yield exists
         return
 
     import psycopg
@@ -186,4 +215,19 @@ def key_reader(spec):
         def exists(key):
             return db.execute(query, (key,)).fetchone() is not None
         require(exists(spec["control_key"]), "The positive visibility control was missing.")
-        yield exists
+        if scan:
+            field = sql.Identifier(spec["subject_column"])
+            kind = db.execute("""
+                SELECT a.atttypid IN ('text'::regtype,'varchar'::regtype) FROM pg_attribute a
+                JOIN pg_class c ON a.attrelid=c.oid JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE n.nspname=%s AND c.relname=%s AND a.attname=%s AND NOT a.attisdropped
+            """, (spec["schema"], spec["table"], spec["subject_column"])).fetchone()
+            require(kind == (True,), "Use a text subject column.")
+            table = sql.Identifier(spec["schema"], spec["table"])
+            ctrl = db.execute(sql.SQL("SELECT {} FROM ONLY {} WHERE {} = %s").format(
+                field, table, sql.Identifier(spec["key_column"])), (spec["control_key"],)).fetchone()
+            require(ctrl == (spec["control_subject_ref"],), "Missing retained subject scan control.")
+            query = sql.SQL('SELECT 1 FROM ONLY {} WHERE {} COLLATE "C" = %s LIMIT 1').format(table, field)
+            yield lambda subject: db.execute(query, (subject,)).fetchone() is not None
+        else:
+            yield exists

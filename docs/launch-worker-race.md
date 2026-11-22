@@ -7,7 +7,7 @@ That is the failure the Setrya demo reproduces. It pauses a real worker in the e
 Try both receipts on your laptop with fictional data:
 
 ```sh
-python -m pip install setrya==1.1.0
+python -m pip install setrya==1.2.0
 setrya demo --output workspace
 setrya replay workspace/broken
 setrya replay workspace/guarded
@@ -15,4 +15,4 @@ setrya replay workspace/guarded
 
 The first replay exits 1. The second passes the application checks and leaves a provider follow-up open. You can send the evidence to someone who has never run the app and they can replay the same result.
 
-For your own service, pick one private fact, one fact to keep and one authenticated route. Start with deletion alone. Add the worker checkpoint when you're ready to test whether a delayed write can undo it. [Get a verdict on a pull request](https://github.com/davidahma/setrya/blob/v1.1.0/docs/github-action.md)
+For your own service, pick one private fact, one fact to keep and one authenticated route. Start with deletion alone. Add the worker checkpoint when you're ready to test whether a delayed write can undo it. [Get a verdict on a pull request](https://github.com/davidahma/setrya/blob/v1.2.0/docs/github-action.md)

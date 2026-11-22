@@ -10,7 +10,7 @@ setrya init --stack openai-agents --output setrya-case
 setrya doctor --case setrya-case/case.yml
 ```
 
-Doctor names the environment bindings that still need values. It checks the caller and baseline reads once those bindings are available. It leaves the deletion route untouched. Edit the generated questions, expected answers, store scope and artifact keys to match the fixture you seeded.
+Doctor prints the file and line for unconnected hooks, missing bindings, unread keys, missing positive scanner baselines and unanswered probes. It checks each available boundary before the run. It leaves the deletion route untouched. Edit the generated questions, expected answers, store scope and artifact keys to match the fixture you seeded.
 
 | Stack | Direct reads and scans in the generated case | Connection variable |
 | --- | --- | --- |
@@ -20,6 +20,10 @@ Doctor names the environment bindings that still need values. It checks the call
 | `redis-cache` | Strings at `prefix:scope:key` in a dedicated standalone Redis primary. The scanner supports up to 4,096 keys in the fixture database. | `SETRYA_TEST_REDIS_URL`, Redis URL. Install `setrya[case-yaml,redis]`. |
 
 For ordinary SQL, use store kind `sqlite` or `postgres`. Declare `table`, `key_column`, `content_column` and `scope_column` with the names of the application's key, text and scope fields. SQLite uses a path in the named environment variable. PostgreSQL uses a connection URL. The observer opens SQLite read-only, runs PostgreSQL reads in read-only transactions and reads Redis without mutating keys. Use a database account with read permissions for these observations. Both SQL readers require a physical base table on each inspection and scan. A filtered view can hide a row that a soft delete left behind. The PostgreSQL reader also declines replicas, row-level security, and partitioned or inherited layouts. Scope identifiers match their exact text representation, so `001` and `1` are distinct.
+
+The generated Python and YAML runners journal target-linked observations from their native adapters. A positive read records `fixture.inspect`. A canary match records `fixture.scan`. Both include the logical key, store and declared namespace. The evidence bundle contains these events without storing the row content. To keep a SQLite journal for `coverage-drift`, point `SETRYA_COPY_JOURNAL` at a new local file before the run. Use a separate journal per fixture unless the same tenant, subject and storage mapping are intentionally shared across runs.
+
+These hooks see the keys inspected by the drill. For activity outside its read window, connect your application's own writer, retriever or tool callbacks to a durable `CopyJournal` using its original source IDs. [Application hooks](harnesses.md)
 
 ## Use existing Python test hooks
 
@@ -49,7 +53,7 @@ stored:
 
 ```sh
 setrya doctor --case setrya-case/case.yml
-setrya run --case setrya-case/case.yml --output receipt
+setrya run setrya-case/case.yml --output receipt
 setrya replay receipt
 ```
 
@@ -71,10 +75,24 @@ trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
 while [ ! -s "$fixture_dir/origin" ] && kill -0 "$fixture_pid" 2>/dev/null; do sleep 0.1; done
 export SETRYA_TEST_ORIGIN=$(cat "$fixture_dir/origin")
 setrya doctor --case docs/examples/http-case/case.yml
-setrya run --case docs/examples/http-case/case.yml --output "$fixture_dir/receipt"
+setrya run docs/examples/http-case/case.yml --output "$fixture_dir/receipt"
 setrya replay "$fixture_dir/receipt"
 kill "$fixture_pid"
 trap - EXIT
 ```
 
 The Node process seeds a fresh SQLite file and chooses a free loopback port. A clean run returns **PASS**. To try your own service, keep the case and connect the two HTTP routes and store mapping to your application's fixture.
+
+From a directory with a configured case, `setrya run case.yml` writes a fresh `setrya-receipt/`. Supply `--output` to choose another path. Existing `--case` workflows keep their explicit output paths. [LangGraph and pgvector application](https://github.com/davidahma/setrya-example-langgraph-postgres)
+
+
+## Runnable application repositories
+
+Each repository starts an isolated app, sends authenticated requests to its answer and erasure routes, and replays the broken and fixed receipts. The LangGraph and Redis examples start their own Docker services. The OpenAI and Claude examples keep their histories on disk and run without model API keys.
+
+| Stack | Application and defect |
+| --- | --- |
+| [LangGraph and pgvector](https://github.com/davidahma/setrya-example-langgraph-postgres) | A missing vector row falls back to a memo that survived in PostgresStore. |
+| [OpenAI Agents](https://github.com/davidahma/setrya-example-openai-agents) | An acknowledged deletion leaves a private message in the SQLiteSession. |
+| [Claude Agent](https://github.com/davidahma/setrya-example-claude-agent) | A shared transcript still contains the deleted note when the SDK reopens it. |
+| [Redis cache](https://github.com/davidahma/setrya-example-redis-cache) | A cached reply retains the deleted depot code while the dispatch date should remain available. |

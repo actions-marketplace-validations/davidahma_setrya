@@ -1,7 +1,9 @@
 """Read known keys for completed requests without invoking application or erasure hooks."""
 from contextlib import ExitStack
 from datetime import UTC, datetime
+from hashlib import sha256
 from itertools import groupby
+import json
 from pathlib import Path
 
 from .sampling import draw_week, load_population, statistics
@@ -9,7 +11,11 @@ from .stores import inventory, journal_rows, key_reader, sqlite_reader
 from setrya.offboarding.inputs import require
 
 
-def check_request(row, journal, stores):
+def key_digest(subject_ref, store, key):
+    return sha256(json.dumps([subject_ref, store, key], separators=(",", ":")).encode()).hexdigest()
+
+
+def check_request(row, journal, stores, *, identify_keys=False):
     findings, gaps = [], []
     try:
         with sqlite_reader(journal) as db:
@@ -52,6 +58,8 @@ def check_request(row, journal, stores):
                     elif lookup:
                         gaps.append("control-is-subject-key")
                     location = {"store": label, "state": state}
+                    if identify_keys:
+                        location["key_sha256"] = key_digest(row["subject_ref"], store, key)
                     if event is not None:
                         location["journal_event"] = event
                     if version is not None:

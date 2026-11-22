@@ -5,6 +5,8 @@ from hashlib import sha256
 from ipaddress import ip_address
 import json
 import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import re
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -12,7 +14,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 from setrya.drill import InputError
 from setrya.offboarding.inputs import read_regular_bytes, unique_fields
 from .case_stores import STORE_OPTIONS, StoredFact, content_bytes, open_observer
-from .journal import identifier
+from .journal import CopyJournal, identifier
 from .judges import AnswerJudges, Marker, ReviewedAnswers, TextAnswer
 from .model import route_id
 from .subject import Subject
@@ -40,7 +42,7 @@ def envname(value):
     return value
 
 
-def yaml_document(path):
+def yaml_document(path, locations=None):
     try:
         import yaml
     except ImportError:
@@ -62,7 +64,16 @@ def yaml_document(path):
                 if len(value) != len(node.value) or any(not isinstance(k, str) for k in value):
                     raise InputError("case keys must be unique strings")
                 return value
-        return yaml.load(raw, Loader=CaseLoader)
+        value = yaml.load(raw, Loader=CaseLoader)
+        if locations is not None:
+            def walk(node, path):
+                if isinstance(node, yaml.MappingNode):
+                    for key, child in node.value:
+                        child_path = (*path, key.value)
+                        locations[child_path] = key.start_mark.line + 1
+                        walk(child, child_path)
+            walk(yaml.compose(raw, Loader=yaml.SafeLoader), ())
+        return value
     except (yaml.YAMLError, UnicodeError, ValueError) as error:
         if isinstance(error, InputError):
             raise
@@ -97,28 +108,43 @@ class HttpCase:
     store_facts: tuple
     settings: dict
     bindings: list
+    locations: dict
+    path: Path
 
-    def missing(self, *, stores_only=False):
-        return [f"{hook} ({name})" for hook, name in self.bindings if not os.environ.get(name)
+    def missing_bindings(self, *, stores_only=False):
+        return [(f"{hook} ({name})", path) for hook, name, path in self.bindings if not os.environ.get(name)
                 and (not stores_only or hook == "subject" or hook.startswith("inspect/scan "))]
 
+    def missing(self, *, stores_only=False):
+        return [message for message, _ in self.missing_bindings(stores_only=stores_only)]
+
     @contextmanager
-    def open_stores(self):
+    def open_stores(self, *, on_unavailable=None):
         """Provide direct inspect/scan hooks for an application-owned Python fixture."""
         if missing := self.missing(stores_only=True):
             raise InputError("missing fixture bindings: " + ", ".join(missing))
         subject = Subject(os.environ[self.settings["subject_ref_env"]], "synthetic-test")
         with ExitStack() as stack:
-            observers = {name: open_observer(stack, cfg, os.environ[cfg["connection_env"]])
-                         for name, cfg in self.stores.items()}
-            yield subject, StoreApplication(self, observers), ()
+            observers = {}
+            for name, cfg in self.stores.items():
+                try:
+                    observers[name] = open_observer(stack, cfg, os.environ[cfg["connection_env"]])
+                except Exception as error:
+                    if on_unavailable is None:
+                        raise
+                    on_unavailable(name, type(error).__name__)
+            location = os.environ.get("SETRYA_COPY_JOURNAL")
+            if not location:
+                directory = stack.enter_context(TemporaryDirectory(prefix="setrya-recipe-journal-"))
+                location = Path(directory) / "copies.sqlite"
+            yield subject, StoreApplication(self, observers, CopyJournal(location)), ()
 
     @contextmanager
-    def open_fixture(self):
+    def open_fixture(self, *, on_unavailable=None):
         if missing := self.missing():
             raise InputError("missing fixture bindings: " + ", ".join(missing))
-        with self.open_stores() as (subject, app, items):
-            yield subject, HttpApplication(self, app.observers, subject), items
+        with self.open_stores(on_unavailable=on_unavailable) as (subject, app, items):
+            yield subject, HttpApplication(self, app.observers, subject, app.journal), items
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -127,18 +153,30 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class StoreApplication:
-    def __init__(self, spec, observers):
-        self.spec, self.observers = spec, observers
+    def __init__(self, spec, observers, journal):
+        self.spec, self.observers, self.journal = spec, observers, journal
+
+    def _record(self, subject, store, key, operation):
+        self.journal.record(subject, store=store, key=key, source=self.observers[store].scope,
+                            action="retrieved", details={"operation": operation, "boundary_kind": "namespace",
+                                                         "boundary": self.observers[store].scope})
 
     def inspect(self, subject, store, key):
-        return self.observers[store].inspect(key, *self.spec.store_facts)
+        row = self.observers[store].inspect(key, *self.spec.store_facts)
+        if row.exists and row.target_present is True:
+            self._record(subject, store, key, "fixture.inspect")
+        return row
 
     def scan(self, subject, store):
-        return self.observers[store].scan(self.spec.markers[0])
+        keys = self.observers[store].scan(self.spec.markers[0])
+        for key in sorted(keys):
+            self._record(subject, store, key, "fixture.scan")
+        return keys
+
 
 class HttpApplication(StoreApplication):
-    def __init__(self, spec, observers, subject):
-        super().__init__(spec, observers)
+    def __init__(self, spec, observers, subject, journal):
+        super().__init__(spec, observers, journal)
         self.subject = subject
         self.base = origin(os.environ[spec.settings["origin_env"]])
         self.http = build_opener(ProxyHandler({}), NoRedirect())
@@ -187,19 +225,23 @@ def stored_fact(marker, reviewed, settings):
     return StoredFact(present, digests)
 
 
-def load_case(path):
-    settings = yaml_document(path)
+def load_case(path, *, locate=False):
+    locations = {}
+    settings = yaml_document(path, locations if locate else None)
     fields(settings, ("format", "conversation", "subject_ref_env", "origin_env", "read_route", "erase_route",
-                      "caller_tokens", "erase_token_env", "facts", "stores"), ("samples",))
+                      "caller_tokens", "erase_token_env", "facts", "stores"), ("samples", "controls"))
+    if "controls" in settings:
+        from setrya.casework.controls import validate_controls
+        validate_controls(settings["controls"])
     if settings["format"] != FORMAT:
         raise InputError("unknown HTTP case format")
-    bindings = [(hook, envname(settings[name])) for hook, name in (
+    bindings = [(hook, envname(settings[name]), (name,)) for hook, name in (
         ("subject", "subject_ref_env"), ("read/erase origin", "origin_env"), ("erase authorization", "erase_token_env"))]
     callers = settings["caller_tokens"]
     if not isinstance(callers, dict) or not 1 <= len(callers) <= 16:
         raise InputError("declare 1–16 caller token bindings")
     for caller, token in callers.items():
-        bindings.append(("read as " + identifier(caller, "caller"), envname(token)))
+        bindings.append(("read as " + identifier(caller, "caller"), envname(token), ("caller_tokens", caller)))
     settings["erase_route"] = path_route(settings["erase_route"])
     facts = settings["facts"]
     fields(facts, ("target", "control"))
@@ -229,7 +271,7 @@ def load_case(path):
             raise InputError("unknown case store kind")
         fields(cfg, {"kind", "connection_env", "scope", "artifacts"} | STORE_OPTIONS[cfg["kind"]])
         identifier(cfg["scope"], "store scope")
-        bindings.append(("inspect/scan " + name, envname(cfg["connection_env"])))
+        bindings.append(("inspect/scan " + name, envname(cfg["connection_env"]), ("stores", name, "connection_env")))
         if not isinstance(cfg["artifacts"], dict) or not cfg["artifacts"]:
             raise InputError("declare the keys and expected actions for each store")
         artifacts.extend(Artifact(name, key, action) for key, action in cfg["artifacts"].items())
@@ -237,7 +279,7 @@ def load_case(path):
                       callers=tuple(callers), target_question=questions["target"][0], control_question=questions["control"][0],
                       artifacts=tuple(artifacts), scan_stores=tuple(stores), judges=judges,
                       samples=settings.get("samples", 3), target_variants=questions["target"][1:],
-                      control_variants=questions["control"][1:])
+                      control_variants=questions["control"][1:], controls=tuple(settings.get("controls", ())))
     case.spec()
     return HttpCase(case, stores, (markers["target"], markers["control"]),
-                    (store_facts["target"], store_facts["control"]), settings, bindings)
+                    (store_facts["target"], store_facts["control"]), settings, bindings, locations, Path(path).resolve())

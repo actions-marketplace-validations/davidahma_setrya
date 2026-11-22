@@ -13,7 +13,10 @@ def _count(number, singular, plural=None):
 
 
 def customer_receipt(bundle, *, case_id=None):
-    receipt = replay(bundle)
+    return customer_text(replay(bundle), case_id=case_id)
+
+
+def customer_text(receipt, *, case_id=None):
     require(receipt.get("format") == FORMAT_V3, "Customer rendering requires a v3 receipt and its evidence.")
     attached = receipt.get("case_id") or receipt.get("request_id")
     if case_id:
@@ -36,6 +39,10 @@ def customer_receipt(bundle, *, case_id=None):
         lines.append("The case number was supplied when this summary was prepared.")
     if receipt.get("profile") == "discovery":
         lines.append(f"The approved discovery case covered {len(receipt['services'])} declared services.")
+    elif receipt.get("profile") == "observed-deletion":
+        lines.append(f"The observer checked {_count(len(receipt['checks']), 'recorded copy', 'recorded copies')} for the completed request.")
+    elif receipt.get("profile") == "follow-up":
+        lines.append("This review revisited outstanding items from an earlier deletion record.")
     elif receipt["scope"] == "tenant":
         lines.append(f"The tenant review covered {len(receipt['probes'])} recorded application checks.")
     else:
@@ -80,10 +87,10 @@ def customer_receipt(bundle, *, case_id=None):
                 label = "Owner attestation"
             else:
                 label = "Evidence review"
-            groups[(label, item.get("follow_up") or "")] += 1
-        for (label, due), count in sorted(groups.items()):
+            groups[(label, item.get("owner") or "unassigned", item.get("follow_up") or "")] += 1
+        for (label, owner, due), count in sorted(groups.items()):
             date = f"Follow up on {due}." if due else "A follow-up date has not been recorded."
-            lines.append(f"- {label} ({count}). {date}")
+            lines.append(f"- {label} ({count}). Owner: {owner}. {date}")
     elif receipt["review_status"] in ("READY_FOR_REVIEW", "COMPLETE"):
         lines.append("No outstanding items were recorded for these checks.")
     else:

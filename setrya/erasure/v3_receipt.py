@@ -33,10 +33,15 @@ def _unique_ids(items, limit, name):
 
 
 def check_spec(spec):
+    from setrya.casework.controls import validate_controls
+    controls = isinstance(spec, dict) and "controls" in spec
     judged = isinstance(spec, dict) and "judges" in spec
     sampled = isinstance(spec, dict) and "sampling" in spec
     _fields(spec, "conversation route callers questions artifacts scan_stores require_lineage" +
-            (" judges" if judged else "") + (" sampling" if sampled else ""))
+            (" judges" if judged else "") + (" sampling" if sampled else "") + (" controls" if controls else ""))
+    if controls:
+        require(sampled, "Historical single-read cases do not carry control references.")
+        validate_controls(spec["controls"])
     if judged:
         check_policy(spec["judges"], sampled)
     identifier(spec["conversation"], "conversation")
@@ -165,24 +170,33 @@ def _unconfirmed_deletions(spec, stage):
             yield loc
 
 
-def baseline_ready(spec, stage):
-    if any(_unconfirmed_deletions(spec, stage)):
-        return False
+def baseline_issues(spec, stage):
+    """Explain each missing precondition before any deletion or worker action."""
+    for store, key in _unconfirmed_deletions(spec, stage):
+        yield "inspect", store, key, f"{store}/{key}: confirm the retained fact is absent before deleting this key."
     for a, row in zip(spec["artifacts"], stage["stored"]):
+        store, key = a["store"], a["key"]
         if row is None or not row["exists"]:
-            return False
-        if a["action"] == "delete":
-            if row["target_present"] is not True and a["key"] not in (stage["scans"].get(a["store"]) or []):
-                return False
+            yield "inspect", store, key, f"{store}/{key}: required key was missing or unreadable."
+        elif a["action"] == "delete":
+            if row["target_present"] is not True and key not in (stage["scans"].get(store) or []):
+                yield "inspect", store, key, f"{store}/{key}: the target fact was not observed before deletion."
         elif (row["control_present"] is not True
               or row["target_present"] is not (a["action"] == "rewrite")):
-            return False
-    for (_, _, role, _), row in zip(answer_slots(spec), stage["answers"]):
+            yield "inspect", store, key, f"{store}/{key}: initial facts do not match the {a['action']} expectation."
+    for (caller, question, role, _), row in zip(answer_slots(spec), stage["answers"]):
         if row is None or row[role + "_present"] is not True:
-            return False
-    if any(r is None or not r["exists"] for r in stage["discovered"]):
-        return False
-    return all(stage["scans"].values())  # Each declared scanner needs a positive synthetic baseline.
+            yield "read", caller, role, f"{caller}: missing a positive {role} answer for question {question[:12]}."
+    for (store, key), row in zip(discovered_keys(spec, stage["scans"]), stage["discovered"]):
+        if row is None or not row["exists"]:
+            yield "inspect", store, key, f"{store}/{key}: scanner match was not confirmed by a direct read."
+    for store, hits in stage["scans"].items():
+        if not hits:
+            yield "scan", store, None, f"{store}: scanner needs a positive marker baseline in the declared scope."
+
+
+def baseline_ready(spec, stage):
+    return next(baseline_issues(spec, stage), None) is None
 
 
 def _ref(row):
@@ -462,7 +476,8 @@ def derive(e, digest):
     tech = "FAIL" if failures else "ERROR" if adapter_errors else "NOT TESTED" if gaps else "PASS"
 
     review = "RESIDUAL_FOUND" if tech == "FAIL" else "OPEN_ITEMS" if external or tech != "PASS" else "READY_FOR_REVIEW"
-    return {**({"answer_sampling": _sampling_summary(e)} if "sampling" in spec else {}),
+    return {**({"controls": spec["controls"]} if "controls" in spec else {}),
+            **({"answer_sampling": _sampling_summary(e)} if "sampling" in spec else {}),
             "format": RECEIPT_FORMAT, "version": 3, "scope": "person", "run": e["run"], "subject": e["subject"],
             "observed_at": e["observed_at"], "case": spec, "mode": e["mode"], "race": race,
             "technical_verdict": tech, "review_status": review, "open_items": e["external"],

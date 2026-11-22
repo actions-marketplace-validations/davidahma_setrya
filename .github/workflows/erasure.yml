@@ -113,18 +113,18 @@ jobs:
       group: setrya-verdict-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     needs: drill
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.drill.outputs.code != '' }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-24.04
     permissions:
       pull-requests: write
     steps:
       # The write-enabled job validates bounded evidence signals and never checks out PR code.
-      - uses: davidahma/setrya@0f03f4778640fdd1b308a09369cfeb69d97436de
+      - uses: davidahma/setrya@ece14daa47dac822524800e93027f66be80511f4
         with:
           operation: comment
           token: ${{ github.token }}
-          exit-code: ${{ needs.drill.outputs.code }}
-          review-status: ${{ needs.drill.outputs.review }}
+          exit-code: ${{ needs.drill.outputs.code || '2' }}
+          review-status: ${{ needs.drill.outputs.review || 'UNAVAILABLE' }}
           evidence-summary: ${{ needs.drill.outputs.evidence }}
           artifact-id: ${{ needs.drill.outputs.artifact }}
 
