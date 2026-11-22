@@ -209,7 +209,7 @@ class SharedReceiptTests(unittest.TestCase):
         self.drill()
         d = self.out / "run"
         e = json.loads((d / EVIDENCE).read_bytes())
-        e["final"]["answers"][2]["caller"] = "reviewer"
+        e["final"]["answers"][0]["caller"] = "mismatched-caller"
         with self.assertRaises(InvalidReport):
             derive(e, "0" * 64)
         (d / RECEIPT).write_text((d / RECEIPT).read_text().replace('"version": 3', '"version": true'))

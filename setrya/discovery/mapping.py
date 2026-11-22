@@ -53,7 +53,7 @@ def _service(row, source):
 
 def _check(value, expected_format):
     require(isinstance(value, dict), "Expected a discovery manifest.")
-    require(keys_match(value, _FIELDS) and value["format"] == expected_format
+    require(keys_match(value, _FIELDS | ({"question_roles"} if "question_roles" in value else set())) and value["format"] == expected_format
             and value["catalog"] == CATALOG and type(value["version"]) is int and value["version"] == 1,
             "Invalid discovery manifest format or fields.")
     require(value["sample"] is None or type(value["sample"]) is bool, "Invalid Macie sample indicator.")
@@ -69,9 +69,13 @@ def _check(value, expected_format):
     route_id(value["route"])
     check_callers(value["callers"])
     questions = value["questions"]
-    require(isinstance(questions, list) and len(questions) == 2
+    require(isinstance(questions, list) and 2 <= len(questions) <= 16
             and all(isinstance(q, str) and re.fullmatch(r"[0-9a-f]{64}", q) for q in questions)
-            and questions[0] != questions[1], "Expected distinct target and control question digests.")
+            and len(set(questions)) == len(questions), "Expected distinct target and control question digests.")
+    roles = value.get("question_roles", ["target", "control"])
+    require(isinstance(roles, list) and len(roles) == len(questions) and roles[:2] == ["target", "control"]
+            and all(role in ("target", "control") for role in roles)
+            and max(roles.count("target"), roles.count("control")) <= 8, "Pin a role for each mapped question.")
     source = value["source"]
     require(keys_match(source, ("store", "key", "revision", "action")), "Invalid mapped source fields.")
     for field in ("store", "key", "revision"):

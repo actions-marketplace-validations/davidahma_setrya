@@ -156,8 +156,8 @@ class InvestigationTests(unittest.TestCase):
                     self.assertEqual(ev["case"]["conversation"], CONVERSATION)
                     self.assertEqual({q["caller"] for q in ev["final"]["answers"] if q}, set(CALLERS))
                     self.assertEqual([r["target_present"] for r in ev["final"]["answers"]],
-                                     [not guarded, False, not guarded, False])
-                    self.assertEqual([r["control_present"] for r in ev["final"]["answers"]], [False, True, False, True])
+                                     [not guarded, False] * 6)
+                    self.assertEqual([r["control_present"] for r in ev["final"]["answers"]], [False, True] * 6)
                     self.assertEqual(len(ev["baseline"]["scans"]["snapshots"]), 1)
                     self.assertFalse(ev["final"]["scans"]["snapshots"])
                     self.assertNotIn(TARGET_FACT.encode(), raw)

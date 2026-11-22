@@ -1,0 +1,40 @@
+"""Optional native Python fixture for the store declared in the adjacent case.yml."""
+import argparse
+from contextlib import contextmanager
+from pathlib import Path
+
+from setrya.erasure import run_shared
+from setrya.erasure.casefile import load_case
+from setrya.receipts import exit_code, report
+
+PROFILE = load_case(Path(__file__).with_name("case.yml"))
+CASE = PROFILE.case
+
+
+@contextmanager
+def open_fixture():
+    with PROFILE.open_stores() as (subject, application, items):
+        # Bind your application's methods here:
+        # application.read = read_as_test_user
+        # application.erase = erase_fixture_subject
+        # inspect and scan already read the configured store.
+        yield subject, application, items
+
+
+def run(output, mode="deletion"):
+    with open_fixture() as (subject, app, items):
+        return run_shared(subject, case=CASE, application=app, external_items=items, mode=mode, output=output)
+
+
+def test_erasure(tmp_path):
+    receipt = run(tmp_path / "receipt")
+    assert exit_code(receipt) == 0, receipt["technical_verdict"]
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=("deletion", "late-write"), default="deletion")
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    receipt = run(args.output, args.mode)
+    raise SystemExit(report(receipt))

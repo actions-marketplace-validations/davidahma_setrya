@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import UUID
 
 from setrya.drill import InputError
+from setrya.offboarding.inputs import unique_fields
 from setrya.erasure.adapters import _sql_name
 from setrya.erasure.canary import LIMIT, SQLiteCanaryScanner, contains_marker, validate_probe
 from setrya.erasure.hooks import CopyHooks
@@ -31,8 +32,8 @@ class OpenAISessionCanaryScanner(SQLiteCanaryScanner):
     """Read message rows in a native Agents SQLiteSession database, including abandoned history."""
 
     def __init__(self, connection, *, messages_table="agent_messages"):
-        self.db = connection
-        self.query = (f'SELECT t.id AS copy_key FROM {_sql_name(messages_table)} t WHERE t.session_id COLLATE BINARY=? '
+        self.db, self.table = connection, messages_table
+        self.query = (f'SELECT t.id AS copy_key FROM main.{_sql_name(messages_table)} t WHERE CAST(t.session_id AS TEXT) COLLATE BINARY=? '
                       'AND EXISTS(SELECT 1 FROM json_tree(t.message_data) j '
                       "WHERE instr(CASE WHEN j.type='text' THEN j.atom END,?2)>0 OR instr(j.key,?2)>0) LIMIT 4097")
 
@@ -74,13 +75,14 @@ def claude_tool_hooks(hooks: CopyHooks, *, session: str, store: str, source: str
 class ClaudeTranscriptCanaryScanner:
     """Read every record in one declared local Claude Code session transcript."""
 
-    def __init__(self, project_transcripts: str | Path):
+    def __init__(self, project_transcripts: str | Path, *, missing_is_absence: bool = False):
+        self.missing_is_absence = missing_is_absence
         self.directory = Path(project_transcripts).resolve(strict=True)
         if not self.directory.is_dir():
             raise InputError("declare the directory holding this project's Claude transcripts")
 
-    def find(self, *, scope: str, marker: str) -> set[str]:
-        validate_probe(scope, marker)
+    def records(self, scope: str):
+        """Read the exact declared transcript, or report its observed absence."""
         try:
             if str(UUID(scope)) != scope:
                 raise ValueError
@@ -90,19 +92,32 @@ class ClaudeTranscriptCanaryScanner:
         if path.is_symlink():
             raise InputError("a Claude transcript must be a regular file in the declared directory")
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-        with os.fdopen(os.open(path, flags), "rb") as stream:
+        try:
+            fd = os.open(path, flags)
+        except FileNotFoundError:
+            if not self.directory.is_dir():
+                raise InputError("the transcript directory is unavailable") from None
+            return None
+        with os.fdopen(fd, "rb") as stream:
             if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                 raise InputError("a Claude transcript must be a regular file")
             raw = stream.read(16 * 1024 * 1024 + 1)
         if len(raw) > 16 * 1024 * 1024:
             raise InputError("Claude transcript exceeds the byte budget")
-        found = False
+        records = []
         for line in raw.splitlines():
-            value = json.loads(line)
+            value = json.loads(line, object_pairs_hook=unique_fields)
             if not isinstance(value, dict) or value.get("sessionId", scope) != scope:
                 raise InputError("unexpected Claude transcript record or session")
-            found |= contains_marker(value, marker)
-        return {scope} if found else set()
+            records.append(value)
+        return records
+
+    def find(self, *, scope: str, marker: str) -> set[str]:
+        validate_probe(scope, marker)
+        records = self.records(scope)
+        if records is None and not self.missing_is_absence:
+            raise FileNotFoundError("declared session transcript is unavailable")
+        return {scope} if records is not None and contains_marker(records, marker) else set()
 
 
 class LangfuseCanaryScanner:

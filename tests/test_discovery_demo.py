@@ -112,10 +112,10 @@ class DiscoveryTrialTests(unittest.TestCase):
                         self.assertEqual(ev["worker"]["held"], ev["worker"]["drained"])
                         self.assertTrue(ev["worker"]["held"])
                         final = ev["final"]
-                        self.assertEqual([r["caller"] for r in final["answers"]], [c for c in CALLERS for _ in range(2)])
+                        self.assertEqual([r["caller"] for r in final["answers"]], [c for c in CALLERS for _ in range(6)])
                         self.assertEqual([r["target_present"] for r in final["answers"]],
-                                         [lane == "broken", False, lane == "broken", False])
-                        self.assertEqual([r["control_present"] for r in final["answers"]], [False, True, False, True])
+                                         [lane == "broken", False] * 6)
+                        self.assertEqual([r["control_present"] for r in final["answers"]], [False, True] * 6)
                         mirror = next(r for r in final["stored"] if r and r["store"] == "analyst-cache")
                         self.assertEqual(mirror["target_present"], lane == "broken")
                         self.assertTrue(mirror["control_present"])

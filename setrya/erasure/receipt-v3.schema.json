@@ -128,7 +128,7 @@
             "$ref": "#/$defs/sha256"
           },
           "minItems": 2,
-          "maxItems": 2,
+          "maxItems": 16,
           "uniqueItems": true
         },
         "artifacts": {
@@ -150,26 +150,37 @@
         "require_lineage": {
           "type": "boolean"
         },
-        "judges": {
+        "judges": {},
+        "sampling": {
           "type": "object",
           "properties": {
-            "capture": {
+            "samples": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
+            },
+            "question_roles": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "target",
+                  "control"
+                ]
+              },
+              "minItems": 2,
+              "maxItems": 16
+            },
+            "source": {
               "enum": [
-                "digest",
-                "excerpt"
+                "application-signals",
+                "answer-text"
               ]
-            },
-            "target": {
-              "$ref": "#/$defs/answerJudge"
-            },
-            "control": {
-              "$ref": "#/$defs/answerJudge"
             }
           },
           "required": [
-            "target",
-            "control",
-            "capture"
+            "samples",
+            "question_roles",
+            "source"
           ],
           "additionalProperties": false
         }
@@ -183,7 +194,81 @@
         "scan_stores",
         "require_lineage"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "if": {
+        "required": [
+          "sampling"
+        ]
+      },
+      "then": {
+        "properties": {
+          "judges": {
+            "type": "object",
+            "properties": {
+              "capture": {
+                "enum": [
+                  "digest",
+                  "excerpt"
+                ]
+              },
+              "target": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/sampledJudge"
+                },
+                "minItems": 1,
+                "maxItems": 8,
+                "uniqueItems": true
+              },
+              "control": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/sampledJudge"
+                },
+                "minItems": 1,
+                "maxItems": 8,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "capture",
+              "target",
+              "control"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "questions": {
+            "maxItems": 2
+          },
+          "judges": {
+            "type": "object",
+            "properties": {
+              "capture": {
+                "enum": [
+                  "digest",
+                  "excerpt"
+                ]
+              },
+              "target": {
+                "$ref": "#/$defs/answerJudge"
+              },
+              "control": {
+                "$ref": "#/$defs/answerJudge"
+              }
+            },
+            "required": [
+              "target",
+              "control",
+              "capture"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
     },
     "openItem": {
       "type": "object",
@@ -581,6 +666,61 @@
             "sha256"
           ],
           "additionalProperties": false
+        },
+        "answer_sampling": {
+          "type": "object",
+          "properties": {
+            "samples_per_question": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
+            },
+            "target_coverage": {
+              "enum": [
+                "application-signals",
+                "lexical-only",
+                "paraphrase-aware",
+                "reviewed-answers",
+                "unconfirmed"
+              ]
+            },
+            "control_coverage": {
+              "enum": [
+                "application-signals",
+                "lexical-only",
+                "paraphrase-aware",
+                "reviewed-answers",
+                "unconfirmed"
+              ]
+            },
+            "stages": {
+              "type": "object",
+              "properties": {
+                "baseline": {
+                  "$ref": "#/$defs/answerStageCounts"
+                },
+                "immediate": {
+                  "$ref": "#/$defs/answerStageCounts"
+                },
+                "final": {
+                  "$ref": "#/$defs/answerStageCounts"
+                }
+              },
+              "required": [
+                "baseline",
+                "immediate",
+                "final"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "samples_per_question",
+            "target_coverage",
+            "control_coverage",
+            "stages"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -603,7 +743,28 @@
         "drill_duration_ms",
         "evidence"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "case": {
+            "required": [
+              "sampling"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "answer_sampling"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "answer_sampling"
+          ]
+        }
+      }
     },
     "tenant": {
       "type": "object",
@@ -918,7 +1079,7 @@
             "$ref": "#/$defs/sha256"
           },
           "minItems": 2,
-          "maxItems": 2,
+          "maxItems": 16,
           "uniqueItems": true
         },
         "evidence": {
@@ -1262,6 +1423,17 @@
             ],
             "additionalProperties": false
           }
+        },
+        "question_roles": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "target",
+              "control"
+            ]
+          },
+          "minItems": 2,
+          "maxItems": 16
         }
       },
       "required": [
@@ -1300,6 +1472,130 @@
         "failures",
         "gaps",
         "errors"
+      ],
+      "additionalProperties": false
+    },
+    "sampledJudge": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "marker",
+                "regex",
+                "entity"
+              ]
+            },
+            "rule_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "kind",
+            "rule_sha256"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "model"
+            },
+            "rule_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "model_rule": {
+              "$ref": "#/$defs/id"
+            },
+            "paraphrase_aware": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "rule_sha256",
+            "model_rule",
+            "paraphrase_aware"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "reviewed"
+            },
+            "present_sha256": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/sha256"
+              },
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true
+            },
+            "absent_sha256": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/sha256"
+              },
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "present_sha256",
+            "absent_sha256"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "answerStageCounts": {
+      "type": "object",
+      "properties": {
+        "planned": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "observed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "target_positive": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "control_positive": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "target_uncertain": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "control_uncertain": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        }
+      },
+      "required": [
+        "planned",
+        "observed",
+        "target_positive",
+        "control_positive",
+        "target_uncertain",
+        "control_uncertain"
       ],
       "additionalProperties": false
     }

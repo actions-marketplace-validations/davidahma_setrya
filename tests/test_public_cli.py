@@ -29,7 +29,7 @@ class PublicCLI(unittest.TestCase):
             result = json.loads((out / "broken/erasure-evidence.json").read_bytes())
             self.assertEqual({row["caller"] for row in result["final"]["answers"]}, {"support-lead", "account-manager"})
             for row in result["final"]["answers"][::2]:
-                self.assertEqual(row["judgments"]["target"]["excerpt"], "cobalt-bridge.example")
+                self.assertEqual(row["judgments"]["target"][0]["excerpt"], "cobalt-bridge.example")
             starter = Path(tmp, "starter")
             self.assertEqual(main(["init", "--output", str(starter)]), 0)
             args = ["--starter", str(starter / "test_erasure.py")]
@@ -150,7 +150,7 @@ class PublicCLI(unittest.TestCase):
                 log = root / (name + ".outputs")
                 env = {"SETRYA_STARTER": str(starter), "SETRYA_MODE": "deletion", "SETRYA_OUTPUT": str(output),
                        "GITHUB_OUTPUT": str(log), "GITHUB_STEP_SUMMARY": str(root / "summary")}
-                with patch.dict(os.environ, env), contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()):
+                with patch.dict(os.environ, env), patch.object(action, "require_version"), contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()):
                     self.assertEqual(action.run(), 2)
                     self.assertIn("review-status=" + status, log.read_text())
                 starter.write_text("import shutil, sys\nfrom pathlib import Path\n"
@@ -162,7 +162,7 @@ class PublicCLI(unittest.TestCase):
             main(["--help"])
         help_text = out.getvalue()
         self.assertIn(POSITIONING, help_text)
-        self.assertIn("{init,run,replay,demo,verify}", help_text)
+        self.assertIn("{init,run,replay,demo,receipt,observe,verify}", help_text)
         self.assertIn("doctor", help_text)
         self.assertNotIn("qualify", help_text)
 
@@ -175,18 +175,72 @@ class PublicCLI(unittest.TestCase):
                 action.summary(code, status)
         with TemporaryDirectory() as tmp:
             event = Path(tmp, "event.json")
-            event.write_text(json.dumps({"number": 3, "pull_request": {"base": {"repo": {"full_name": "owner/repo"}}}}))
+            head = "a" * 40
+            event.write_text(json.dumps({"number": 3, "pull_request": {"base": {"repo": {"full_name": "owner/repo"}},
+                                                                          "head": {"sha": head}}}))
             env = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event), "GITHUB_REPOSITORY": "owner/repo",
-                   "GITHUB_RUN_ID": "12", "SETRYA_CODE": "1", "SETRYA_REVIEW": "RESIDUAL_FOUND"}
-            with patch.dict(os.environ, env), patch.object(action.subprocess, "run") as api:
+                   "GITHUB_RUN_ID": "12", "GITHUB_SERVER_URL": "https://git.enterprise.example",
+                   "SETRYA_CODE": "1", "SETRYA_REVIEW": "RESIDUAL_FOUND", "SETRYA_ARTIFACT": "456",
+                   "SETRYA_SUMMARY": '[["answer","final",1]]'}
+            comments = [{"body": action.MARKER + "\n", "id": 1, "user": {"type": "User", "login": "tester"}}]
+            writes = []
+            def api(method, path, data=None):
+                if method == "GET":
+                    return comments if "/comments?" in path else {"head": {"sha": head}}
+                writes.append((method, path, data))
+                if method == "POST":
+                    comments.append({"body": data["body"], "id": 42, "user": {"type": "Bot", "login": "github-actions[bot]"}})
+            with patch.dict(os.environ, env), patch.object(action, "api", side_effect=api):
                 self.assertEqual(action.comment(), 0)
-                self.assertIn("repos/owner/repo/issues/3/comments", api.call_args.args[0])
-                self.assertIn("FAIL", json.loads(api.call_args.kwargs["input"])["body"])
-                self.assertIn("https://github.com/owner/repo/actions/runs/12", api.call_args.kwargs["input"])
-                with patch.dict(os.environ, {"SETRYA_CODE": "3", "SETRYA_REVIEW": "UNAVAILABLE"}):
-                    self.assertEqual(action.comment(), 0)
-                    self.assertNotIn("download the receipt", api.call_args.kwargs["input"])
-                api.reset_mock()
+                self.assertEqual(action.comment(), 0)
+                self.assertEqual([(m, path) for m, path, _ in writes],
+                                 [("POST", "repos/owner/repo/issues/3/comments"), ("PATCH", "repos/owner/repo/issues/comments/42")])
+                body = writes[-1][2]["body"]
+                self.assertIn("erasure-evidence.json#/final/answers", body)
+                self.assertIn("https://git.enterprise.example/owner/repo/actions/runs/12/artifacts/456", body)
                 with patch.dict(os.environ, {"SETRYA_CODE": "0\nPASS"}), self.assertRaises(ValueError):
                     action.comment()
-                api.assert_not_called()
+                with patch.dict(os.environ, {"SETRYA_SUMMARY": '[["arbitrary text","final",1]]'}), self.assertRaises(ValueError):
+                    action.comment()
+                head = "b" * 40
+                self.assertEqual(action.comment(), 0)
+                self.assertEqual(len(writes), 2)
+
+    def test_scoped_caller_and_discovered_store_link_to_the_decisive_read(self):
+        receipt = {"case": {"callers": ["team/alice"], "artifacts": []},
+                   "failures": ["team/alice lost the retained finding at final read.",
+                                "Discovered copy cache/a still exists at final read."],
+                   "gaps": [], "open_items": [], "errors": []}
+        rows = action.signals(receipt)
+        self.assertIn(["control", "final", 1], rows)
+        self.assertIn(["discovered", "final", 1], rows)
+        receipt["case"]["artifacts"].append({"store": "team", "key": "alice"})
+        self.assertIn(["failure", "final", 1], action.signals(receipt))
+
+    def test_legacy_console_warns_on_stderr_and_preserves_the_verdict(self):
+        from setrya.cli import console_main
+        with patch("sys.argv", ["setrya", "check", "missing-drill.toml"]), \
+                contextlib.redirect_stderr(StringIO()) as stderr, contextlib.redirect_stdout(StringIO()) as stdout:
+            self.assertEqual(console_main(), 2)
+        self.assertIn("scheduled for removal in 2.0", stderr.getvalue())
+        self.assertNotIn("Deprecation", stdout.getvalue())
+
+    def test_action_version_mismatch_rejects_before_opening_fixture(self):
+        with TemporaryDirectory() as tmp:
+            log = Path(tmp) / "outputs"
+            env = {"SETRYA_OUTPUT": tmp, "GITHUB_OUTPUT": str(log), "GITHUB_STEP_SUMMARY": str(Path(tmp) / "summary")}
+            with patch.dict(os.environ, env), patch.object(action.metadata, "version", return_value="0.0.1"), \
+                    patch("setrya.erasure.cli.run_person_starter") as run, contextlib.redirect_stderr(StringIO()):
+                self.assertEqual(action.run(), 2)
+                run.assert_not_called()
+                self.assertIn("review-status=UNAVAILABLE", log.read_text())
+
+    def test_failed_discovery_demo_publishes_nothing(self):
+        from setrya.discovery import demo
+        with TemporaryDirectory() as tmp, contextlib.redirect_stdout(StringIO()) as out:
+            folder = Path(tmp, "discovery-test")
+            with patch.object(demo, "open_fixture", side_effect=RuntimeError("fixture failed")):
+                with self.assertRaises(RuntimeError):
+                    demo.run_demo(folder)
+            self.assertFalse(folder.exists())
+            self.assertEqual(out.getvalue(), "")

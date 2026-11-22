@@ -22,6 +22,8 @@ def help_parser():
         ("run", "test erasure in a disposable application and save a receipt"),
         ("replay", "recompute the verdict from saved evidence"),
         ("demo", "run the two-user workspace example or the analyst investigation"),
+        ("receipt", "render a customer summary from replayed evidence"),
+        ("observe", "check known keys for completed deletion requests with read-only credentials"),
         ("verify", "authenticate a receipt and check its evidence against a trusted signer"),
     ):
         commands.add_parser(name, help=help_text)
@@ -32,17 +34,32 @@ def doctor(argv):
     from .erasure.v3 import SharedCase, observe_baseline
 
     parser = argparse.ArgumentParser(prog="setrya doctor", description="Read a trusted fixture's baseline before erasure.")
-    parser.add_argument("--starter", type=Path, required=True)
+    source_arg = parser.add_mutually_exclusive_group(required=True)
+    source_arg.add_argument("--starter", type=Path, help="trusted Python starter or YAML case")
+    source_arg.add_argument("--case", type=Path, help="trusted declarative YAML case")
     parser.add_argument("--mode", choices=("deletion", "late-write"), default="deletion")
     args = parser.parse_args(argv)
-    if not args.starter.is_file():
-        raise InputError("Supply a trusted starter file with --starter.")
-    source = args.starter.resolve()
+    if args.case and args.case.suffix.lower() not in (".yaml", ".yml"):
+        raise InputError("Use a .yaml or .yml file with --case.")
+    source = (args.case or args.starter).resolve()
+    if not source.is_file():
+        raise InputError("Supply a trusted application case or starter file.")
     original = sys.path
     try:
         sys.path = [str(source.parent), str(Path.cwd()), *original]
-        hooks = runpy.run_path(str(source))
-        case, open_fixture = hooks.get("CASE"), hooks.get("open_fixture")
+        if args.case or source.suffix.lower() in (".yml", ".yaml"):
+            from .erasure.casefile import load_case
+            parsed = load_case(source)
+            missing = parsed.missing()
+            if args.mode == "late-write":
+                missing.extend(("hold", "checkpoint", "release_and_drain"))
+            if missing:
+                print("NOT TESTED  Missing fixture hooks or bindings: " + ", ".join(missing))
+                return 3
+            case, open_fixture = parsed.case, parsed.open_fixture
+        else:
+            hooks = runpy.run_path(str(source))
+            case, open_fixture = hooks.get("CASE"), hooks.get("open_fixture")
         if not isinstance(case, SharedCase) or not callable(open_fixture):
             raise InputError("The trusted starter must define a SharedCase named CASE and open_fixture().")
         case.spec()
@@ -61,11 +78,15 @@ def doctor(argv):
             if not observe_baseline(subject, case, app, external_items=items):
                 print("NOT TESTED  The baseline could not establish the declared keys, callers, questions or scans.")
                 return 3
-            print(f"READY  Read {len(case.artifacts)} declared keys and both questions for {len(case.callers)} caller(s).")
+            print(f"READY  Read {len(case.artifacts)} declared keys and all declared questions for {len(case.callers)} caller(s).")
             print("Erasure and worker hooks will be exercised by setrya run.")
             return 0
-    except NotImplementedError:
-        print("NOT TESTED  Connect open_fixture to your disposable application.")
+    except NotImplementedError as exc:
+        import traceback
+        hooks = {"open_fixture", "inspect", "read", "erase", "scan", "lineage"}
+        missing = next((f.name for f in reversed(traceback.extract_tb(exc.__traceback__)) if f.name in hooks),
+                       "open_fixture")
+        print(f"NOT TESTED  Connect {missing} to your disposable application.")
         return 3
     except SystemExit:
         raise InputError("The starter exited before its baseline could be checked.") from None
@@ -83,7 +104,18 @@ def _start(command, args):
     if is_demo:
         parser.add_argument("example", choices=("workspace", "analyst"), nargs="?", help="person example (default: workspace)")
         parser.add_argument("--mode", choices=("deletion", "late-write"), help="person drill mode (default: late-write)")
+    else:
+        from .erasure.case_starters import STACKS
+        parser.add_argument("--stack", choices=STACKS, help="connect a store and an HTTP application fixture")
     opts = parser.parse_args(args)
+    if not is_demo and opts.stack:
+        if opts.scope != "person":
+            raise InputError("Stack starters use person scope.")
+        from .erasure.case_starters import init_stack
+        case = init_stack(opts.output or Path("setrya-case"), opts.stack)
+        print(f"Created {case}. Configure the disposable app and storage bindings.")
+        print(join(["setrya", "doctor", "--case", str(case)]))
+        return 0
     if opts.scope == "tenant":
         from .erasure.cli import main
         return main([command, *args], prog="setrya")
@@ -114,6 +146,9 @@ def dispatch(argv):
     options = {arg.partition("=")[0] for arg in args if arg.startswith("--")}
     first = args[0] if args else None
     try:
+        if cmd in ("receipt", "observe"):
+            from .casework.cli import command
+            return command(argv)
         if cmd == "doctor":
             return doctor(args)
         if cmd in ("run", "verify"):

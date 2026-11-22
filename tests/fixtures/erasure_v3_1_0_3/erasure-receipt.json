@@ -1,0 +1,68 @@
+{
+  "format": "setrya.erasure.receipt.v3",
+  "version": 3,
+  "scope": "person",
+  "run": "884f72ee9948434287fc77be7ec8c050",
+  "subject": {
+    "ref": "b098f05f57a7b2ee0dc212f816214e6c2d40ce3e015b791119a2bfdae748a4e5",
+    "classification": "private"
+  },
+  "observed_at": "2026-11-21T16:41:34.833023+00:00",
+  "case": {
+    "conversation": "onboarding-team",
+    "route": "/workspaces/onboarding-team/handoff/ask",
+    "callers": [
+      "support-lead"
+    ],
+    "questions": [
+      "6d85d25f54cca7408678ceb3878c10c2c0994ab9c90891b99995ed857e08cde8",
+      "063c3d73df814cbd06e17ac5da24f4f77b21dd8fabde95434288406905d2b066"
+    ],
+    "artifacts": [
+      {
+        "store": "notes",
+        "key": "customer-note",
+        "action": "delete"
+      }
+    ],
+    "scan_stores": [],
+    "require_lineage": false,
+    "judges": {
+      "capture": "excerpt",
+      "target": {
+        "kind": "marker",
+        "rule_sha256": "2fea0e500eee51065d4de5629fb2ffb8edfb24836ff08672e87d68b01cd1be96"
+      },
+      "control": {
+        "kind": "marker",
+        "rule_sha256": "c0edef6bb119dfd0af1567bbefbe6541f200772d22509193cdb46483a17e5240"
+      }
+    }
+  },
+  "mode": "deletion",
+  "race": "not exercised",
+  "technical_verdict": "PASS",
+  "review_status": "READY_FOR_REVIEW",
+  "open_items": [],
+  "artifact_checks": [
+    {
+      "store": "notes",
+      "key": "customer-note",
+      "action": "delete",
+      "discovered_by": "case",
+      "evidence": [
+        "erasure-evidence.json#/baseline/stored/0",
+        "erasure-evidence.json#/immediate/stored/0",
+        "erasure-evidence.json#/final/stored/0"
+      ]
+    }
+  ],
+  "failures": [],
+  "gaps": [],
+  "errors": [],
+  "drill_duration_ms": 5,
+  "evidence": {
+    "file": "erasure-evidence.json",
+    "sha256": "a02b97467fc0f28876e1756180026131bf017548338a0c6cdff5fa2932e84547"
+  }
+}
