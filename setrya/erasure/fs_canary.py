@@ -18,6 +18,7 @@ import subprocess
 from tempfile import TemporaryDirectory, TemporaryFile
 from time import monotonic
 
+from setrya.core.inputs import read_regular_bytes
 from setrya.core.scan_scope import SKIPPED_EXTENSIONS
 from setrya.drill import InputError
 from .adapters import _require_sqlite_base_table
@@ -32,6 +33,8 @@ _MAX_DEPTH = 32
 _MAX_COMMITS = 128
 _TIMEOUT = 15
 _OID = re.compile(rb"[0-9a-f]{40}|[0-9a-f]{64}")
+_PSEUDO_REFS = ("ORIG_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD",
+                "BISECT_HEAD", "FETCH_HEAD", "AUTO_MERGE")
 _ENCODED_PATH = "path64:"
 
 
@@ -403,9 +406,32 @@ class GitHistoryCanaryScanner:
                 raise InputError("Git canary requires standalone configuration without includes")
             return any(key.startswith(b"remote.") and key.count(b".") >= 2 for key in keys)
 
-        def commit_roots():
+        def commit_roots(objects):
+            commits, trees = set(), set()
+            worktrees = directory / "worktrees"
+            locations = [directory]
+            if worktrees.is_dir():
+                locations.extend(path for path in sorted(worktrees.iterdir()) if path.is_dir())
+            for location in locations:
+                for name in _PSEUDO_REFS:
+                    path = location / name
+                    if not os.path.lexists(path):
+                        continue
+                    for line in read_regular_bytes(path, "Git pseudo-ref", 64 * 1024).splitlines():
+                        if not line.strip():
+                            continue
+                        oid = line.split(None, 1)[0]
+                        if not _OID.fullmatch(oid):
+                            raise InputError("invalid Git pseudo-ref object ID")
+                        kind = objects.get(oid, (None,))[0]
+                        if kind in (b"commit", b"tag"):
+                            commits.add(oid)
+                        elif kind == b"tree":
+                            trees.add(oid)
+            _over(len(commits) + len(trees), self.limits.max_commits, "Git pseudo-ref objects")
             raw = git("log", "--all", "--reflog", "--no-color", "--no-decorate", "--no-notes",
-                      "--no-show-signature", "--format=%H %T", f"-{self.limits.max_commits + 1}",
+                      "--no-show-signature", "--format=%H %T", f"-{self.limits.max_commits + 1}", "--stdin",
+                      data=b"".join(oid + b"\n" for oid in sorted(commits)),
                       limit=(self.limits.max_commits + 1) * 132)
             rows = raw.splitlines()
             _over(len(rows), self.limits.max_commits, "local Git commits")
@@ -415,17 +441,19 @@ class GitHistoryCanaryScanner:
                 if not _OID.fullmatch(commit) or not _OID.fullmatch(tree) or len(commit) != len(tree):
                     raise InputError("invalid Git commit or tree ID")
                 roots[tree].append(commit)
+            for tree in sorted(trees):
+                roots[tree].append(tree)
             return roots
 
         try:
             _check_local_git_files(directory, deadline, self.limits)
             remotes = remote_configured()
             objects = inventory()
-            roots = commit_roots()
+            roots = commit_roots(objects)
             hits = _blob_matches(git, objects, marker.encode(), self.limits)
             found = _history_locations(git, objects, roots, hits, prefix, self.limits)
             _check_local_git_files(directory, deadline, self.limits)
-            if objects != inventory() or roots != commit_roots() or remotes != remote_configured():
+            if objects != inventory() or roots != commit_roots(objects) or remotes != remote_configured():
                 raise InputError("Git objects, refs, reflogs or remote configuration changed during the scan")
         except InputError:
             raise

@@ -227,6 +227,8 @@ class GitHistoryTests(unittest.TestCase):
             self.assertEqual(scan.find(scope=".", marker=MARKER), {old + ":memory/first.md", old + ":second.md"})
             self.assertEqual(scan.find(scope="memory", marker=MARKER), {old + ":memory/first.md"})
             git("reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all")
+            self.assertEqual(scan.find(scope="memory", marker=MARKER), {old + ":memory/first.md"})
+            git("update-ref", "-d", "ORIG_HEAD")
             dangling_blob = git("rev-parse", old + ":second.md")
             self.assertEqual(scan.find(scope=".", marker=MARKER), {f"blob:{dangling_blob}"})
             self.assertEqual(scan.find(scope="memory", marker=MARKER), {f"blob:{dangling_blob}"})
@@ -242,6 +244,28 @@ class GitHistoryTests(unittest.TestCase):
             (root / ".git" / "refs" / "external").symlink_to(root, target_is_directory=True)
             with self.assertRaisesRegex(InputError, "symbolic"):
                 scan.find(scope=".", marker=MARKER)
+
+    def test_pseudo_ref_retains_a_scoped_alias_of_a_blob_reachable_elsewhere(self):
+        from setrya.examples.memory_files import open_fixture
+
+        with open_fixture(shutil.which("git"), guarded=True) as (_, app, _):
+            outside = app.root / "outside.md"
+            outside.write_text(MARKER)
+            app.git("add", "outside.md")
+            app.git("commit", "--no-gpg-sign", "-m", "Outside note")
+            base = app.git("rev-parse", "HEAD").decode().strip()
+            inside = app.root / "scoped" / "note.md"
+            inside.parent.mkdir()
+            inside.write_text(MARKER)
+            app.git("add", "scoped/note.md")
+            app.git("commit", "--no-gpg-sign", "-m", "Scoped copy")
+            old = app.git("rev-parse", "HEAD").decode().strip()
+            app.git("reset", "--hard", base)
+            app.git("reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all")
+            self.assertEqual(app.git("show", "ORIG_HEAD:scoped/note.md").decode(), MARKER)
+            self.assertEqual(app.history.find(scope="scoped", marker=MARKER), {old + ":scoped/note.md"})
+            app.git("update-ref", "-d", "ORIG_HEAD")
+            self.assertEqual(app.history.find(scope="scoped", marker=MARKER), set())
 
     def test_large_history_visits_each_unique_tree_once_and_obeys_commit_budget(self):
         from setrya.erasure import fs_canary

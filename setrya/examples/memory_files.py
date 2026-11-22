@@ -121,6 +121,7 @@ class MemoryFiles:
             # history in both lanes so the broken scan must find the orphan blob.
             self.git("reset", "--mixed", self.clean)
             self.git("reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all")
+            self.git("update-ref", "-d", "ORIG_HEAD")
             if self.guarded:
                 self.git("prune", "--expire=now")
 
