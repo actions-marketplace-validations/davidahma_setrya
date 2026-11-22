@@ -129,7 +129,7 @@ jobs:
           python3 -m venv "$runtime"
           "$runtime/bin/python" -m pip install --upgrade pip
           python3 -c 'from pathlib import Path; import tomllib; print(*tomllib.loads(Path("pyproject.toml").read_text())["build-system"]["requires"], sep="\n")' > "$RUNNER_TEMP/build-requires.txt"
-          "$runtime/bin/python" -m pip install --upgrade -r "$RUNNER_TEMP/build-requires.txt" '.[answer-cache,redis,celery-langchain,erasure,erasure-postgres,erasure-elasticsearch]'
+          "$runtime/bin/python" -m pip install --upgrade -r "$RUNNER_TEMP/build-requires.txt" '.[answer-cache,redis,celery-langchain,erasure,erasure-postgres,erasure-elasticsearch,case-yaml]'
           echo "$runtime/bin" >> "$GITHUB_PATH"
       - name: Audit the installed integration and build packages
         run: |

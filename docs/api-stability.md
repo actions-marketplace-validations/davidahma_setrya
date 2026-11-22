@@ -4,7 +4,7 @@ The supported developer entry points are `setrya init`, `run`, `replay`, `demo` 
 
 ## Writing a fixture
 
-The person-erasure API consists of `Subject`, `Artifact`, `SharedCase`, `ExternalItem`, `run_shared`, and the observation types in `setrya.erasure.v3`. A fixture implements the documented store, caller and worker methods. Text-based checks use `TextAnswer`, `Marker`, `Regex`, `Entity`, `ModelJudge`, `ModelDecision` and `AnswerJudges` from `setrya.erasure.judges`. Keyword names, required fields and the meanings of actions and exit codes are public contracts. New optional capabilities can arrive in a minor release. A change requiring an existing 1.x fixture to be rewritten requires a major version. [Fixture contract](erasure-v3.md)
+Use `setrya.erasure` for the person-erasure fixture types, `observe_baseline`, `run_shared`, text judges and decisions. The `setrya.erasure.v3` and `setrya.erasure.judges` import paths continue to expose their original classes. A fixture implements the documented store, caller and worker methods. Keyword names, required fields and the meanings of actions and exit codes are public contracts. New optional capabilities can arrive in a minor release. A change requiring an existing 1.x fixture to be rewritten requires a major version. [Fixture contract](erasure-v3.md)
 
 ## Reviewing a receipt
 

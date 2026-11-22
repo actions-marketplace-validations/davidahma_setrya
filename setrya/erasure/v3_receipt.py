@@ -6,14 +6,15 @@ import json
 from pathlib import Path
 
 from setrya.offboarding.inputs import keys_match, read_regular_bytes, require, unique_fields
-from .judges import check_observation, check_policy
+from .judges import check_observation, check_policy, coverage
 from .journal import identifier, validate_details
 from .model import check_callers, route_id
 from .receipt import EVIDENCE, EXIT, MAX_BUNDLE_FILE_BYTES, RECEIPT, _hex, _timestamp
 from setrya.receipt_format import FORMAT_V3 as RECEIPT_FORMAT
 from .subject import Subject
 
-EVIDENCE_FORMAT = "setrya.erasure.evidence.v3"
+LEGACY_EVIDENCE_FORMAT = "setrya.erasure.evidence.v3"
+EVIDENCE_FORMAT = "setrya.erasure.evidence.v3.sampled"
 
 
 def _fields(row, fields):
@@ -33,15 +34,29 @@ def _unique_ids(items, limit, name):
 
 def check_spec(spec):
     judged = isinstance(spec, dict) and "judges" in spec
-    _fields(spec, "conversation route callers questions artifacts scan_stores require_lineage" + (" judges" if judged else ""))
+    sampled = isinstance(spec, dict) and "sampling" in spec
+    _fields(spec, "conversation route callers questions artifacts scan_stores require_lineage" +
+            (" judges" if judged else "") + (" sampling" if sampled else ""))
     if judged:
-        check_policy(spec["judges"])
+        check_policy(spec["judges"], sampled)
     identifier(spec["conversation"], "conversation")
     route_id(spec["route"])
     check_callers(spec["callers"])
     questions = spec["questions"]
-    require(isinstance(questions, list) and len(questions) == 2 and all(_hex(q, 64) for q in questions)
-            and questions[0] != questions[1], "Supply distinct target and control questions.")
+    require(isinstance(questions, list) and 2 <= len(questions) <= (16 if sampled else 2)
+            and all(_hex(q, 64) for q in questions) and len(set(questions)) == len(questions), "Supply distinct target and control questions.")
+    if sampled:
+        plan = spec["sampling"]
+        _fields(plan, "samples question_roles source")
+        roles = plan["question_roles"]
+        require(isinstance(roles, list) and len(roles) == len(questions) and roles[:2] == ["target", "control"]
+                and all(role in ("target", "control") for role in roles)
+                and max(roles.count("target"), roles.count("control")) <= 8, "Invalid question roles.")
+        require(type(plan["samples"]) is int and 1 <= plan["samples"] <= 32, "Use one to 32 samples per question.")
+        require(plan["source"] == ("answer-text" if judged else "application-signals"), "Wrong answer source.")
+        reads = len(questions) * len(spec["callers"]) * plan["samples"]
+        checks = sum(len(spec["judges"][role]) for role in ("target", "control")) if judged else 1
+        require(reads <= 1024 and reads * checks <= 1536, "Sampling exceeds the per-stage evidence budget.")
     _unique_ids(spec["scan_stores"], 128, "scanner")
     require(type(spec["require_lineage"]) is bool, "Invalid lineage requirement.")
     seen = set()
@@ -94,6 +109,16 @@ def discovered_keys(spec, scans):
     return sorted((store, key) for store, hits in scans.items() for key in (hits or []) if (store, key) not in known)
 
 
+def answer_slots(spec):
+    """Yield the declared caller, question digest, fact role and one-based sample ordinal."""
+    plan = spec.get("sampling", {})
+    roles = plan.get("question_roles", ("target", "control"))
+    for caller in spec["callers"]:
+        for ordinal in range(1, plan.get("samples", 1) + 1):
+            for question, role in zip(spec["questions"], roles):
+                yield caller, question, role, ordinal
+
+
 def check_stage(stage, spec, baseline_scans=None):
     _fields(stage, "stored answers scans discovered")
     require(isinstance(stage["stored"], list) and len(stage["stored"]) == len(spec["artifacts"]), "Missing store slots.")
@@ -109,16 +134,18 @@ def check_stage(stage, spec, baseline_scans=None):
     for row, (store, key) in zip(stage["discovered"], discovered):
         if row is not None:
             check_stored(row, store, key)
-    count = len(spec["questions"])
-    require(isinstance(stage["answers"], list) and len(stage["answers"]) == len(spec["callers"]) * count,
+    slots = list(answer_slots(spec))
+    require(isinstance(stage["answers"], list) and len(stage["answers"]) == len(slots),
             "Missing endpoint slots.")
-    for i, row in enumerate(stage["answers"]):
+    sampled = "sampling" in spec
+    for (caller, question, _, ordinal), row in zip(slots, stage["answers"]):
         if row is not None:
-            caller, question = spec["callers"][i // count], spec["questions"][i % count]
             fields = "caller conversation route question target_present control_present"
-            _fields(row, fields + (" judgments" if "judges" in spec else ""))
+            _fields(row, fields + (" judgments" if "judges" in spec else "") + (" sample" if sampled else ""))
+            if sampled:
+                require(type(row["sample"]) is int and row["sample"] == ordinal, "Wrong endpoint sample ordinal.")
             if "judges" in spec:
-                check_observation(row, spec["judges"])
+                check_observation(row, spec["judges"], sampled)
             require((row["caller"], row["conversation"], row["route"], row["question"]) ==
                     (caller, spec["conversation"], spec["route"], question), "Wrong endpoint observation.")
             fact_flags(row)
@@ -150,9 +177,8 @@ def baseline_ready(spec, stage):
         elif (row["control_present"] is not True
               or row["target_present"] is not (a["action"] == "rewrite")):
             return False
-    for i, row in enumerate(stage["answers"]):
-        field = "target_present" if i % 2 == 0 else "control_present"
-        if row is None or row[field] is not True:
+    for (_, _, role, _), row in zip(answer_slots(spec), stage["answers"]):
+        if row is None or row[role + "_present"] is not True:
             return False
     if any(r is None or not r["exists"] for r in stage["discovered"]):
         return False
@@ -307,8 +333,25 @@ def _after(stage, name, e, failures, gaps):
         else:
             for key in hits:
                 failures.add(f"Canary found in {store}/{key} at {name}.")
-    for i, r in enumerate(stage["answers"]):
-        answer_outcome(r, e["case"]["callers"][i // 2], i % 2, name, failures, gaps)
+    for (caller, _, role, _), row in zip(answer_slots(e["case"]), stage["answers"]):
+        answer_outcome(row, caller, role == "control", name, failures, gaps)
+
+
+def _sampling_summary(e):
+    spec = e["case"]
+    policy = spec.get("judges")
+    result = {"samples_per_question": spec["sampling"]["samples"], "stages": {}}
+    for role in ("target", "control"):
+        result[role + "_coverage"] = coverage(policy[role]) if policy else "application-signals"
+    planned = len(spec["questions"]) * len(spec["callers"]) * spec["sampling"]["samples"]
+    for stage in ("baseline", "immediate", "final"):
+        observed = [row for row in e[stage]["answers"] if row is not None] if e[stage] else []
+        counts = {"planned": planned, "observed": len(observed)}
+        for role in ("target", "control"):
+            counts[role + "_positive"] = sum(row[role + "_present"] is True for row in observed)
+            counts[role + "_uncertain"] = sum(row[role + "_present"] is None for row in observed)
+        result["stages"][stage] = counts
+    return result
 
 
 def _artifact_index(e):
@@ -356,7 +399,7 @@ def lineage_gaps(e, external):
 def derive(e, digest):
     _fields(e, "format run scope observed_at subject mode case worker external lineage baseline erased immediate final "
                "expected_producers coverage journal errors drill_duration_ms")
-    require(e["format"] == EVIDENCE_FORMAT and e["scope"] == "person" and _hex(digest, 64),
+    require(e["format"] in (EVIDENCE_FORMAT, LEGACY_EVIDENCE_FORMAT) and e["scope"] == "person" and _hex(digest, 64),
             "Invalid v3 evidence header.")
     identifier(e["run"], "run")
     _timestamp(e["observed_at"])
@@ -364,6 +407,7 @@ def derive(e, digest):
     Subject(**e["subject"])
     spec = e["case"]
     check_spec(spec)
+    require(("sampling" in spec) == (e["format"] == EVIDENCE_FORMAT), "Wrong evidence format for the answer policy.")
     check_external(e["external"], spec, e["subject"]["ref"])
     require(type(e["drill_duration_ms"]) is int and e["drill_duration_ms"] >= 0, "Invalid drill duration.")
     require(e["mode"] in ("late-write", "deletion"), "Invalid drill mode.")
@@ -410,9 +454,16 @@ def derive(e, digest):
         _fields(err, "operation error")
         identifier(err["operation"], "operation")
         identifier(err["error"], "error")
-    tech = "FAIL" if failures else "ERROR" if errors else "NOT TESTED" if gaps else "PASS"
+    adapter_errors = errors
+    if "sampling" in spec:
+        adapter_errors = [err for err in errors if err["operation"] not in ("target_judge", "control_judge")]
+        if len(adapter_errors) != len(errors):
+            gaps.add("An answer judge could not evaluate a required reply.")
+    tech = "FAIL" if failures else "ERROR" if adapter_errors else "NOT TESTED" if gaps else "PASS"
+
     review = "RESIDUAL_FOUND" if tech == "FAIL" else "OPEN_ITEMS" if external or tech != "PASS" else "READY_FOR_REVIEW"
-    return {"format": RECEIPT_FORMAT, "version": 3, "scope": "person", "run": e["run"], "subject": e["subject"],
+    return {**({"answer_sampling": _sampling_summary(e)} if "sampling" in spec else {}),
+            "format": RECEIPT_FORMAT, "version": 3, "scope": "person", "run": e["run"], "subject": e["subject"],
             "observed_at": e["observed_at"], "case": spec, "mode": e["mode"], "race": race,
             "technical_verdict": tech, "review_status": review, "open_items": e["external"],
             "artifact_checks": _artifact_index(e),
@@ -444,6 +495,10 @@ def summary(receipt):
     lines = [f"Technical verdict {receipt['technical_verdict']} · Review status {receipt['review_status']}",
              f"{receipt['case']['conversation']} · {receipt['mode']} · worker race {receipt['race']}",
              f"Drill duration {receipt['drill_duration_ms']} ms"]
+    samples = receipt.get("answer_sampling")
+    if samples:
+        lines.append(f"Reads per question per caller: {samples['samples_per_question']}. "
+                     f"Erased fact coverage: {samples['target_coverage']}.")
     if receipt["technical_verdict"] == "PASS":
         callers = ", ".join(receipt["case"]["callers"])
         lines.append(f"Reopened {receipt['case']['conversation']} as {callers}. Each caller lost the erased fact and kept the control fact.")

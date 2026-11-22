@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
-from setrya.erasure.judges import AnswerJudges, Entity, Marker, ModelDecision, ModelJudge, Regex, TextAnswer
+from setrya.erasure.judges import AnswerJudges, Entity, Marker, ModelDecision, ModelJudge, Regex, ReviewedAnswers, TextAnswer
 from setrya.erasure.subject import Subject
 from setrya.erasure.v3 import Artifact, ExternalItem, SharedCase, Stored, observe_baseline, run_shared
 from setrya.erasure.v3_receipt import derive, replay
@@ -33,6 +33,10 @@ class Workspace:
         self.live = False
 
 
+def closed_target(rule):
+    return (rule, ReviewedAnswers(("ORCHID-7",), ("Unknown", "Juniper")))
+
+
 class CaseJudgesTests(TestCase):
     def setUp(self):
         folder = TemporaryDirectory()
@@ -41,7 +45,7 @@ class CaseJudgesTests(TestCase):
         self.subject = Subject("8" * 64, "test")
         self.case = SharedCase("ticket", "/ask", ("owner",), "What shipped?", "What stayed?",
                                (Artifact("notes", "order", "delete"),), require_lineage=True,
-                               judges=AnswerJudges(Marker("ORCHID-7"), Entity("juniper"), capture="excerpt"))
+                               judges=AnswerJudges(closed_target(Marker("ORCHID-7")), Entity("juniper"), capture="excerpt"))
 
     def test_one_caller_can_erase_one_private_document_without_a_worker(self):
         app = Workspace()
@@ -53,7 +57,7 @@ class CaseJudgesTests(TestCase):
         self.assertEqual(receipt, replay(out))
         evidence = json.loads((out / "erasure-evidence.json").read_bytes())
         answers = evidence["baseline"]["answers"]
-        self.assertEqual([r["judgments"][role]["excerpt"] for r, role in zip(answers, ("target", "control"))],
+        self.assertEqual([r["judgments"][role][0]["excerpt"] for r, role in zip(answers, ("target", "control"))],
                          ["ORCHID-7", "Juniper"])
         self.assertNotIn("What shipped?", json.dumps(evidence))
         answers[0]["target_present"] = False
@@ -72,14 +76,14 @@ class CaseJudgesTests(TestCase):
             case = replace(self.case, judges=AnswerJudges(Marker("ORCHID-7"), Entity("juniper"), capture=capture))
             run_shared(self.subject, case=case, application=Workspace(), mode="deletion", output=out)
             evidence = json.loads((out / "erasure-evidence.json").read_bytes())
-            evidence["case"]["judges"]["target"]["rule_sha256"] = "a" * 64
+            evidence["case"]["judges"]["target"][0]["rule_sha256"] = "a" * 64
             with self.assertRaisesRegex(InvalidReport, "Exact marker"):
                 derive(evidence, "0" * 64)
 
     def test_any_declared_callers_residual_fails_and_the_guarded_case_passes(self):
         callers = ("owner", "colleague", "support")
         case = replace(self.case, callers=callers,
-                       judges=AnswerJudges(Regex(r"ORCHID-\d+"), Entity("Juniper")))
+                       judges=AnswerJudges(closed_target(Regex(r"ORCHID-\d+")), Entity("Juniper")))
         for label, residual in (("broken", "support"), ("fixed", None)):
             out = self.root / label
             receipt = run_shared(self.subject, case=case, application=Workspace(residual), mode="deletion", output=out)
@@ -88,7 +92,7 @@ class CaseJudgesTests(TestCase):
             evidence = (out / "erasure-evidence.json").read_bytes()
             self.assertNotIn(b"ORCHID", evidence)
             self.assertNotIn(b"Juniper", evidence)
-            self.assertEqual(len(json.loads(evidence)["final"]["answers"]), 6)
+            self.assertEqual(len(json.loads(evidence)["final"]["answers"]), 18)
             if residual:
                 self.assertIn("support recovered the erased finding at final read.", receipt["failures"])
         for invalid in ((), ("one", "one")):

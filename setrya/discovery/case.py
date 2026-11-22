@@ -106,6 +106,9 @@ def _scope(binding, subject, spec, external):
             "Fixture subject or classification differs from the approved mapping.")
     require(all(spec[k] == binding[k] for k in ("conversation", "route", "callers", "questions")),
             "Fixture conversation, caller, route or question differs from the approved mapping.")
+    require(binding.get("question_roles", ["target", "control"]) ==
+            spec.get("sampling", {}).get("question_roles", ["target", "control"]),
+            "Fixture question roles differ from the approved mapping.")
     require(spec["require_lineage"] and not spec["scan_stores"],
             "A discovery drill requires version lineage and explicitly approved artifact keys.")
     approvals = {_location(s): s for s in binding["services"] if s["role"] != "endpoint"}
@@ -207,11 +210,12 @@ def _endpoint(service, e):
     failures, gaps, pointers = set(), set(), []
     for stage in STAGES:
         sample = e[stage]
-        for i, row in enumerate(sample["answers"] if sample else [None] * (len(e["case"]["callers"]) * 2)):
+        for i, (caller, _, role, _) in enumerate(v3_receipt.answer_slots(e["case"])):
+            row = sample["answers"][i] if sample else None
             if row is not None:
                 pointers.append(_pointer(stage, "answers", i))
             if stage != "baseline" and e["erased"] is not None:
-                v3_receipt.answer_outcome(row, e["case"]["callers"][i // 2], i % 2, stage, failures, gaps)
+                v3_receipt.answer_outcome(row, caller, role == "control", stage, failures, gaps)
     if e["erased"] is not True:
         gaps.add("The drill did not complete the application's erasure operation.")
     return {**service, "status": "FAIL" if failures else "NOT TESTED" if gaps else "PASS",
@@ -222,8 +226,8 @@ def _baseline_status(service, evidence, direct, source):
     baseline = evidence["baseline"]
     if service["role"] == "endpoint":
         samples = baseline["answers"]
-        if all(row and row["control_present" if i % 2 else "target_present"] is True
-               for i, row in enumerate(samples)):
+        if all(row and row[role + "_present"] is True for (_, _, role, _), row in
+               zip(v3_receipt.answer_slots(evidence["case"]), samples)):
             return "CONFIRMED"
         return "INCOMPLETE" if any(row is not None for row in samples) else "UNREAD"
 
@@ -313,6 +317,7 @@ def _base(packet):
     envelope = ({"format": FORMAT, "version": 1} if packet["version"] == 1 else
                 {"format": v3_receipt.RECEIPT_FORMAT, "version": 3, "scope": "person", "profile": "discovery"})
     return {**envelope, "run": sha256(_canonical(packet)).hexdigest(),
+            **({"question_roles": binding["question_roles"]} if "question_roles" in binding else {}),
             **{key: binding[key] for key in ("catalog", "sample", "case_id", "finding_id", "finding_sha256", "asset_sha256", "finding_type", "categories",
                                              "observed_at", "environment", "revision", "classification", "subject_ref",
                                              "source", "conversation", "route", "callers", "questions")},

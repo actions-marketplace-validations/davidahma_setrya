@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0
+
+- Sample model responses repeatedly across question variants. Any positive dominates; lexical-only negatives and missing observations leave the absence unverified. Receipts expose the counts and judge coverage. Historical receipts replay under their original rules.
+- Run a stack-specific or declarative HTTP case and diagnose missing fixture bindings. Use stable fixture imports from `setrya.erasure`. CI exercises current OpenAI Agents, Claude Agent and Langfuse releases.
+- Update a single pull-request comment with bounded evidence and a receipt link. Pin the Action by SHA and check the installed package matches.
+- Render customer summaries and inspect journalled keys for a completed request with read-only credentials. Weekly samples report uncertainty and unresolved requests.
+- Stage discovery demo output until all three lanes verify, build directly from the source package and warn about legacy commands scheduled for removal in 2.0.
+
 ## 1.0.3
 
 - Shorten the Action description to fit GitHub Marketplace and check the publishing limit in CI.

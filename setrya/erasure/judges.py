@@ -1,6 +1,7 @@
 """Evaluate the actual answer text locally and carry bounded reasons into replay."""
 from dataclasses import dataclass
 from hashlib import sha256
+import json
 import re
 from typing import Callable
 
@@ -82,40 +83,117 @@ class ModelJudge:
     """Application-supplied evaluator. The rule ID should identify the model and rubric revision."""
     value: str
     evaluate: Callable[[str], ModelDecision]
+    paraphrase_aware: bool = False
     kind = "model"
 
     def __post_init__(self):
         identifier(self.value, "model and rubric ID")
-        require(callable(self.evaluate), "Expected a callable model judge.")
+        require(callable(self.evaluate) and type(self.paraphrase_aware) is bool, "Invalid model judge.")
+
+
+@dataclass(frozen=True)
+class ReviewedAnswers:
+    """Judge reviewed whole replies. Unrecognized wording always abstains."""
+    present: tuple[str, ...]
+    absent: tuple[str, ...]
+    kind = "reviewed"
+
+    def __post_init__(self):
+        for phrases in (self.present, self.absent):
+            require(isinstance(phrases, tuple) and 1 <= len(phrases) <= 32
+                    and all(_text(v, 1024) for v in phrases), "Supply bounded reviewed replies.")
+        replies = self.present + self.absent
+        require(len(set(replies)) == len(replies), "Reviewed replies must be distinct.")
+
+    def evaluate(self, text):
+        if text in self.present:
+            return ModelDecision(True, "Reviewed whole reply contains the fact.", text)
+        if text in self.absent:
+            return ModelDecision(False, "Reviewed whole reply excludes the fact.")
+        return ModelDecision(None, "Unrecognized whole reply.")
+
+
+Judge = Marker | Regex | Entity | ModelJudge | ReviewedAnswers
+
+
+def _chain(value):
+    rules = value if isinstance(value, tuple) else (value,)
+    require(1 <= len(rules) <= 8, "Supply one to eight answer judges per fact.")
+    return rules
+
+
+def _rule(judge):
+    if isinstance(judge, ReviewedAnswers):
+        return {"kind": "reviewed", "present_sha256": sorted(_digest(v) for v in judge.present),
+                "absent_sha256": sorted(_digest(v) for v in judge.absent)}
+    require(isinstance(judge, (Marker, Regex, Entity, ModelJudge)) and _text(judge.value, 1024),
+            "Each answer judge needs a nonempty bounded rule.")
+    rule = {"kind": judge.kind, "rule_sha256": _digest(judge.value)}
+    if isinstance(judge, ModelJudge):
+        rule.update(model_rule=judge.value, paraphrase_aware=judge.paraphrase_aware)
+    return rule
+
+
+def coverage(rules):
+    if any(rule.get("paraphrase_aware") is True for rule in rules):
+        return "paraphrase-aware"
+    if any(rule["kind"] == "reviewed" for rule in rules):
+        return "reviewed-answers"
+    return "unconfirmed" if any(rule["kind"] == "model" for rule in rules) else "lexical-only"
+
+
+def consensus(decisions, rules):
+    if any(item and item["present"] is True for item in decisions):
+        return True
+    if all(item and item["present"] is False for item in decisions) and coverage(rules) in (
+            "paraphrase-aware", "reviewed-answers"):
+        return False
+    return None
 
 
 @dataclass(frozen=True)
 class AnswerJudges:
-    target: Marker | Regex | Entity | ModelJudge
-    control: Marker | Regex | Entity | ModelJudge
+    target: Judge | tuple[Judge, ...]
+    control: Judge | tuple[Judge, ...]
     capture: str = "digest"
 
+    def maximum_decision_bytes(self):
+        """Upper bound on the JSON for all votes on one answer, including quoted Unicode."""
+        total = 0
+        for judge in (*_chain(self.target), *_chain(self.control)):
+            total += 512  # Indented object, digests and fixed local rationale.
+            if self.capture == "excerpt":
+                # The JSON writer may encode one character as two six-byte escapes.
+                if isinstance(judge, ReviewedAnswers):
+                    total += max(len(json.dumps(reply[:256])) for reply in judge.present)
+                elif isinstance(judge, Marker):
+                    total += len(json.dumps(judge.value[:256]))
+                elif isinstance(judge, Entity):
+                    total += 12 * min(256, len(judge.value))
+                else:
+                    total += 12 * 256
+                if isinstance(judge, ModelJudge):
+                    total += 12 * 1024
+        return total
+
     def spec(self):
-        spec = {"capture": self.capture}
-        for role in ("target", "control"):
-            judge = getattr(self, role)
-            require(isinstance(judge, (Marker, Regex, Entity, ModelJudge)) and _text(judge.value, 1024),
-                    "Each answer judge needs a nonempty bounded rule.")
-            spec[role] = {"kind": judge.kind, "rule_sha256": _digest(judge.value)}
-            if isinstance(judge, ModelJudge):
-                spec[role]["model_rule"] = judge.value
-        check_policy(spec)
+        spec = {"capture": self.capture,
+                "target": [_rule(judge) for judge in _chain(self.target)],
+                "control": [_rule(judge) for judge in _chain(self.control)]}
+        check_policy(spec, sampled=True)
         return spec
 
     def inspect(self, text, observe=None):
         require(isinstance(text, str) and len(text.encode("utf-8")) <= 65536, "Expected a bounded answer body.")
         result = {"answer_sha256": _digest(text)}
         for role in ("target", "control"):
-            judge = getattr(self, role)
-            def decide():
-                return self._decision(judge, text)
-            observed = decide() if observe is None else observe(role + "_judge", decide)
-            result[role] = observed
+            chain = _chain(getattr(self, role))
+            decisions = []
+            for judge in chain:
+                def decide():
+                    return self._decision(judge, text)
+                decisions.append(decide() if observe is None else observe(role + "_judge", decide))
+            result[role] = decisions
         return result
 
     def _decision(self, judge, text):
@@ -135,45 +213,85 @@ class AnswerJudges:
                         "excerpt": match[:256] if match and self.capture == "excerpt" else None}
 
 
-def check_policy(policy):
+def _check_rule(rule, sampled):
+    require(isinstance(rule, dict), "Unknown answer judge.")
+    if sampled and rule.get("kind") == "reviewed":
+        require(keys_match(rule, ("kind", "present_sha256", "absent_sha256")), "Invalid reviewed rule.")
+        present, absent = rule["present_sha256"], rule["absent_sha256"]
+        for items in (present, absent):
+            require(isinstance(items, list) and 1 <= len(items) <= 32 and all(_hash(v) for v in items)
+                    and items == sorted(set(items)), "Invalid reviewed replies.")
+        require(not set(present).intersection(absent), "Conflicting reviewed replies.")
+        return
+    require(rule.get("kind") in ("marker", "regex", "entity", "model"), "Unknown answer judge.")
+    model = rule["kind"] == "model"
+    fields = ["kind", "rule_sha256"]
+    if model:
+        fields += ["model_rule"]
+        if sampled:
+            fields += ["paraphrase_aware"]
+    require(keys_match(rule, fields) and _hash(rule["rule_sha256"]), "Invalid answer judge rule.")
+    if model:
+        identifier(rule["model_rule"], "model and rubric ID")
+        require(_digest(rule["model_rule"]) == rule["rule_sha256"], "Wrong model rule digest.")
+        if sampled:
+            require(type(rule["paraphrase_aware"]) is bool, "Declare model judge paraphrase coverage.")
+
+
+def check_policy(policy, sampled=False):
     require(keys_match(policy, ("target", "control", "capture")) and policy["capture"] in ("excerpt", "digest"),
             "Invalid answer judge policy.")
     for role in ("target", "control"):
-        item = policy[role]
-        require(isinstance(item, dict) and item.get("kind") in ("marker", "regex", "entity", "model"),
-                "Unknown answer judge.")
-        model = item["kind"] == "model"
-        require(keys_match(item, ("kind", "rule_sha256", "model_rule") if model else ("kind", "rule_sha256"))
-                and _hash(item["rule_sha256"]), "Invalid answer judge rule.")
-        if model:
-            identifier(item["model_rule"], "model and rubric ID")
-            require(_digest(item["model_rule"]) == item["rule_sha256"], "Wrong model rule digest.")
+        rules = policy[role] if sampled else [policy[role]]
+        require(isinstance(rules, list) and 1 <= len(rules) <= 8, "Invalid judge chain.")
+        for rule in rules:
+            _check_rule(rule, sampled)
+        require(all(rule not in rules[:i] for i, rule in enumerate(rules)), "Duplicate judge rule.")
 
 
-def check_observation(row, policy):
+def _check_decision(item, rule, capture, answer_hash):
+    if item is None:
+        return
+    require(keys_match(item, ("present", "reason", "reason_sha256", "match_sha256", "excerpt"))
+            and type(item["present"]) in (bool, type(None)) and _text(item["reason"], 1024)
+            and _hash(item["reason_sha256"]), "Invalid judged fact.")
+    present, excerpt = item["present"], item["excerpt"]
+    require((_hash(item["match_sha256"]) if present is True else item["match_sha256"] is None)
+            and (_text(excerpt, 256) if present is True and capture == "excerpt" else excerpt is None),
+            "Inconsistent matched answer evidence.")
+    if present is True and rule["kind"] == "marker":
+        require(item["match_sha256"] == rule["rule_sha256"], "Exact marker differs from its matched text.")
+    if rule["kind"] == "reviewed":
+        expected = None
+        if answer_hash in rule["present_sha256"]:
+            expected = True
+        elif answer_hash in rule["absent_sha256"]:
+            expected = False
+        require(present is expected and (present is not True or item["match_sha256"] == answer_hash),
+                "Reviewed decision differs from the recorded whole reply.")
+    elif rule["kind"] != "model":
+        require(type(present) is bool and item["reason"] == _local_decision("match" if present else None).reason,
+                "Invalid deterministic judge decision.")
+    if rule["kind"] == "model" and capture == "digest":
+        require(item["reason"] == "Model decision recorded; rationale withheld.", "Unexpected private model rationale.")
+    else:
+        require(_digest(item["reason"]) == item["reason_sha256"], "Invalid answer rationale digest.")
+    if excerpt and len(excerpt) < 256:
+        require(_digest(excerpt) == item["match_sha256"], "Invalid answer quote digest.")
+
+
+def check_observation(row, policy, sampled=False):
     observed = row["judgments"]
     require(keys_match(observed, ("target", "control", "answer_sha256")) and _hash(observed["answer_sha256"]),
             "Missing judged answer digest.")
     for role in ("target", "control"):
-        item = observed[role]
-        if item is None:
-            require(row[role + "_present"] is None, "Missing judge cannot support a fact observation.")
-            continue
-        require(keys_match(item, ("present", "reason", "reason_sha256", "match_sha256", "excerpt"))
-                and item["present"] is row[role + "_present"] and _text(item["reason"], 1024)
-                and _hash(item["reason_sha256"]), "Invalid judged fact.")
-        present, excerpt = item["present"], item["excerpt"]
-        require((_hash(item["match_sha256"]) if present is True else item["match_sha256"] is None)
-                and (_text(excerpt, 256) if present is True and policy["capture"] == "excerpt" else excerpt is None),
-                "Inconsistent matched answer evidence.")
-        if present is True and policy[role]["kind"] == "marker":
-            require(item["match_sha256"] == policy[role]["rule_sha256"], "Exact marker differs from its matched text.")
-        if policy[role]["kind"] != "model":
-            require(type(present) is bool and item["reason"] == _local_decision("match" if present else None).reason,
-                    "Invalid deterministic judge decision.")
-        if policy[role]["kind"] == "model" and policy["capture"] == "digest":
-            require(item["reason"] == "Model decision recorded; rationale withheld.", "Unexpected private model rationale.")
+        rules = policy[role] if sampled else [policy[role]]
+        decisions = observed[role] if sampled else [observed[role]]
+        require(isinstance(decisions, list) and len(decisions) == len(rules), "Missing judge slots.")
+        for rule, decision in zip(rules, decisions):
+            _check_decision(decision, rule, policy["capture"], observed["answer_sha256"])
+        if sampled:
+            expected = consensus(decisions, rules)
         else:
-            require(_digest(item["reason"]) == item["reason_sha256"], "Invalid answer rationale digest.")
-        if excerpt and len(excerpt) < 256:
-            require(_digest(excerpt) == item["match_sha256"], "Invalid answer quote digest.")
+            expected = (decisions[0] or {}).get("present")
+        require(row[role + "_present"] is expected, "Fact flag differs from its recorded judge decisions.")

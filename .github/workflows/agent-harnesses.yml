@@ -4,12 +4,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "12 7 * * 1"
 
 permissions:
   contents: read
 
 jobs:
   harnesses:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -19,6 +23,28 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
-      - run: python -m pip install '.[agent-openai,agent-claude,traces-langfuse,pytest]'
+      - run: python -m pip install '.[agent-openai,agent-claude,traces-langfuse,pytest,case-yaml]'
+      - run: python -m pytest -q tests/test_erasure_http_case.py -k "openai or claude"
       - name: Check local agent SDK runs and self-hosted trace deletion
         run: python scripts/verify-agent-harnesses.py
+
+  latest-sdks:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.13'
+      - run: python -m pip install '.[pytest,case-yaml]'
+      - name: Install the latest published releases independently of Setrya's constraints
+        run: |
+          python -m pip install --upgrade openai-agents claude-agent-sdk langfuse
+          python scripts/check-latest-agent-sdks.py
+          python -m pip check
+      - name: Run native sessions, hooks and self-hosted trace tests
+        run: python scripts/verify-agent-harnesses.py
+      - run: python -m pytest -q tests/test_erasure_http_case.py -k "openai or claude"

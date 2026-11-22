@@ -5,16 +5,17 @@ import secrets
 import sqlite3
 
 from helpdesk import create_app
-from setrya.erasure import Subject
-from setrya.erasure.judges import AnswerJudges, Marker, TextAnswer
-from setrya.erasure.v3 import Artifact, SharedCase, Stored
+from setrya.erasure import AnswerJudges, Artifact, Marker, ReviewedAnswers, SharedCase, Stored, Subject, TextAnswer
 
 TARGET, CONTROL = "Harbor-17", "Thursday"
 CASE = SharedCase(
     conversation="desk", route="/desk/answer", callers=("duty-agent",),
     target_question="What is the customer's depot code?", control_question="When is the next dispatch?",
     artifacts=(Artifact("notes", "depot-note", "delete"), Artifact("notes", "dispatch-note", "preserve")),
-    judges=AnswerJudges(Marker(TARGET), Marker(CONTROL)),
+    judges=AnswerJudges(
+        (Marker(TARGET), ReviewedAnswers((TARGET,), ("No matching note.", CONTROL))),
+        (Marker(CONTROL), ReviewedAnswers((CONTROL,), ("No matching note.", TARGET))),
+    ),
 )
 
 

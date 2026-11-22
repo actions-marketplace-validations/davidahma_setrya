@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import shlex
 
-from setrya.erasure.v3 import Artifact, SharedCase, run_shared
+from setrya.erasure import Artifact, SharedCase, run_shared
 from setrya.erasure.v3_receipt import exit_code, summary
 
 CASE = SharedCase("investigation-1", "/investigations", ("analyst-one", "analyst-two"),

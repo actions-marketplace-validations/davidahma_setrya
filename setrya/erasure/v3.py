@@ -7,7 +7,7 @@ from time import monotonic
 from uuid import uuid4
 
 from setrya.offboarding.inputs import publish_new, publish_new_bytes, require
-from .judges import AnswerJudges, TextAnswer
+from .judges import AnswerJudges, TextAnswer, consensus
 from .journal import identifier
 from .model import Drain, Hold, question_digest
 from .receipt import EVIDENCE, MAX_BUNDLE_FILE_BYTES, RECEIPT
@@ -69,17 +69,48 @@ class SharedCase:
     scan_stores: tuple[str, ...] = ()
     require_lineage: bool = False
     judges: AnswerJudges | None = None
+    samples: int = 3
+    target_variants: tuple[str, ...] = ()
+    control_variants: tuple[str, ...] = ()
+    model_backed: bool | None = None
+
+    def questions(self):
+        require(all(isinstance(group, tuple) and len(group) <= 7 for group in
+                    (self.target_variants, self.control_variants)), "Supply at most seven variants per fact.")
+        return (self.target_question, self.control_question, *self.target_variants, *self.control_variants)
 
     def spec(self):
         spec = {"conversation": self.conversation, "route": self.route, "callers": list(self.callers),
-                "questions": [question_digest(self.target_question), question_digest(self.control_question)],
+                "questions": [question_digest(q) for q in self.questions()],
+                "sampling": {"samples": self.samples,
+                             "question_roles": ["target", "control"] + ["target"] * len(self.target_variants)
+                                               + ["control"] * len(self.control_variants),
+                             "source": "application-signals" if self.judges is None else "answer-text"},
                 "artifacts": [asdict(a) for a in self.artifacts], "scan_stores": list(self.scan_stores),
                 "require_lineage": self.require_lineage}
+        require(type(self.model_backed) in (bool, type(None)), "Invalid model-backed route setting.")
+        require(self.judges is not None or self.model_backed is not True,
+                "Model-backed routes require actual answer text and configured judges.")
         if self.judges is not None:
             require(isinstance(self.judges, AnswerJudges), "Expected target and control answer judges.")
             spec["judges"] = self.judges.spec()
         rules.check_spec(spec)
+        _check_answer_budget(spec, self.judges)
         return spec
+
+
+def _check_answer_budget(spec, judges):
+    """Reserve room for all three stages before any fixture hook can run."""
+    reads_per_caller = len(spec["questions"]) * spec["sampling"]["samples"]
+    # 512 bytes cover the indented JSON fields and fixed-length digests of one
+    # answer or decision. Caller, route and conversation IDs are restricted to ASCII.
+    row_bytes = 512 + len(spec["route"]) + len(spec["conversation"])
+    if judges is not None:
+        row_bytes += judges.maximum_decision_bytes()
+    stage_bytes = reads_per_caller * sum(row_bytes + len(caller) for caller in spec["callers"])
+    # Leave half the file for direct reads, provenance and durable journal events.
+    require(3 * stage_bytes <= MAX_BUNDLE_FILE_BYTES // 2,
+            "Answer evidence could exceed the replay size budget. Use digest capture or reduce samples, questions or judges.")
 
 
 def _stage(subject, case, application, spec, observe, discovered=None):
@@ -92,27 +123,30 @@ def _stage(subject, case, application, spec, observe, discovered=None):
         return row
 
     answers = []
-    for caller in case.callers:
-        for question in (case.target_question, case.control_question):
-            def read():
-                answer = application.read(subject, caller, case.conversation, question)
-                expected_type = TextAnswer if case.judges is not None else Answer
-                if not isinstance(answer, expected_type) or (
-                    answer.caller, answer.conversation, answer.route, answer.question
-                ) != (caller, case.conversation, case.route, question):
-                    return None
-                if case.judges is None:
-                    row = asdict(answer)
-                else:
-                    judged = case.judges.inspect(answer.text, observe)
-                    row = {"caller": answer.caller, "conversation": answer.conversation, "route": answer.route,
-                           "target_present": (judged["target"] or {}).get("present"),
-                           "control_present": (judged["control"] or {}).get("present"),
-                           "judgments": judged}
-                row["question"] = question_digest(answer.question)
-                rules.fact_flags(row)
-                return row
-            answers.append(observe("read", read))
+    questions = dict(zip(spec["questions"], case.questions()))
+    for caller, digest, _, ordinal in rules.answer_slots(spec):
+        question = questions[digest]
+
+        def read():
+            answer = application.read(subject, caller, case.conversation, question)
+            expected_type = TextAnswer if case.judges is not None else Answer
+            if not isinstance(answer, expected_type) or (
+                answer.caller, answer.conversation, answer.route, answer.question
+            ) != (caller, case.conversation, case.route, question):
+                return None
+            if case.judges is None:
+                row = asdict(answer)
+            else:
+                judged = case.judges.inspect(answer.text, observe)
+                policy = spec["judges"]
+                row = {"caller": answer.caller, "conversation": answer.conversation, "route": answer.route,
+                       "target_present": consensus(judged["target"], policy["target"]),
+                       "control_present": consensus(judged["control"], policy["control"]),
+                       "judgments": judged}
+            row.update(question=digest, sample=ordinal)
+            rules.fact_flags(row)
+            return row
+        answers.append(observe("read", read))
     stored = [observe("inspect", lambda: inspect(a.store, a.key)) for a in case.artifacts]
     scans = {}
     remaining_keys, remaining_bytes = 512, 256 * 1024

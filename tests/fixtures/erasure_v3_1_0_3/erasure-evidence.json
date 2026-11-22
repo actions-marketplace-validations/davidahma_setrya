@@ -1,0 +1,254 @@
+{
+  "format": "setrya.erasure.evidence.v3",
+  "run": "884f72ee9948434287fc77be7ec8c050",
+  "scope": "person",
+  "observed_at": "2026-11-21T16:41:34.833023+00:00",
+  "subject": {
+    "ref": "b098f05f57a7b2ee0dc212f816214e6c2d40ce3e015b791119a2bfdae748a4e5",
+    "classification": "private"
+  },
+  "mode": "deletion",
+  "case": {
+    "conversation": "onboarding-team",
+    "route": "/workspaces/onboarding-team/handoff/ask",
+    "callers": [
+      "support-lead"
+    ],
+    "questions": [
+      "6d85d25f54cca7408678ceb3878c10c2c0994ab9c90891b99995ed857e08cde8",
+      "063c3d73df814cbd06e17ac5da24f4f77b21dd8fabde95434288406905d2b066"
+    ],
+    "artifacts": [
+      {
+        "store": "notes",
+        "key": "customer-note",
+        "action": "delete"
+      }
+    ],
+    "scan_stores": [],
+    "require_lineage": false,
+    "judges": {
+      "capture": "excerpt",
+      "target": {
+        "kind": "marker",
+        "rule_sha256": "2fea0e500eee51065d4de5629fb2ffb8edfb24836ff08672e87d68b01cd1be96"
+      },
+      "control": {
+        "kind": "marker",
+        "rule_sha256": "c0edef6bb119dfd0af1567bbefbe6541f200772d22509193cdb46483a17e5240"
+      }
+    }
+  },
+  "worker": {
+    "held": null,
+    "checkpoint": null,
+    "pre_release": null,
+    "drained": null
+  },
+  "external": [],
+  "lineage": null,
+  "baseline": {
+    "answers": [
+      {
+        "caller": "support-lead",
+        "conversation": "onboarding-team",
+        "route": "/workspaces/onboarding-team/handoff/ask",
+        "target_present": true,
+        "control_present": false,
+        "judgments": {
+          "answer_sha256": "2fea0e500eee51065d4de5629fb2ffb8edfb24836ff08672e87d68b01cd1be96",
+          "target": {
+            "present": true,
+            "reason": "Matched the configured rule.",
+            "reason_sha256": "3f263c5b3f81702c784fe2c9abada698981546653438a8be6e63b32ea1b11678",
+            "match_sha256": "2fea0e500eee51065d4de5629fb2ffb8edfb24836ff08672e87d68b01cd1be96",
+            "excerpt": "cobalt-bridge.example"
+          },
+          "control": {
+            "present": false,
+            "reason": "No match for the configured rule.",
+            "reason_sha256": "c0220a989871c5eceb6b9b6cf38ac8b72ee94ef4add5f9ba655fff0d9efc7d99",
+            "match_sha256": null,
+            "excerpt": null
+          }
+        },
+        "question": "6d85d25f54cca7408678ceb3878c10c2c0994ab9c90891b99995ed857e08cde8"
+      },
+      {
+        "caller": "support-lead",
+        "conversation": "onboarding-team",
+        "route": "/workspaces/onboarding-team/handoff/ask",
+        "target_present": false,
+        "control_present": true,
+        "judgments": {
+          "answer_sha256": "c0edef6bb119dfd0af1567bbefbe6541f200772d22509193cdb46483a17e5240",
+          "target": {
+            "present": false,
+            "reason": "No match for the configured rule.",
+            "reason_sha256": "c0220a989871c5eceb6b9b6cf38ac8b72ee94ef4add5f9ba655fff0d9efc7d99",
+            "match_sha256": null,
+            "excerpt": null
+          },
+          "control": {
+            "present": true,
+            "reason": "Matched the configured rule.",
+            "reason_sha256": "3f263c5b3f81702c784fe2c9abada698981546653438a8be6e63b32ea1b11678",
+            "match_sha256": "c0edef6bb119dfd0af1567bbefbe6541f200772d22509193cdb46483a17e5240",
+            "excerpt": "October 18"
+          }
+        },
+        "question": "063c3d73df814cbd06e17ac5da24f4f77b21dd8fabde95434288406905d2b066"
+      }
+    ],
+    "stored": [
+      {
+        "store": "notes",
+        "key": "customer-note",
+        "exists": true,
+        "target_present": true,
+        "control_present": false,
+        "revision": "1"
+      }
+    ],
+    "scans": {},
+    "discovered": []
+  },
+  "erased": true,
+  "immediate": {
+    "answers": [
+      {
+        "caller": "support-lead",
+        "conversation": "onboarding-team",
+        "route": "/workspaces/onboarding-team/handoff/ask",
+        "target_present": false,
+        "control_present": false,
+        "judgments": {
+          "answer_sha256": "3beb2ccb05f08abcfec0e2bcc798149e8fd29dab0176dc6b58f90ab7b7d52abf",
+          "target": {
+            "present": false,
+            "reason": "No match for the configured rule.",
+            "reason_sha256": "c0220a989871c5eceb6b9b6cf38ac8b72ee94ef4add5f9ba655fff0d9efc7d99",
+            "match_sha256": null,
+            "excerpt": null
+          },
+          "control": {
+            "present": false,
+            "reason": "No match for the configured rule.",
+            "reason_sha256": "c0220a989871c5eceb6b9b6cf38ac8b72ee94ef4add5f9ba655fff0d9efc7d99",
+            "match_sha256": null,
+            "excerpt": null
+          }
+        },
+        "question": "6d85d25f54cca7408678ceb3878c10c2c0994ab9c90891b99995ed857e08cde8"
+      },
+      {
+        "caller": "support-lead",
+        "conversation": "onboarding-team",
+        "route": "/workspaces/onboarding-team/handoff/ask",
+        "target_present": false,
+        "control_present": true,
+        "judgments": {
+          "answer_sha256": "c0edef6bb119dfd0af1567bbefbe6541f200772d22509193cdb46483a17e5240",
+          "target": {
+            "present": false,
+            "reason": "No match for the configured rule.",
+            "reason_sha256": "c0220a989871c5eceb6b9b6cf38ac8b72ee94ef4add5f9ba655fff0d9efc7d99",
+            "match_sha256": null,
+            "excerpt": null
+          },
+          "control": {
+            "present": true,
+            "reason": "Matched the configured rule.",
+            "reason_sha256": "3f263c5b3f81702c784fe2c9abada698981546653438a8be6e63b32ea1b11678",
+            "match_sha256": "c0edef6bb119dfd0af1567bbefbe6541f200772d22509193cdb46483a17e5240",
+            "excerpt": "October 18"
+          }
+        },
+        "question": "063c3d73df814cbd06e17ac5da24f4f77b21dd8fabde95434288406905d2b066"
+      }
+    ],
+    "stored": [
+      {
+        "store": "notes",
+        "key": "customer-note",
+        "exists": false,
+        "target_present": false,
+        "control_present": false,
+        "revision": null
+      }
+    ],
+    "scans": {},
+    "discovered": []
+  },
+  "final": {
+    "answers": [
+      {
+        "caller": "support-lead",
+        "conversation": "onboarding-team",
+        "route": "/workspaces/onboarding-team/handoff/ask",
+        "target_present": false,
+        "control_present": false,
+        "judgments": {
+          "answer_sha256": "3beb2ccb05f08abcfec0e2bcc798149e8fd29dab0176dc6b58f90ab7b7d52abf",
+          "target": {
+            "present": false,
+            "reason": "No match for the configured rule.",
+            "reason_sha256": "c0220a989871c5eceb6b9b6cf38ac8b72ee94ef4add5f9ba655fff0d9efc7d99",
+            "match_sha256": null,
+            "excerpt": null
+          },
+          "control": {
+            "present": false,
+            "reason": "No match for the configured rule.",
+            "reason_sha256": "c0220a989871c5eceb6b9b6cf38ac8b72ee94ef4add5f9ba655fff0d9efc7d99",
+            "match_sha256": null,
+            "excerpt": null
+          }
+        },
+        "question": "6d85d25f54cca7408678ceb3878c10c2c0994ab9c90891b99995ed857e08cde8"
+      },
+      {
+        "caller": "support-lead",
+        "conversation": "onboarding-team",
+        "route": "/workspaces/onboarding-team/handoff/ask",
+        "target_present": false,
+        "control_present": true,
+        "judgments": {
+          "answer_sha256": "c0edef6bb119dfd0af1567bbefbe6541f200772d22509193cdb46483a17e5240",
+          "target": {
+            "present": false,
+            "reason": "No match for the configured rule.",
+            "reason_sha256": "c0220a989871c5eceb6b9b6cf38ac8b72ee94ef4add5f9ba655fff0d9efc7d99",
+            "match_sha256": null,
+            "excerpt": null
+          },
+          "control": {
+            "present": true,
+            "reason": "Matched the configured rule.",
+            "reason_sha256": "3f263c5b3f81702c784fe2c9abada698981546653438a8be6e63b32ea1b11678",
+            "match_sha256": "c0edef6bb119dfd0af1567bbefbe6541f200772d22509193cdb46483a17e5240",
+            "excerpt": "October 18"
+          }
+        },
+        "question": "063c3d73df814cbd06e17ac5da24f4f77b21dd8fabde95434288406905d2b066"
+      }
+    ],
+    "stored": [
+      {
+        "store": "notes",
+        "key": "customer-note",
+        "exists": false,
+        "target_present": false,
+        "control_present": false,
+        "revision": null
+      }
+    ],
+    "scans": {},
+    "discovered": []
+  },
+  "expected_producers": [],
+  "coverage": null,
+  "journal": null,
+  "errors": [],
+  "drill_duration_ms": 5
+}

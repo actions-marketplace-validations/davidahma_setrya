@@ -43,6 +43,20 @@ def run_person_starter(starter, mode, output):
         raise InputError("Choose a trusted starter file and a fresh output directory.")
     if mode not in ("deletion", "late-write"):
         raise InputError("Choose deletion or late-write for the drill mode.")
+    if starter.suffix.lower() in (".yml", ".yaml"):
+        from .casefile import load_case
+        from .v3 import run_shared
+        spec = load_case(starter)
+        if spec.missing():
+            print("NOT TESTED  Missing fixture bindings: " + ", ".join(spec.missing()), file=sys.stderr)
+            return 3, None
+        with spec.open_fixture() as (subject, application, items):
+            live = run_shared(subject, case=spec.case, application=application, mode=mode, output=output,
+                              external_items=items)
+        replayed = load_directory(output)
+        if live != replayed:
+            raise InputError("Replayed evidence differs from the live HTTP case.")
+        return receipt_exit(replayed), replayed
     code, issued_digest = _run_starter(starter, mode, output)
     if not (output / RECEIPT).is_file():
         label = "NOT TESTED" if code == 3 else "ERROR"
@@ -74,7 +88,9 @@ def main(argv, *, prog="setrya erasure"):
     init.add_argument("--example", choices=("shared", "investigation"))
     run = commands.add_parser("run", help="execute a trusted local starter or evaluate a tenant gate")
     run.add_argument("--scope", choices=("person", "tenant"), default="person")
-    run.add_argument("--starter", type=Path, help="trusted generated test file")
+    case_arg = run.add_mutually_exclusive_group()
+    case_arg.add_argument("--starter", type=Path, help="trusted generated test file")
+    case_arg.add_argument("--case", type=Path, help="trusted declarative YAML file")
     run.add_argument("--mode", choices=("deletion", "late-write"))
     run.add_argument("--output", type=Path)
     replay = commands.add_parser("replay", help="recompute engineering or case-review outcomes")
@@ -121,7 +137,9 @@ def main(argv, *, prog="setrya erasure"):
                 raise InputError("Supply the directory containing the receipt and its evidence.")
             return replay_directory(args.directory, case_review=args.case_review, expected_scope=args.scope)
         if args.action == "run":
-            code, receipt = run_person_starter(args.starter, args.mode or "deletion", args.output)
+            if args.case and args.case.suffix.lower() not in (".yaml", ".yml"):
+                raise InputError("Use a .yaml or .yml file with --case.")
+            code, receipt = run_person_starter(args.case or args.starter, args.mode or "deletion", args.output)
             return report(receipt) if receipt is not None else code
         if args.scope == "tenant" and (args.example or getattr(args, "mode", None)):
             raise InputError("Use person scope to select a shared investigation mode.")

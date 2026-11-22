@@ -143,6 +143,10 @@ def replay_command(report_path: str | None, *, artifact: str = "run.json", varia
 
 def console_main() -> int:
     args = sys.argv[1:]
+    legacy = {"scenario", "offboarding", "cache-metrics", "answer-cache", "run-pr", "coverage", "check", "review", "conformance"}
+    if args and args[0] in legacy:
+        print(f"Deprecation: setrya {args[0]} is supported through 1.x and scheduled for removal in 2.0. "
+              "See docs/other-drills.md for migration.", file=sys.stderr)
     live_scenario = args[:1] == ["scenario"] and args[1:2] in (["update"], ["delete"], ["revoke"])
     if args[:1] != ["check"] and args[:2] != ["offboarding", "drill"] and not live_scenario:
         return main()

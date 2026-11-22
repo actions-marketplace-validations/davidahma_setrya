@@ -49,14 +49,21 @@ class SQLiteCanaryScanner:
 class PostgresCanaryScanner:
     """Read one scoped text column, including pgvector rows absent from nearest neighbors."""
 
-    def __init__(self, connection, *, table: str, key: str, content: str, scope_column: str):
+    def __init__(self, connection, *, table: str, key: str, content: str, scope_column: str,
+                 jsonb: bool = False):
         self.connection = connection
+        self.jsonb = jsonb
+        column = f"t.{_sql_name(content)}" + ("::jsonb::text" if jsonb else "")
         self.query = (f"SELECT t.{_sql_name(key)}::text AS copy_key FROM {_sql_name(table)} AS t "
                       f"WHERE t.{_sql_name(scope_column)}::text COLLATE \"C\" = %s "
-                      f"AND strpos(t.{_sql_name(content)}, %s::text) > 0 LIMIT 4097")
+                      f"AND strpos({column}, %s::text) > 0 LIMIT 4097")
 
     def find(self, *, scope: str, marker: str) -> set[str]:
         validate_probe(scope, marker)
+        # JSONB normalizes ASCII strings. Restrict the canary to characters that
+        # do not acquire an escape sequence in PostgreSQL's text rendering.
+        if self.jsonb and not re.fullmatch(r"[A-Za-z0-9_.:@/+ -]+", marker):
+            raise InputError("choose a plain ASCII synthetic marker for a JSONB scan")
         with _pg_connection(self.connection) as conn:
             keys = _keys(conn.execute(self.query, (scope, marker)))
         if len(keys) > LIMIT:

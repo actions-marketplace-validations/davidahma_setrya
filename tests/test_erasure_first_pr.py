@@ -36,6 +36,10 @@ class FirstPrInstructions(unittest.TestCase):
         workflow = (ROOT / TEMPLATE).read_text()
         for text in (commands, workflow):
             self.assertIn(f"python -m pip install setrya=={__version__}\n", text)
-        self.assertEqual(re.findall(r"uses: davidahma/setrya@(\S+)", workflow), [f"v{__version__}"] * 2)
+        pins = re.findall(r"uses: davidahma/setrya@(\S+) # (\S+)", workflow)
+        self.assertEqual(len(pins), 2)
+        self.assertEqual(pins[0], pins[1])
+        self.assertRegex(pins[0][0], r"^[a-f0-9]{40}$")
+        self.assertEqual(pins[0][1], __version__)
         self.assertEqual(re.findall(r"^\s+starter: (\S+)$", workflow, re.M), [starter])
         self.assertEqual(re.findall(r"^\s+mode: (\S+)$", workflow, re.M), ["deletion"])
