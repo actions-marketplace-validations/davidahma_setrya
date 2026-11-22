@@ -6,11 +6,12 @@ import json
 from pathlib import Path
 import re
 
-from setrya.core.receipt_v3 import answer_slots, attribution_lines, human_issue, sample_rows, EVIDENCE_FORMAT
+from setrya.core.receipt_v3 import answer_slots, attribution_lines, human_issue, post_erasure_findings, sample_rows, EVIDENCE_FORMAT
 from setrya.offboarding.inputs import read_regular_bytes, require, unique_fields
 from setrya.receipt_format import FORMAT_V3, MAX_BUNDLE_FILE_BYTES
-from setrya.receipts import replay, summary as technical_summary
+from setrya.receipts import replay, replay_bytes, summary as technical_summary
 from .customer import customer_text
+from .profiles import BRANCHES, CRYPTO, VENDOR
 
 
 def _markdown(text):
@@ -39,8 +40,8 @@ def _format(title, sections, markdown):
     return "\n".join(lines)
 
 
-def _count(number, noun):
-    return f"{number} {noun if number == 1 else noun + 's'}"
+def _count(number, noun, plural=None):
+    return f"{number} {noun if number == 1 else plural or noun + 's'}"
 
 
 def _stage_outcome(observed, key, label):
@@ -71,30 +72,79 @@ def _stage_outcome(observed, key, label):
         observed_controls = sum(row is not None and row["control_present"] is True for row in planned)
         lines.append(f"The retained fact was confirmed in {observed_controls} of "
                      f"{_count(len(planned), noun)}.")
+    scans = [hits for hits in stage["scans"].values() if hits is not None]
+    if scans:
+        locations = sum(len(hits) for hits in scans)
+        lines.append(f"{label}, scanners found the erased fact in {_count(locations, 'location')}.")
     return lines
 
 
-def _outcome(bundle, receipt):
-    profile = receipt.get("profile")
-    if profile == "observed-deletion":
-        counts = Counter(c["status"] for c in receipt["checks"])
-        return [f"Recorded copies: {counts['PRESENT']} present, {counts['ABSENT']} absent, {counts['UNKNOWN']} unknown."]
-    if profile == "follow-up":
-        verified = sum(item["status"] == "verified" for item in receipt["items"])
-        return [f"Follow-up observations verified {verified} of {len(receipt['items'])} recorded items."]
-    if profile == "discovery" or receipt["scope"] == "tenant":
-        rows = receipt["services"] if profile == "discovery" else receipt["probes"]
-        counts = Counter(r.get("status") or r.get("verdict") or "unknown" for r in rows)
-        return ["Recorded results: " + ", ".join(f"{n} {label}" for label, n in sorted(counts.items())) + "."]
+def _linked(folder, filename, digest):
+    raw = read_regular_bytes(folder / filename, "linked receipt", MAX_BUNDLE_FILE_BYTES)
+    require(sha256(raw).hexdigest() == digest, "Linked receipt changed after replay.")
+    return replay_bytes(folder, raw)
+
+
+def _outcome(bundle, receipt, *, audience):
     folder = Path(bundle)
     if folder.is_file():
         folder = folder.parent
+    profile = receipt.get("profile")
+    if profile == BRANCHES:
+        from ..branches.receipt import observations
+        residuals = sum(branch["status"] == "RESIDUAL" for branch in receipt["branches"])
+        customer = [f"The observer found {_count(residuals, 'live branch', 'live branches')} from before erasure."]
+        return ({"residual"} if residuals else set()), customer if audience == "customer" else observations(receipt)
+    if profile == CRYPTO:
+        counts = Counter(copy["status"] for copy in receipt["copies"])
+        return ({"residual"} if counts["recoverable"] else set()), [
+            f"Ciphertext copies: {counts['crypto-erased']} crypto-erased, {counts['absent']} absent, "
+            f"{counts['recoverable']} recoverable, {counts['unknown']} unknown.",
+        ]
+    if profile == VENDOR:
+        counts = Counter(check["status"] for check in receipt["checks"])
+        return set(), [f"Vendor checks: {counts['PASS']} passed, {counts['FAIL']} failed, {counts['NOT TESTED']} not tested."]
+    if profile == "observed-deletion":
+        counts = Counter(c["status"] for c in receipt["checks"])
+        return ({"residual"} if counts["PRESENT"] else set()), [
+            f"Recorded copies: {counts['PRESENT']} present, {counts['ABSENT']} absent, {counts['UNKNOWN']} unknown.",
+        ]
+    if profile == "follow-up":
+        verified = sum(item["status"] == "verified" for item in receipt["items"])
+        kinds = {"residual"} if any(item["reason"] == "residual-found" for item in receipt["items"]) else set()
+        if receipt["original_verdict"] == "FAIL":
+            from .recheck import PARENT
+            from setrya.evidence import bundle_manifest
+
+            parent = folder / PARENT
+            original = _linked(parent, bundle_manifest(parent), receipt["parent_sha256"])
+            prior, _ = _outcome(parent, original, audience=audience)
+            kinds.update(prior)
+        return kinds, [f"Follow-up observations verified {verified} of {len(receipt['items'])} recorded items."]
+    if profile == "discovery":
+        counts = Counter(row["status"] for row in receipt["services"])
+        kinds = set()
+        if "erasure_receipt" in receipt:
+            from setrya.discovery.case import DRILL
+            from setrya.receipt_format import RECEIPT
+
+            linked = _linked(folder / DRILL, RECEIPT, receipt["erasure_receipt"]["sha256"])
+            kinds, _ = _outcome(folder / DRILL, linked, audience=audience)
+        return kinds, ["Recorded results: " + ", ".join(f"{n} {label}" for label, n in sorted(counts.items())) + "."]
+    if receipt["scope"] == "tenant":
+        counts = Counter(row["verdict"] for row in receipt["probes"])
+        reasons = {reason for row in receipt["probes"] for reason in row["reasons"]}
+        kinds = {"residual"} if "after_subject_present" in reasons else set()
+        if "after_control_absent" in reasons:
+            kinds.add("control-loss")
+        return kinds, ["Recorded results: " + ", ".join(f"{n} {label}" for label, n in sorted(counts.items())) + "."]
     evidence = receipt["evidence"]
     raw = read_regular_bytes(folder / evidence["file"], "summary evidence", MAX_BUNDLE_FILE_BYTES)
     require(sha256(raw).hexdigest() == evidence["sha256"], "Summary evidence changed after replay.")
     observed = json.loads(raw.decode(), object_pairs_hook=unique_fields)
-    return [line for key, label in (("immediate", "After erasure"), ("final", "At the final read"))
-            for line in _stage_outcome(observed, key, label)]
+    findings, _ = post_erasure_findings(observed, grouped=observed["format"] == EVIDENCE_FORMAT)
+    return findings.kinds, [line for key, label in (("immediate", "After erasure"), ("final", "At the final read"))
+                            for line in _stage_outcome(observed, key, label)]
 
 
 def _scan_coverage(receipt):
@@ -103,6 +153,8 @@ def _scan_coverage(receipt):
         scope = row["scope"]
         if row["kind"] == "git":
             lines.append(f"- {store} · {scope} · Local Git blobs, including unreachable objects.")
+            if row.get("locations_incomplete"):
+                lines.append(f"- {store} · Git path lookup was incomplete. Recorded blob matches still apply.")
         else:
             lines.append(f"- {store} · {scope} · Include patterns: {', '.join(row['patterns'])}.")
             if row["skipped"]:
@@ -117,13 +169,13 @@ def receipt_summary(bundle, *, audience="reviewer", output_format="text", case_i
     require(not case_id or audience == "customer", "A display case number applies only to the customer copy.")
     receipt = replay(bundle)
     require(receipt.get("format") == FORMAT_V3, "Summaries require a replayable v3 evidence bundle.")
-    outcomes = _outcome(bundle, receipt)
+    failure_kinds, outcomes = _outcome(bundle, receipt, audience=audience)
     controls = [f"- {row['framework']} / {row['reference']}" for row in receipt.get("controls", ())]
     if audience == "customer":
-        title, *body = customer_text(receipt, case_id=case_id).splitlines()
+        title, *body = customer_text(receipt, case_id=case_id, failure_kinds=failure_kinds).splitlines()
         sections = [(None, body), ("Recorded observations", outcomes)]
     else:
-        title = f"Deletion review for {receipt.get('request_id') or receipt.get('case_id') or receipt.get('run') or receipt['parent_sha256']}"
+        title = f"Deletion review for {receipt.get('request_id') or receipt.get('case_id') or receipt.get('run') or receipt.get('target') or receipt.get('capture_manifest_sha256') or receipt.get('parent_sha256') or 'recorded copies'}"
         sections = [("Decision", [f"Technical verdict {receipt['technical_verdict']}",
                                   f"Review status {receipt['review_status']}"])]
         evidence = receipt.get("evidence", {})
@@ -137,7 +189,9 @@ def receipt_summary(bundle, *, audience="reviewer", output_format="text", case_i
             shared = any(row["action"] == "rewrite" for row in receipt.get("artifact_checks", ()))
             scope = {"person": "Shared-record deletion drill" if shared else "Person deletion drill",
                      "tenant": "Tenant offboarding", "discovery": "Discovery case",
-                     "observed-deletion": "Read-only verification", "follow-up": "Open-item follow-up"}.get(profile, profile)
+                     "observed-deletion": "Read-only verification", "follow-up": "Open-item follow-up",
+                     BRANCHES: "Branch and restore lineage", CRYPTO: "Read-only key-destruction evidence",
+                     VENDOR: "Vendor conformance fixture"}.get(profile, profile)
             sections.append(("Scope", [scope, *(["Worker race " + receipt["race"]] if receipt.get("race") else [])]))
             issues = [*receipt.get("failures", ()), *receipt.get("gaps", ())]
             issues.extend(f"{e['operation']} ({e['error']})" for e in receipt.get("errors", ()))

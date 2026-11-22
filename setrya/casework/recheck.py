@@ -10,14 +10,14 @@ from setrya.evidence import bundle_manifest
 from setrya.offboarding.inputs import InvalidReport, MAX_JSON_BYTES, publish_new_bytes, require
 from setrya.receipt_format import FORMAT_V3, MAX_BUNDLE_FILE_BYTES, RECEIPT
 from .observe import key_digest
-from .profiles import EVIDENCE, FOLLOWUP, OBSERVED, day, decode, fields, issue, new_bundle, sha, snapshot, stamp
+from .profiles import BRANCHES, CRYPTO, EVIDENCE, FOLLOWUP, PROFILES, VENDOR, day, decode, fields, issue, new_bundle, sha, snapshot, stamp
 from .stores import journal_rows, key_reader, observer_config, sqlite_reader
 
 PARENT = "parent"
 MAX_LINKS = 8
 
 
-def copy_source(source, target, budget, depth=0):
+def copy_source(source, target, budget, depth=0, *, read=snapshot):
     """Copy only protocol-defined inputs needed for replay. Never archive neighbouring application files."""
     from setrya.discovery import case as discovery
     from setrya.erasure.receipt import EVIDENCE as drill_evidence
@@ -31,7 +31,7 @@ def copy_source(source, target, budget, depth=0):
     target.mkdir()
 
     def copy(name, cap=MAX_BUNDLE_FILE_BYTES):
-        raw = snapshot(source / name, min(cap, budget[0]))
+        raw = read(source / name, min(cap, budget[0]))
         budget[0] -= len(raw)
         publish_new_bytes(raw, target / name, max_bytes=cap)
         return raw
@@ -42,11 +42,11 @@ def copy_source(source, target, budget, depth=0):
     if name == discovery.RESULT:
         copy(discovery.INPUT)
         if (source / discovery.DRILL).exists():
-            copy_source(source / discovery.DRILL, target / discovery.DRILL, budget, depth + 1)
-    elif profile in (OBSERVED, FOLLOWUP):
+            copy_source(source / discovery.DRILL, target / discovery.DRILL, budget, depth + 1, read=read)
+    elif profile in PROFILES:
         copy(EVIDENCE)
         if profile == FOLLOWUP:
-            copy_source(source / PARENT, target / PARENT, budget, depth + 1)
+            copy_source(source / PARENT, target / PARENT, budget, depth + 1, read=read)
     elif receipt.get("scope") == "tenant":
         manifest = decode(copy(tenant_v3.MANIFEST))
         records = manifest["records"]
@@ -94,7 +94,9 @@ def item_identity(item, subject):
     return None
 
 
-def eligibility(item, subject, today):
+def eligibility(item, subject, today, checked_at):
+    if item.get("kind") == "restore-window":
+        return "configured-window-elapsed" if checked_at >= stamp(item["expires_at"]) else "not-due"
     due = item.get("follow_up")
     if due is None:
         return "no-follow-up-date"
@@ -109,10 +111,11 @@ def eligibility(item, subject, today):
 
 def observe_due(parent, checked_at, journal, inventory_file):
     subject = subject_of(parent)
-    today = stamp(checked_at).astimezone(UTC).date().isoformat()
+    observed = stamp(checked_at).astimezone(UTC)
+    today = observed.date().isoformat()
     rows, planned = [], []
     for i, item in enumerate(parent["open_items"]):
-        skip = eligibility(item, subject, today)
+        skip = eligibility(item, subject, today, observed)
         rows.append({"index": i, "reason": skip, "target": None, "direct": None, "scan": None})
         if not skip:
             planned.append((item["store"], item_identity(item, subject), i))
@@ -186,7 +189,7 @@ def derive_followup(e, folder):
         reason, direct, scan = read["reason"], read["direct"], read["scan"]
         require(type(read["index"]) is int and read["index"] == index
                 and all(type(v) in (bool, type(None)) for v in (direct, scan)), "Invalid follow-up observation.")
-        skip = eligibility(item, subject, today)
+        skip = eligibility(item, subject, today, observed)
         require(reason == skip if skip else reason in (None, "no-exclusive-journal-key", "unmapped-store"),
                 "Review disposition disagrees with item identity or due date.")
         require(reason is None or direct is None and scan is None, "Unexpected reads for an inaccessible or deferred item.")
@@ -200,7 +203,9 @@ def derive_followup(e, folder):
                     "Follow-up read target differs from the original obligation.")
         else:
             require(target is None, "Unexpected follow-up target.")
-        verified = direct is False and scan is False
+        if reason == "configured-window-elapsed":
+            require(observed <= datetime.now(UTC), "Restore window follow-up is ahead of the verifier clock.")
+        verified = reason == "configured-window-elapsed" or direct is False and scan is False
         found |= direct is True or scan is True
         reason = reason or ("residual-found" if direct is True or scan is True else
                             "read-or-scan-unavailable" if not verified else "absent-in-both-reads")
@@ -211,8 +216,9 @@ def derive_followup(e, folder):
     original_verdict = parent["technical_verdict"]
     verdict = "FAIL" if found else original_verdict
     review = "RESIDUAL_FOUND" if verdict == "FAIL" else "OPEN_ITEMS" if remaining or verdict != "PASS" else "READY_FOR_REVIEW"
+    references = ("request_id",) if parent.get("profile") == BRANCHES else ("case_id", "request_id")
     return {"scope": parent["scope"], **({"subject": {"ref": subject}} if subject else {}),
-            **{key: parent[key] for key in ("case_id", "request_id") if key in parent},
+            **{key: parent[key] for key in references if key in parent},
             "parent_sha256": digest, "observed_at": e["observed_at"], "original_verdict": original_verdict,
             "technical_verdict": verdict, "review_status": review, "items": items, "open_items": remaining,
             **({"controls": parent["controls"]} if "controls" in parent else {})}
@@ -227,6 +233,8 @@ def recheck(receipt, *, output, inventory_file=None, journal=None, expected_pare
     with new_bundle(output) as folder:
         copy_source(source, folder / PARENT, [128 * 1024 * 1024])
         parent, digest = parent_receipt(folder)
+        require(parent.get("profile") not in (CRYPTO, VENDOR),
+                "Repeat the original crypto-erasure verification or vendor self-check to obtain a new observation.")
         require(expected_parent_sha256 in (None, digest), "Original receipt fingerprint differs from the supplied pin.")
         at = datetime.now(UTC).isoformat()
         checks = observe_due(parent, at, journal, inventory_file)

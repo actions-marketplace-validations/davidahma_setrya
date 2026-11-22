@@ -117,6 +117,12 @@ class CopyJournal:
             db.execute("CREATE INDEX IF NOT EXISTS by_turn ON copy_events(turn, event)")
             db.execute("CREATE INDEX IF NOT EXISTS by_subject ON copy_events(subject, store, copy_key)")
 
+    def record_branch(self, parent: str, child: str, as_of: str | datetime, turn: Turn | None = None) -> dict:
+        """Append store-level ancestry for a fork, backup or restored instance."""
+        from .branch_journal import record_branch
+
+        return record_branch(self.path, parent, child, as_of, turn)
+
     def record_boundary(self, subject: Subject, *, store: str, kind: str, name: str) -> None:
         """Record a store that was read, including when the read found no subject copy."""
         if not isinstance(subject, Subject):

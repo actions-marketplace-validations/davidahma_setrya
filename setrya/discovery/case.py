@@ -191,7 +191,7 @@ def _direct(service, index, e):
         row["reasons"].append("The catalog declares this key, but the fixture supplied no direct read.")
         return row
     before = e["baseline"]["stored"][index]
-    failures, gaps = set(), set()
+    failures, gaps = v3_receipt.Findings(), set()
     for stage in STAGES:
         sample = e[stage]
         stored = sample["stored"][index] if sample else None
@@ -207,7 +207,7 @@ def _direct(service, index, e):
 
 
 def _endpoint(service, e):
-    failures, gaps, pointers = set(), set(), []
+    failures, gaps, pointers = v3_receipt.Findings(), set(), []
     for stage in STAGES:
         sample = e[stage]
         observations = v3_receipt.sample_rows(sample, e["case"], grouped=e["format"] == v3_receipt.EVIDENCE_FORMAT)

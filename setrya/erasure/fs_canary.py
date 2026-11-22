@@ -306,25 +306,25 @@ def _git_read(command, cwd, env, deadline, limit, data=b""):
     return bytes(payload)
 
 
-def _batch_content(payload, expected):
+def _batch_content(payload, expected, kind):
     start = 0
     for oid, expected_size in expected:
         end = payload.find(b"\n", start)
         fields = payload[start:end].split() if end != -1 else ()
-        if len(fields) != 3 or tuple(fields[:2]) != (oid, b"blob") or not fields[2].isdigit():
-            raise InputError("Git returned an incomplete blob")
+        if len(fields) != 3 or tuple(fields[:2]) != (oid, kind) or not fields[2].isdigit():
+            raise InputError("Git returned an incomplete object")
         size = int(fields[2])
         if size != expected_size:
-            raise InputError("Git blob size differs from its inventory")
+            raise InputError("Git object size differs from its inventory")
         start, end = end + 1, end + 1 + size
         if payload[end:end + 1] != b"\n":
-            raise InputError("Git returned an incomplete blob")
+            raise InputError("Git returned an incomplete object")
         content = payload[start:end]
         digest = sha1() if len(oid) == 40 else sha256()
-        digest.update(b"blob " + fields[2] + b"\x00")
+        digest.update(kind + b" " + fields[2] + b"\x00")
         digest.update(content)
         if digest.hexdigest().encode("ascii") != oid:
-            raise InputError("Git blob bytes do not match the object ID")
+            raise InputError("Git bytes do not match the object ID")
         yield oid, content
         start = end + 1
     if start != len(payload):
@@ -404,7 +404,8 @@ class GitHistoryCanaryScanner:
             keys = [entry.partition(b"\n")[0].lower() for entry in raw.split(b"\x00") if entry]
             if any(key == b"include.path" or key.startswith(b"includeif.") for key in keys):
                 raise InputError("Git canary requires standalone configuration without includes")
-            return any(key.startswith(b"remote.") and key.count(b".") >= 2 for key in keys)
+            return (b"extensions.worktreeconfig" in keys
+                    or any(key.startswith(b"remote.") and key.count(b".") >= 2 for key in keys))
 
         def commit_roots(objects):
             commits, trees = set(), set()
@@ -449,42 +450,64 @@ class GitHistoryCanaryScanner:
             _check_local_git_files(directory, deadline, self.limits)
             remotes = remote_configured()
             objects = inventory()
-            roots = commit_roots(objects)
-            hits = _blob_matches(git, objects, marker.encode(), self.limits)
-            found = _history_locations(git, objects, roots, hits, prefix, self.limits)
-            _check_local_git_files(directory, deadline, self.limits)
-            if objects != inventory() or roots != commit_roots(objects) or remotes != remote_configured():
-                raise InputError("Git objects, refs, reflogs or remote configuration changed during the scan")
+            needle = marker.encode()
+            hits = {oid for oid, content in _git_objects(git, objects, b"blob", self.limits)
+                    if needle in content}
+            incomplete = False
+            try:
+                roots = commit_roots(objects)
+                original_roots = {tree: refs.copy() for tree, refs in roots.items()}
+                reachable = {oid for refs in roots.values() for oid in refs}
+                dangling = {oid for oid, (kind, _) in objects.items() if kind == b"commit"} - reachable
+                _over(len(dangling) + len(reachable), self.limits.max_commits, "local Git commits")
+                if hits:
+                    for oid, content in _git_objects(git, objects, b"commit", self.limits, selected=dangling):
+                        line = content.partition(b"\n")[0]
+                        tree = line.removeprefix(b"tree ")
+                        if not line.startswith(b"tree ") or not _OID.fullmatch(tree) or len(tree) != len(oid):
+                            raise InputError("invalid dangling Git commit")
+                        roots[tree].append(oid)
+                found = _history_locations(git, objects, roots, hits, prefix, self.limits)
+                _check_local_git_files(directory, deadline, self.limits)
+                if objects != inventory() or original_roots != commit_roots(objects) or remotes != remote_configured():
+                    raise InputError("Git objects, refs, reflogs or remote configuration changed during the scan")
+            except (InputError, ValueError, OSError, subprocess.TimeoutExpired):
+                if not hits:
+                    raise
+                # The blob bytes already proved a match. An incomplete path
+                # lookup leaves the scope uncertain, so keep the observation
+                # with an opaque location and disclose the incomplete scan.
+                found = {f"blob:{oid.decode('ascii')}" for oid in sorted(hits)[:512]}
+                incomplete = True
         except InputError:
             raise
         except (ValueError, OSError, subprocess.TimeoutExpired) as error:
             raise InputError(f"unable to inspect Git history ({type(error).__name__})") from None
         return CanaryMatches(found, {"kind": "git", "scope": scope, "objects": "all-local-blobs",
-                                     "remote_configured": remotes, "remote_owner": self.remote_owner})
+                                     "remote_configured": remotes, "remote_owner": self.remote_owner,
+                                     **({"locations_incomplete": True} if incomplete else {})})
 
 
-def _blob_matches(git, objects, needle, limits):
-    blobs = sorted((oid, size) for oid, (kind, size) in objects.items() if kind == b"blob")
-    _over(sum(size for _, size in blobs), limits.max_total_bytes, "Git blob content")
-    matches = set()
+def _git_objects(git, objects, kind, limits, *, selected=None):
+    items = sorted((oid, size) for oid, (item_kind, size) in objects.items()
+                   if item_kind == kind and (selected is None or oid in selected))
+    _over(sum(size for _, size in items), limits.max_total_bytes, "Git object content")
     batch, pending = [], 0
 
     def read():
         payload = git("cat-file", "--batch", data=b"".join(oid + b"\n" for oid, _ in batch),
                       limit=pending + len(batch) * 100)
-        for oid, content in _batch_content(payload, batch):
-            if needle in content:
-                matches.add(oid)
-    for oid, size in blobs:
-        _over(size, limits.max_file_bytes, "Git blob size")
+        return _batch_content(payload, batch, kind)
+
+    for oid, size in items:
+        _over(size, limits.max_file_bytes, "Git object size")
         if batch and (pending + size > 8 * 1024 * 1024 or len(batch) >= 1024):
-            read()
+            yield from read()
             batch, pending = [], 0
         batch.append((oid, size))
         pending += size
     if batch:
-        read()
-    return matches
+        yield from read()
 
 
 def _history_locations(git, objects, roots, hits, prefix, limits):
@@ -523,25 +546,35 @@ def _history_locations(git, objects, roots, hits, prefix, limits):
                      if kind == b"commit" or kind == b"blob" and child in hits
                      or kind == b"tree" and relevant(child, depth + 1))
 
-    def visit(root, path, commits):
+    def visit(root, path, addresses, scope):
         for kind, child, name in relevant(root, len(path)):
             full = (*path, name)
-            in_scope = full[:len(prefix)] == prefix
-            contains_scope = prefix[:len(full)] == full
+            in_scope = full[:len(scope)] == scope
+            contains_scope = scope[:len(full)] == full
             if kind == b"tree" and (in_scope or contains_scope):
-                visit(child, full, commits)
+                visit(child, full, addresses, scope)
             elif kind == b"commit" and (in_scope or contains_scope):
                 raise InputError("declare submodule histories separately")
             elif kind == b"blob" and in_scope:
-                location = b"/".join(full).decode("utf-8")
-                _parts(location, "Git canary path")
-                for commit in commits:
-                    found.add(f"{commit.decode('ascii')}:{location}")
+                for address in addresses:
+                    try:
+                        location = f"{address}:{b'/'.join(full).decode('utf-8')}"
+                        encode_scan_location(location)
+                    except (InputError, UnicodeError):
+                        location = f"blob:{child.decode('ascii')}"
+                    found.add(location)
                     _over(len(found), 512, "Git matching locations")
 
     for root, commits in roots.items():
-        visit(root, (), commits)
-    # A blob without an addressable commit path has unknown scope. Retain
+        visit(root, (), [commit.decode("ascii") for commit in commits], prefix)
+    if hits:
+        trees = {oid for oid, (kind, _) in objects.items() if kind == b"tree"}
+        children = {child for tree in trees for kind, child, _ in load_tree(tree) if kind == b"tree"}
+        # Standalone trees preserve relative names but have no known location
+        # within a checkout. Include their matches even for a scoped scan.
+        for tree in sorted(trees - children - roots.keys()):
+            visit(tree, (), ["tree:" + tree.decode("ascii")], ())
+    # A blob without an addressable tree path has unknown scope. Retain
     # the positive observation even for a directory-scoped scan.
     found.update(f"blob:{oid.decode('ascii')}" for oid in wanted)
     _over(len(found), 512, "Git matching locations")

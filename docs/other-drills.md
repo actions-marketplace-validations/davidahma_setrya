@@ -11,6 +11,6 @@
 
 ## 1.x command migration
 
-The legacy commands `scenario`, `offboarding`, `cache-metrics`, `answer-cache`, `run-pr`, `coverage`, `check`, `review`, `compare`, `diagnose` and `conformance` emit a deprecation notice on standard error. Their existing arguments, standard output and verdict exit codes remain supported through 1.x. They are scheduled for removal in 2.0.
+The legacy commands `scenario`, `offboarding`, `cache-metrics`, `answer-cache`, `run-pr`, `coverage`, `check`, `review`, `compare` and `diagnose` emit a deprecation notice on standard error. Their existing arguments, standard output and verdict exit codes remain supported through 1.x. They are scheduled for removal in 2.0.
 
 For person and tenant casework, use the primary commands and the tenant scope where applicable. For a saved result use `setrya replay`. Teams that depend on the search schedules, coverage mapping, comparison commands or cache metrics can pin `setrya<2` while evaluating their migration. [Erasure CLI](erasure-cli.md) · [Customer and production casework](customer-casework.md)

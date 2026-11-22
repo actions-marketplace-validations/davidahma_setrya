@@ -13,6 +13,10 @@ from setrya.receipt_format import FORMAT_V3, MAX_BUNDLE_FILE_BYTES, RECEIPT
 
 OBSERVED = "observed-deletion"
 FOLLOWUP = "follow-up"
+BRANCHES = "branch-lineage"
+CRYPTO = "crypto-erasure"
+VENDOR = "vendor-conformance"
+PROFILES = (OBSERVED, FOLLOWUP, BRANCHES, CRYPTO, VENDOR)
 EVIDENCE = "observation-evidence.json"
 
 
@@ -69,10 +73,19 @@ def derive(profile, evidence, digest, folder):
     if profile == OBSERVED:
         from .observed import derive_observed
         result = derive_observed(evidence)
-    else:
-        require(profile == FOLLOWUP, "Unsupported observation profile.")
+    elif profile == FOLLOWUP:
         from .recheck import derive_followup
         result = derive_followup(evidence, folder)
+    elif profile == BRANCHES:
+        from ..branches.receipt import derive_branches
+        result = derive_branches(evidence)
+    elif profile == CRYPTO:
+        from .crypto_erasure import derive_crypto
+        result = derive_crypto(evidence)
+    else:
+        require(profile == VENDOR, "Unsupported observation profile.")
+        from ..vendor.report import derive as derive_vendor
+        result = derive_vendor(evidence)
     return {"format": FORMAT_V3, "version": 3, "profile": profile, **result,
             "evidence": {"file": EVIDENCE, "sha256": digest}}
 
@@ -94,6 +107,16 @@ def replay_bytes(directory, raw):
 
 
 def summary(receipt):
+    profile = receipt["profile"]
+    if profile == BRANCHES:
+        from ..branches.receipt import branch_summary
+        return branch_summary(receipt)
+    if profile == CRYPTO:
+        from .crypto_erasure import summary as crypto_summary
+        return crypto_summary(receipt)
+    if profile == VENDOR:
+        from ..vendor.report import summary as vendor_summary
+        return vendor_summary(receipt)
     lines = [f"Technical verdict {receipt['technical_verdict']} · Review status {receipt['review_status']}"]
     if receipt["profile"] == OBSERVED:
         counts = Counter(c["status"] for c in receipt["checks"])

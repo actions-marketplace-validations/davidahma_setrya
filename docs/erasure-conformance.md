@@ -29,3 +29,5 @@ with closing(sqlite3.connect(":memory:")) as db:
 Replace the adapter and seed operations with your store's implementation. Extend the test with its consistency, pagination and permissions behavior. To contribute a scanner, seed an untagged marker in the declared scope and the same marker outside it. Check the exact returned keys, then remove or hide the positive control and check that incomplete visibility cannot produce a clean verdict.
 
 The conformance kit **executes deletion**. Production case verification uses the read-only observer. [Adapter requests](https://github.com/davidahma/setrya/issues/new?template=adapter.yml) · [Scanner requests](https://github.com/davidahma/setrya/issues/new?template=scanner.yml)
+
+To exercise a supported backend and sign a replayable report, run the [vendor self-check](vendor-conformance.md).

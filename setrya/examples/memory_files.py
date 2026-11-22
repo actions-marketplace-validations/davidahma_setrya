@@ -134,15 +134,16 @@ class MemoryFiles:
     def inspect(self, subject, store, key):
         with self.lock:
             if store == "git":
-                commit, _, relative = key.partition(":")
-                if commit == "blob":
-                    objects = self.git("cat-file", "--batch-all-objects", "--batch-check=%(objectname)").decode().splitlines()
-                    content = self.git("cat-file", "blob", relative) if relative in objects else None
+                objects = self.git("cat-file", "--batch-all-objects", "--batch-check=%(objectname)").decode().splitlines()
+                if key.startswith("blob:"):
+                    oid = key.removeprefix("blob:")
+                    content = self.git("cat-file", "blob", oid) if oid in objects else None
                 else:
+                    address = key.removeprefix("tree:")
+                    oid, _, relative = address.partition(":")
                     if relative not in (TARGET_FILE, CONTROL_FILE):
                         raise InputError("memory demo encountered an unexpected Git location")
-                    commits = self.git("rev-list", "--all", "--reflog").decode().splitlines()
-                    content = self.git("show", key) if commit in commits else None
+                    content = self.git("show", address) if oid in objects else None
             else:
                 if key not in (TARGET_FILE, CONTROL_FILE, DERIVED_FILE):
                     raise InputError("memory demo encountered an unexpected file location")

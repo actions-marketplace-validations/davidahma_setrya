@@ -21,7 +21,9 @@ def validate(row):
             and _relative(row.get("scope"), length=1024, allow_root=True), "Invalid canary scan scope.")
     fields = {"kind", "scope"}
     if row["kind"] == "git":
-        require(keys_match(row, fields | {"objects", "remote_configured", "remote_owner"})
+        required = fields | {"objects", "remote_configured", "remote_owner"}
+        require(required <= row.keys() <= required | {"locations_incomplete"}
+                and ("locations_incomplete" not in row or row["locations_incomplete"] is True)
                 and row["objects"] == "all-local-blobs"
                 and type(row["remote_configured"]) is bool, "Invalid Git scan coverage.")
         identifier(row["remote_owner"], "remote review owner")
@@ -44,14 +46,15 @@ def check_stage(details, scans):
 
 
 def _policy(details):
-    return {field: value for field, value in details.items() if field not in ("skipped", "remote_configured")}
+    return {field: value for field, value in details.items() if field not in ("skipped", "remote_configured", "locations_incomplete")}
 
 
 def same_scope(first, last, store):
     """Compare two completed scans with recorded native scope."""
     earlier = first.get("scan_details", {}).get(store)
     later = last.get("scan_details", {}).get(store)
-    return earlier is not None and later is not None and _policy(earlier) == _policy(later)
+    return (earlier is not None and later is not None and not earlier.get("locations_incomplete")
+            and not later.get("locations_incomplete") and _policy(earlier) == _policy(later))
 
 
 def summarize(evidence):
@@ -61,6 +64,8 @@ def summarize(evidence):
     for stage in stages:
         for store, row in stage.get("scan_details", {}).items():
             coverage[store] = row
+            if row.get("locations_incomplete"):
+                gaps.add(f"Git path and scope resolution did not finish for {store}.")
             if row.get("remote_configured"):
                 remotes[store] = {"store": store, "key": "remote-copies", "owner": row["remote_owner"],
                                   "kind": "configuration", "evidence": "remote-copies-uninspected",

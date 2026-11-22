@@ -367,6 +367,18 @@ def _journal(e, declared, external, gaps):
             gaps.add(f"Provider observation needs its own external item: {location[0]}/{location[1]}.")
 
 
+class Findings(set):
+    """Collect original receipt messages and their audience-facing classifications."""
+
+    def __init__(self):
+        super().__init__()
+        self.kinds = set()
+
+    def add(self, message, *, kind="other"):
+        super().add(message)
+        self.kinds.add(kind)
+
+
 def stored_outcome(r, a, before, name, failures, gaps):
     """Apply one declared store rule to an observation after erasure."""
     loc = f"{a['store']}/{a['key']}"
@@ -375,14 +387,14 @@ def stored_outcome(r, a, before, name, failures, gaps):
         return
     if a["action"] == "delete":
         if r["exists"]:
-            failures.add(f"{loc} still exists at {name}.")
+            failures.add(f"{loc} still exists at {name}.", kind="residual")
         return
     if not r["exists"] or r["control_present"] is False:
-        failures.add(f"{loc} lost the retained finding at {name}.")
+        failures.add(f"{loc} lost the retained finding at {name}.", kind="control-loss")
     elif r["control_present"] is None:
         gaps.add(f"Unobserved retained finding in {loc} at {name}.")
     if r["target_present"] is True:
-        failures.add(f"{loc} contains the erased finding at {name}.")
+        failures.add(f"{loc} contains the erased finding at {name}.", kind="residual")
     elif r["exists"] and r["target_present"] is None:
         gaps.add(f"Unobserved subject finding in {loc} at {name}.")
     if r["exists"] and a["action"] == "rewrite" and r["revision"] == before["revision"]:
@@ -395,12 +407,12 @@ def answer_outcome(r, caller, control_question, name, failures, gaps):
     if r is None or r["target_present"] is None:
         gaps.add(f"Missing {caller}'s subject-fact observation at {name}.")
     elif r["target_present"]:
-        failures.add(f"{caller} recovered the erased finding at {name}.")
+        failures.add(f"{caller} recovered the erased finding at {name}.", kind="residual")
     if control_question:
         if r is None or r["control_present"] is None:
             gaps.add(f"Missing {caller}'s retained-fact observation at {name}.")
         elif not r["control_present"]:
-            failures.add(f"{caller} lost the retained finding at {name}.")
+            failures.add(f"{caller} lost the retained finding at {name}.", kind="control-loss")
 
 
 def _after(stage, name, e, failures, gaps):
@@ -413,13 +425,13 @@ def _after(stage, name, e, failures, gaps):
         if row is None:
             gaps.add(f"Missing direct read of discovered {store}/{key} at {name}.")
         elif row["exists"]:
-            failures.add(f"Discovered copy {store}/{key} still exists at {name}.")
+            failures.add(f"Discovered copy {store}/{key} still exists at {name}.", kind="residual")
     for store, hits in stage["scans"].items():
         if hits is None:
             gaps.add(f"Missing canary scan of {store} at {name}.")
         else:
             for key in hits:
-                failures.add(f"Canary found in {store}/{key} at {name}.")
+                failures.add(f"Canary found in {store}/{key} at {name}.", kind="residual")
     for (caller, _, role, _), row in zip(answer_slots(e["case"]), stage["answers"]):
         answer_outcome(row, caller, role == "control", name, failures, gaps)
 
@@ -539,6 +551,17 @@ def lineage_gaps(e, external):
     return gaps
 
 
+def post_erasure_findings(e, *, grouped=False):
+    failures, gaps = Findings(), set()
+    if e["erased"] is not None:
+        for phase, name in (("immediate", "after erasure"), ("final", "final read")):
+            stage = e[phase]
+            if grouped and stage is not None:
+                stage = {**stage, "answers": answer_records(e, phase)}
+            _after(stage, name, e, failures, gaps)
+    return failures, gaps
+
+
 def derive(e, digest):
     modern = isinstance(e, dict) and e.get("format") == EVIDENCE_FORMAT
     _fields(e, "format run scope observed_at subject mode case worker external lineage baseline erased immediate final "
@@ -583,7 +606,7 @@ def derive(e, digest):
     if e["erased"] is not None:
         require(armed, "Erase was attempted without the declared baseline and hold.")
     require((e["immediate"] is not None) == (e["erased"] is not None), "Inconsistent erasure stages.")
-    failures, gaps = set(), set(scope_gaps)
+    gaps = set(scope_gaps)
     declared = {(a["store"], a["key"]) for a in spec["artifacts"]}
     declared.update(discovered_keys(spec, e["baseline"]["scans"]))
     external = {(x["store"], x["key"]) for x in e["external"]}
@@ -602,9 +625,8 @@ def derive(e, digest):
         race = "exercised" if completed else "incomplete"
         if not completed:
             gaps.add("Missing the same live pre-write attempt through erasure, release and drain.")
-    if e["erased"] is not None:
-        _after(e["immediate"], "after erasure", e, failures, gaps)
-        _after(e["final"], "final read", e, failures, gaps)
+    failures, observation_gaps = post_erasure_findings(e)
+    gaps.update(observation_gaps)
     errors = e["errors"]
     _list(errors, 8192, "adapter errors")
     for err in errors:

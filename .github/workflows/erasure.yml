@@ -21,8 +21,8 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
-      - run: python -m pip install '.[erasure,celery-langchain]' boto3 anthropic 'mcp<2'
-      - run: python -m pytest -q tests/test_erasure*.py tests/test_shared_investigation.py tests/test_discovery*.py
+      - run: python -m pip install '.[erasure,celery-langchain,crypto-aws,mcp]' anthropic
+      - run: python -m pytest -q tests/test_erasure*.py tests/test_shared_investigation.py tests/test_discovery*.py tests/test_branch_lineage.py tests/test_crypto_erasure.py
       - name: Test the public commands outside the checkout
         run: python -I scripts/verify-installed-v1.py
       - name: Run the workspace demo and create a delete-only starter
@@ -41,6 +41,21 @@ jobs:
         run: |
           test "$CODE" = 0
           test "$REVIEW" = READY_FOR_REVIEW
+      - name: Replay the branch and restore demo
+        working-directory: ${{ runner.temp }}
+        run: |
+          setrya demo branches --output branch-evidence
+          broken=0
+          setrya replay branch-evidence/broken || broken=$?
+          test "$broken" -eq 1
+          setrya replay branch-evidence/fixed
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: checked-branches
+          path: |
+            ${{ runner.temp }}/branch-evidence/broken/
+            ${{ runner.temp }}/branch-evidence/fixed/
+          if-no-files-found: error
       - id: upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: ${{ !cancelled() && steps.action.outputs.review-status != '' && steps.action.outputs.review-status != 'UNAVAILABLE' }}

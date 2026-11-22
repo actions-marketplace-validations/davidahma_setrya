@@ -1,5 +1,6 @@
 """Exercise the public CLI from an empty directory with only the installed distribution."""
 from importlib.metadata import metadata
+from importlib.resources import files
 from importlib.util import find_spec
 from pathlib import Path
 import json
@@ -35,6 +36,15 @@ with TemporaryDirectory() as tmp:
     call(path, "replay", "memory-files/broken", code=1)
     call(path, "replay", "memory-files/guarded")
     call(path, "receipt", "summary", "memory-files/guarded", "--format", "md")
+    call(path, "demo", "branches")
+    call(path, "replay", "branches/broken", code=1)
+    call(path, "replay", "branches/fixed")
+    call(path, "recheck", "branches/fixed", "--output", "branch-follow-up", code=3)
+    call(path, "receipt", "summary", "branch-follow-up", "--audience", "customer")
+    schema = files("setrya.erasure").joinpath("copy-event.v1.schema.json")
+    skill = files("setrya").joinpath("resources/skills/setrya-erasure/SKILL.md")
+    if json.loads(schema.read_text(encoding="utf-8"))["$id"] != "urn:setrya:copy-event:v1" or not skill.is_file():
+        raise RuntimeError("The installed copy-event schema or erasure skill is missing.")
     call(path, "init")
     # A consumer's fixture commonly lives in tests/ or setrya-case/ and imports
     # an application package in the root of a checkout that is not pip-installed.
@@ -52,4 +62,4 @@ with TemporaryDirectory() as tmp:
         receipt = json.loads((path / mode / "erasure-receipt.json").read_bytes())
         if len(receipt["case"]["callers"]) != 1 or receipt["case"]["artifacts"][0]["action"] != "delete":
             raise RuntimeError("The starter must exercise a single-caller delete-only case.")
-print("Installed workspace demo, case review, starter, doctor, deletion, late writer and replay passed.")
+print("Installed workspace and branch demos, case review, starter, doctor, deletion, late writer and replay passed.")

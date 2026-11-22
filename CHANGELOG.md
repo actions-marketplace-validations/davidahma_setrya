@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.0
+
+- Count scanner findings in customer and reviewer summaries and identify residuals and lost control data separately. Preserve file paths from dangling Git commits and detached trees when the objects survive.
+- Record store-level forks and restore lineage. Replay branch residuals and recheck disclosed Postgres restore windows.
+- Run signed vendor self-checks for pgvector, LangGraph Store and Mem0. Reports show the observed store, index and history surfaces and the gaps against Setrya Verified criteria.
+- Review bundles through a local MCP server and import copy observations from OTLP/JSON using the published copy-event schema.
+- Verify AWS KMS key destruction against a captured ciphertext inventory. Crypto-erasure is recorded separately from physical absence.
+
 ## 1.4.0
 
 - Check the complete local Git object store, including unreachable loose and packed blobs. Configured remote repositories become open follow-ups. File and Git scan budgets are configurable, and receipts record the effective boundary. Doctor identifies common in-scope file formats omitted by the include patterns.
