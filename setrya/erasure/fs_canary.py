@@ -1,5 +1,6 @@
 """Read exact synthetic markers in local file-backed agent memory."""
 
+from base64 import b64decode, urlsafe_b64encode
 from collections import defaultdict
 from contextlib import closing, contextmanager
 from fnmatch import fnmatchcase
@@ -18,6 +19,7 @@ from time import monotonic
 
 from setrya.drill import InputError
 from .adapters import _require_sqlite_base_table
+from .journal import identifier
 
 
 _MAX_ENTRIES = 4096
@@ -28,12 +30,15 @@ _MAX_DEPTH = 32
 _MAX_COMMITS = 128
 _TIMEOUT = 15
 _OID = re.compile(rb"[0-9a-f]{40}|[0-9a-f]{64}")
+_ENCODED_PATH = "path64:"
 
 
 def _scope(scope, marker):
     from .canary import validate_probe
 
-    validate_probe("root" if scope == "." else scope, marker)
+    validate_probe("root", marker)
+    if not isinstance(scope, str) or len(scope) > 1024:
+        raise InputError("expected a bounded relative canary scope")
     return () if scope == "." else _parts(scope, "canary scope")
 
 
@@ -44,6 +49,39 @@ def _parts(value, label):
                                       for part in parts):
         raise InputError(f"invalid {label}")
     return parts
+
+
+def encode_scan_location(location: str) -> str:
+    """Encode a scanner path or commit:path as a replayable fixture key."""
+    if not isinstance(location, str) or len(location) > 1024:
+        raise InputError("expected a bounded scanner location")
+    _parts(location, "scanner location")
+    if not location.startswith(_ENCODED_PATH):
+        try:
+            return identifier(location, "scanner location")
+        except InputError:
+            pass
+    try:
+        encoded = urlsafe_b64encode(location.encode()).rstrip(b"=").decode("ascii")
+    except UnicodeError:
+        raise InputError("scanner location requires UTF-8") from None
+    return identifier(_ENCODED_PATH + encoded, "encoded scanner location")
+
+
+def decode_scan_location(key: str) -> str:
+    """Restore the exact path to read from a fixture key."""
+    identifier(key, "scanner key")
+    if not key.startswith(_ENCODED_PATH):
+        _parts(key, "scanner location")
+        return key
+    encoded = key[len(_ENCODED_PATH):]
+    try:
+        location = b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True).decode()
+    except ValueError:
+        raise InputError("invalid encoded scanner location") from None
+    if encode_scan_location(location) != key:
+        raise InputError("invalid encoded scanner location")
+    return location
 
 
 def _over(count, limit, kind):

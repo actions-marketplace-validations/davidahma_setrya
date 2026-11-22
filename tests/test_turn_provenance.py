@@ -202,7 +202,10 @@ class TurnProvenance(TestCase):
                 worker.submit(summarize, headers).result(timeout=5)
             app.lineage = hooks.lineage
             output = self.root / "receipt"
-            result = run_shared(subject, case=replace(CASE, require_lineage=True), application=app, mode="deletion",
+            from setrya.erasure import observe_baseline
+            case = replace(CASE, require_lineage=True)
+            self.assertTrue(observe_baseline(subject, case, app, external_items=items))
+            result = run_shared(subject, case=case, application=app, mode="deletion",
                                 external_items=items, journal=journal, output=output)
             self.assertEqual(result["technical_verdict"], "PASS")
             self.assertEqual(replay(output), result)

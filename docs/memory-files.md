@@ -35,6 +35,24 @@ agentfs = AgentFSCanaryScanner("/path/to/closed-test-snapshot.db")
 memory_copies = agentfs.find(scope="clients/acme", marker=marker)
 ```
 
+Scanners return native relative paths or `commit:path` locations. Encode those locations when passing them into a drill, so filenames with spaces or Unicode can appear in its evidence. Use the encoded keys for any declared artifacts or journal entries. Decode each key for the storage read and return the original encoded key in `Stored`.
+
+```python
+from setrya.erasure import Stored
+from setrya.erasure.fs_canary import decode_scan_location, encode_scan_location
+
+def scan(subject, store):
+    return {encode_scan_location(path) for path in files.find(scope=".", marker=marker)}
+
+def inspect(subject, store, key):
+    location = decode_scan_location(key)
+    observed = read_scoped_file(location)
+    return Stored(key, observed.exists, observed.target_present,
+                  observed.control_present, observed.revision)
+```
+
+Here `read_scoped_file` is the fixture's direct read under the same root. The encoding preserves ordinary identifier-safe keys such as `memory/log.md` and rejects any generated key that exceeds the receipt's 1,024-character limit.
+
 - **Working files.** Scope `.` covers the root. A relative scope limits the scan to the named directory or file. Patterns default to `**/*.md` and `**/*.jsonl`. The scanner returns paths relative to the root and refuses symbolic links in the scanned scope. It skips the root `.git` metadata directory. Pause writers while scanning. Setrya checks for changes during the reads and rechecks scoped files before returning.
 - **Git history.** Use a complete local repository. The scanner reads blobs from the commits reachable through local refs, HEADs and reflogs and returns `commit:path` keys. A missing object, a shallow clone, an alternate object store, an in-scope submodule, or a blob that has no commit path leaves the observation unverified. A clean read covers that reachable history. Remote repositories, other clones and unreachable objects require their own checks.
 - **AgentFS.** The scanner reads regular filesystem entries from a standalone, unencrypted AgentFS 0.4 schema, including markers split across data chunks. Give it a closed or quiescent source so it can copy the database and any WAL to a private read-only scan snapshot. Hard-linked paths are reported individually. Separate scopes need their own checks for overlay layers, the key-value store, tool calls, and provider copies. The `setrya[agentfs]` extra installs Turso’s SDK to create these fixtures. An existing snapshot can be scanned with the standard installation. [AgentFS 0.4 schema](https://github.com/tursodatabase/agentfs/blob/0a014ebd4918615baff589ed17486e557e7c6a23/SPEC.md)

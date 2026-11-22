@@ -695,10 +695,9 @@
             {
               "type": "object",
               "maxProperties": 256,
-              "additionalProperties": { "type": [ "object", "null" ] },
-              "propertyNames": { "$ref": "#/$defs/token" },
-              "patternProperties": {
-                "^.+$": { "oneOf": [ { "type": "null" }, { "$ref": "#/$defs/journalChain" } ] }
+              "propertyNames": { "$ref": "#/$defs/id" },
+              "additionalProperties": {
+                "oneOf": [ { "type": "null" }, { "$ref": "#/$defs/journalChain" } ]
               }
             }
           ]

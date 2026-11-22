@@ -248,6 +248,12 @@ _CHECKPOINT_BUDGET = 1 << 20
 _CHECKPOINT_ROWS = 4096
 
 
+def _checkpoint_record(kind, payload, metadata):
+    # Keep the reversible, JSON-compatible form used for direct-read digests.
+    display = payload.decode("latin-1") if isinstance(payload, bytes) else payload
+    return [kind, display, metadata]
+
+
 def _pg_checkpoint_payloads(connection, thread):
     """Read exact thread bytes, including orphan blobs and pending writes."""
     identifier(thread, "checkpoint thread")
@@ -283,15 +289,10 @@ def _pg_checkpoint_payloads(connection, thread):
                     payload = json.loads(payload)
                 if isinstance(metadata, bytes):
                     metadata = json.loads(metadata)
-                if isinstance(payload, bytes):
-                    # This reversible representation avoids importing the application's
-                    # deserializer. The fixture's ASCII marker remains searchable.
-                    payload = payload.decode("latin-1")
-                record = [kind, payload, metadata]
-                size += len(json.dumps(record))
+                size += len(json.dumps(_checkpoint_record(kind, payload, metadata)))
                 if size > _CHECKPOINT_BUDGET:
                     raise InputError("checkpoint read exceeds the observation budget")
-                records.append(record)
+                records.append((kind, payload, metadata))
         return records
 
 
@@ -313,7 +314,7 @@ class LangGraphPostgresCheckpointAdapter(_Direct):
     def read_thread(self, thread):
         """Read the entire declared thread without interpreting serialized objects."""
         with self.saver.lock:
-            return _pg_checkpoint_payloads(self.saver.conn, thread)
+            return [_checkpoint_record(*row) for row in _pg_checkpoint_payloads(self.saver.conn, thread)]
 
     def delete(self, subject):
         for thread in self.find(subject):

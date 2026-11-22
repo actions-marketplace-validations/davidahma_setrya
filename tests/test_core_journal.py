@@ -26,8 +26,13 @@ class Core(unittest.TestCase):
             for node in ast.walk(ast.parse(file.read_text())):
                 if isinstance(node, ast.Import):
                     self.assertTrue(all(name.name.split(".")[0] in sys.stdlib_module_names for name in node.names), file)
-                elif isinstance(node, ast.ImportFrom) and not node.level:
-                    self.assertIn(node.module.split(".")[0], sys.stdlib_module_names, file)
+                elif isinstance(node, ast.ImportFrom):
+                    self.assertLessEqual(node.level, 1, file)
+                    if not node.level:
+                        self.assertIn(node.module.split(".")[0], sys.stdlib_module_names, file)
+                elif isinstance(node, ast.Call):
+                    method = getattr(node.func, "attr", getattr(node.func, "id", None))
+                    self.assertNotIn(method, {"__import__", "import_module"}, file)
         from setrya.erasure import CopyJournal as LegacyJournal, SharedCase, Subject as FixtureSubject
         from setrya.erasure.v3 import SharedCase as VersionedCase
         from setrya.core.receipt_v3 import derive

@@ -32,6 +32,8 @@ class PostgresCheckpointCanaryScanner:
 
     def find(self, *, scope: str, marker: str) -> set[str]:
         validate_probe(scope, marker)
+        # Match bytea values in their original encoding. The adapter’s JSON display
+        # form is only for direct-read evidence digests.
         rows = _pg_checkpoint_payloads(self.db, scope)
         return {scope} if any(contains_marker(payload, marker) or contains_marker(metadata, marker)
                               for _, payload, metadata in rows) else set()

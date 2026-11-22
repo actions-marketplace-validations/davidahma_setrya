@@ -81,6 +81,7 @@ class SampledAnswers(unittest.TestCase):
         summary = result["answer_sampling"]
         self.assertEqual(summary["samples_per_question"], 3)
         self.assertEqual(summary["target_coverage"], "reviewed-answers")
+        self.assertIs(result["lexical_only"], True)
         self.assertEqual(summary["stages"]["baseline"]["planned"], 24)
         self.assertEqual(summary["stages"]["immediate"]["observed"], 23)
         self.assertEqual(summary["stages"]["final"]["target_positive"], 1)
@@ -122,9 +123,8 @@ class SampledAnswers(unittest.TestCase):
         result, _ = self.run_case()
         self.assertEqual(result["technical_verdict"], "FAIL")
         self.assertEqual(result["answer_sampling"]["target_coverage"], "paraphrase-aware")
-        # The model checks the target. The lexical-only retained-fact chain
-        # remains visible on the receipt.
-        self.assertIs(result["lexical_only"], True)
+        self.assertEqual(result["answer_sampling"]["control_coverage"], "lexical-only")
+        self.assertIs(result["lexical_only"], False)
 
     def test_uncertain_model_vote_blocks_absence_after_lexical_negative(self):
         def uncertain(text):

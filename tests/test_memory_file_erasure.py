@@ -14,7 +14,10 @@ from unittest.mock import patch
 
 from setrya.cli import main
 from setrya.drill import InputError
+from setrya.erasure import Artifact, SharedCase, Stored, Subject, run_shared
 from setrya.erasure.canary import AgentFSCanaryScanner, FilesystemCanaryScanner, GitHistoryCanaryScanner
+from setrya.erasure.fs_canary import decode_scan_location, encode_scan_location
+from setrya.erasure.v3 import Answer
 from setrya.examples.memory_files import DERIVED_FILE, TARGET_FILE, _git_env
 from setrya.receipts import replay
 
@@ -23,6 +26,67 @@ MARKER = "erasure-canary-417"
 
 
 class WorkingTreeTests(unittest.TestCase):
+    def test_native_paths_roundtrip_through_a_receipt(self):
+        class Application:
+            def __init__(self, root, *, erase_file):
+                self.root = root
+                self.erase_file = erase_file
+                self.erased = False
+                self.path = root / "Team Montréal" / "Alice Smith.md"
+                self.path.parent.mkdir(parents=True)
+                self.path.write_text(MARKER, encoding="utf-8")
+                (root / "control.md").write_text("The deployment is Thursday.", encoding="utf-8")
+                self.scanner = FilesystemCanaryScanner(root)
+
+            def scan(self, subject, store):
+                paths = self.scanner.find(scope=self.path.parent.name, marker=MARKER)
+                return {encode_scan_location(path) for path in paths}
+
+            def inspect(self, subject, store, key):
+                path = self.root / decode_scan_location(key)
+                if not path.exists():
+                    return Stored(key, False, False, False, None)
+                text = path.read_text(encoding="utf-8")
+                return Stored(key, True, MARKER in text, "Thursday" in text, "r1")
+
+            def read(self, subject, caller, conversation, question):
+                return Answer(caller, conversation, "/incident", question,
+                              not self.erased and question == "What was deleted?", question == "What stayed?")
+
+            def erase(self, subject):
+                if self.erase_file:
+                    self.path.unlink()
+                self.erased = True
+
+        with TemporaryDirectory() as work:
+            folder = Path(work)
+            subject = Subject("7" * 64, "synthetic")
+            case = SharedCase("incident", "/incident", ("reviewer",), "What was deleted?", "What stayed?",
+                              (Artifact("files", "control.md", "preserve"),), scan_stores=("files",))
+            for lane, expected in (("broken", "FAIL"), ("guarded", "PASS")):
+                with self.subTest(lane=lane):
+                    app = Application(folder / (lane + "-root"), erase_file=lane == "guarded")
+                    bundle = folder / lane
+                    run_shared(subject, case=case, application=app, output=bundle, mode="deletion")
+                    receipt = replay(bundle)
+                    self.assertEqual(receipt["technical_verdict"], expected)
+                    row = next(item for item in receipt["artifact_checks"] if item["discovered_by"] == "canary")
+                    self.assertTrue(row["key"].startswith("path64:"))
+                    self.assertEqual((app.root / decode_scan_location(row["key"])).resolve(), app.path.resolve())
+
+    def test_path_codec_preserves_safe_keys_and_reserves_its_prefix(self):
+        for location in ("notes.md", "path64:event.md", "aaab:Team Montréal/Alice Smith.md"):
+            with self.subTest(location=location):
+                self.assertEqual(decode_scan_location(encode_scan_location(location)), location)
+        self.assertEqual(encode_scan_location("notes.md"), "notes.md")
+        self.assertNotEqual(encode_scan_location("path64:event.md"), "path64:event.md")
+        for value in ("../notes.md", "root/../private.md", "/notes.md", "root/o\nn.md"):
+            with self.subTest(value=value), self.assertRaises(InputError):
+                encode_scan_location(value)
+        for key in ("path64:", "path64:not+canonical/", "path64:bm90ZXMubWQ"):
+            with self.subTest(key=key), self.assertRaises(InputError):
+                decode_scan_location(key)
+
     def test_scope_patterns_nested_and_root_paths(self):
         with TemporaryDirectory() as work:
             folder = Path(work)

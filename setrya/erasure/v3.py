@@ -199,7 +199,7 @@ def observe_baseline(subject, case, application, *, external_items=(), on_gap=No
         return False
     if spec["require_lineage"]:
         lineage = observe("lineage", lambda: application.lineage(subject))
-        checks = {"case": spec, "baseline": baseline, "lineage": lineage}
+        checks = {"format": rules.EVIDENCE_FORMAT, "case": spec, "baseline": baseline, "lineage": lineage}
         gaps = rules.lineage_gaps(checks, {(x["store"], x["key"]) for x in external})
         if on_gap is not None:
             for reason in sorted(gaps):

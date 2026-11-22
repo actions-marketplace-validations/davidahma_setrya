@@ -453,8 +453,8 @@ def lineage_gaps(e, external):
     checked_versions = {(row["store"], row["key"], row["revision"]) for row in e["baseline"]["stored"] + e["baseline"]["discovered"]
                         if row and row["exists"]}
     if e["lineage"] is not None:
-        derived_versions = {_ref(row["artifact"]) for row in e["lineage"]["derivations"]}
         affected = check_lineage(e["lineage"])
+        derived_versions = {_ref(row["artifact"]) for row in e["lineage"]["derivations"]}
         needs_derivation = any(a["action"] == "rewrite" for a in spec["artifacts"])
         if spec["require_lineage"] and (not affected or (needs_derivation and not e["lineage"]["derivations"])):
             gaps.add("Missing source-to-artifact provenance.")
@@ -556,7 +556,9 @@ def derive(e, digest):
     if modern:
         metadata["journal_chain"] = e["journal_chain"]
         if "judges" in spec:
-            metadata["lexical_only"] = any(coverage(spec["judges"][role]) == "lexical-only" for role in ("target", "control"))
+            metadata["lexical_only"] = not any(
+                rule["kind"] == "model" for role in ("target", "control") for rule in spec["judges"][role]
+            )
     return {**metadata, **({"controls": spec["controls"]} if "controls" in spec else {}),
             **({"answer_sampling": _sampling_summary(e)} if "sampling" in spec else {}),
             "format": RECEIPT_FORMAT, "version": 3, "scope": "person", "run": e["run"], "subject": e["subject"],
