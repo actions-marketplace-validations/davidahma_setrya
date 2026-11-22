@@ -9,7 +9,7 @@ setrya demo --output workspace
 setrya receipt render workspace/guarded --audience customer --case-id N-204
 ```
 
-The renderer replays the v3 receipt with its companion evidence before producing plain text. It covers person drills, tenant receipts and discovery cases. The customer sees what was checked, whether a delayed writer ran, and how many provider, retention or other follow-ups remain. A review date appears when the evidence contains one. Questions, answers, internal store keys and subject references stay in the original bundle.
+The renderer replays the v3 receipt with its companion evidence before producing plain text. It covers person drills, tenant receipts and discovery cases. The customer sees what was checked, whether a delayed writer ran, and how many provider, retention or other follow-ups remain. A review date appears when the evidence contains one. For discovery cases, the observation date comes from the drill. A deferred case gives the catalog date and states that no deletion drill ran. Questions, answers, internal store keys and subject references stay in the original bundle.
 
 A tenant or discovery receipt has its own request or case ID. Supplying a different ID is an error. On a synthetic drill the optional case number is identified as a label supplied at rendering time. The rendering command exits 0 when it produces the summary, including for a correctly recorded failure. Use `setrya replay` for the engineering gate and `setrya verify` for signer authentication.
 
@@ -47,14 +47,14 @@ Use `python -m pip install 'setrya[pgvector]'` for the PostgreSQL driver. Point 
 
 The PostgreSQL reader opens a read-only, repeatable-read transaction, verifies the control and looks up the keys with bound parameters. It declines replicas, views, inherited and partitioned tables, tables with row-level security, and roles with elevated attributes or write privileges on the mapped table. Configure any other production systems the role can access according to your own least-privilege policy. [PostgreSQL transaction modes](https://www.postgresql.org/docs/current/sql-set-transaction.html)
 
-For SQLite, use `kind = "sqlite"` and `path = "support.db"` in place of the DSN and schema. Paths are relative to the mapping file. Both the journal and SQLite store must be existing rollback-mode database files. Setrya opens them read-only, checks base tables, and never creates or initializes a journal. A WAL-mode file yields an unknown result. If you must use an exported database, record its snapshot time separately and interpret absence as applying to that snapshot. Supply a fresh, authoritative copy journal with all expected producers. [SQLite WAL and read-only access](https://www.sqlite.org/wal.html#read_only_databases)
+For SQLite, map a single `TEXT PRIMARY KEY` using binary collation and text keys throughout. A mixed text and binary key representation cannot establish absence. Use `kind = "sqlite"` and `path = "support.db"` in place of the DSN and schema. Paths are relative to the mapping file. Both the journal and SQLite store must be existing rollback-mode database files. Setrya opens them read-only, checks base tables, and never creates or initializes a journal. A WAL-mode file yields an unknown result. If you must use an exported database, record its snapshot time separately and interpret absence as applying to that snapshot. Supply a fresh, authoritative copy journal with all expected producers. [SQLite WAL and read-only access](https://www.sqlite.org/wal.html#read_only_databases)
 
 ```sh
 setrya observe request --id N-204 --population completed.json \
   --inventory observer.toml --journal copies.db --output N-204-observation.json
 ```
 
-The observer uses no application fixture, synthetic reader, deletion command or worker hook. The report contains the ticket ID, observation time, mapped store alias, journal event numbers and presence results. It includes no source contents, connection strings or subject references. Existing output files are protected. Omit `--output` to print JSON.
+The observer uses no application fixture, synthetic reader, deletion command or worker hook. The report contains the ticket ID, observation time, mapped store alias, journal event or lineage version numbers and presence results. Setrya follows recorded lineage from each subject source through downstream versions. Other subjects’ revisions of a key and their direct journal events make that key shared. Each request records when its journal was read. The journal transaction closes before the first store lookup, so waiting for a remote database leaves the journal available to writers. It includes no source contents, connection strings or subject references. Existing output files are protected. Omit `--output` to print JSON.
 
 | Request status | Interpretation | Exit |
 | --- | --- | --- |

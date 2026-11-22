@@ -217,6 +217,14 @@ class PublicCLI(unittest.TestCase):
         receipt["case"]["artifacts"].append({"store": "team", "key": "alice"})
         self.assertIn(["failure", "final", 1], action.signals(receipt))
 
+    def test_legacy_console_warns_on_stderr_and_preserves_the_verdict(self):
+        from setrya.cli import console_main
+        with patch("sys.argv", ["setrya", "check", "missing-drill.toml"]), \
+                contextlib.redirect_stderr(StringIO()) as stderr, contextlib.redirect_stdout(StringIO()) as stdout:
+            self.assertEqual(console_main(), 2)
+        self.assertIn("scheduled for removal in 2.0", stderr.getvalue())
+        self.assertNotIn("Deprecation", stdout.getvalue())
+
     def test_action_version_mismatch_rejects_before_opening_fixture(self):
         with TemporaryDirectory() as tmp:
             log = Path(tmp) / "outputs"

@@ -1,5 +1,5 @@
 """Exercise the customer handoff, direct key checks, weekly coverage and optional primary database."""
-from contextlib import closing, redirect_stdout, redirect_stderr
+from contextlib import closing, contextmanager, redirect_stdout, redirect_stderr
 from io import StringIO
 import hashlib
 import json
@@ -17,6 +17,7 @@ from setrya.casework.sampling import statistics
 from setrya.casework.stores import inventory, key_reader
 from setrya.cli import main
 from setrya.erasure.journal import CopyJournal
+from setrya.erasure.lineage import VersionLineage, VersionRef
 from setrya.erasure.subject import Subject
 from setrya.offboarding.inputs import InvalidReport
 
@@ -38,6 +39,21 @@ class CustomerReceipt(unittest.TestCase):
             data["review_status"] = "FAKE"
             receipt.write_text(json.dumps(data))
             self.assertEqual(main(["receipt", "render", str(guarded), "--audience", "customer"]), 2)
+
+    def test_historical_v3_summary_preserves_sampling_limits(self):
+        archived = Path(__file__).parent / "fixtures" / "erasure_v3_1_0_3"
+        self.assertIn("did not record repeated-answer coverage", customer_receipt(archived))
+
+    def test_discovery_distinguishes_catalog_from_drill_date(self):
+        from setrya.receipt_format import FORMAT_V3
+        result = {"format": FORMAT_V3, "profile": "discovery", "case_id": "N-204", "observed_at": "2020-08-12T22:00:00Z",
+                  "services": [], "technical_verdict": "NOT TESTED", "review_status": "OPEN_ITEMS", "open_items": []}
+        with patch("setrya.casework.customer.replay", return_value=result):
+            self.assertIn("2020-08-12. No deletion drill was run.", customer_receipt("deferred-case"))
+            result["drill_observed_at"] = "2024-08-13T09:15:00Z"
+            text = customer_receipt("completed-case")
+            self.assertIn("Observation date: 2024-08-13.", text)
+            self.assertNotIn("2020-08-12", text)
 
     def test_tenant_receipt_is_bound_to_the_request(self):
         with TemporaryDirectory() as tmp, redirect_stdout(StringIO()), redirect_stderr(StringIO()):
@@ -103,6 +119,59 @@ class KnownKeyObserver(unittest.TestCase):
         self.journal.unlink()
         self.assertEqual(self.request(2)[1], 3)
         self.assertFalse(self.journal.exists())
+
+    def test_tracks_transitive_lineage_and_shared_physical_keys(self):
+        lineage = VersionLineage(self.log, "workspace")
+        alice = VersionRef("desk", "key-0", "1")
+        summary = VersionRef("desk", "summary", "1")
+        cached = VersionRef("desk", "answer", "1")
+        bob = VersionRef("desk", "key-3", "1")
+        lineage.record(alice, subjects=[self.subjects[0]])
+        lineage.record(summary, inputs=[alice])
+        lineage.record(cached, inputs=[summary])
+        with closing(sqlite3.connect(self.data)) as db, db:
+            db.execute("INSERT INTO notes VALUES('answer', 'synthetic')")
+        report, code = self.request(0)
+        self.assertEqual(code, 1)
+        present, = [f for f in report["requests"][0]["checks"] if f["state"] == "PRESENT"]
+        self.assertIn("lineage_version", present)
+        self.assertNotIn("journal_event", present)
+        self.assertNotIn("answer", json.dumps(report))
+
+        # A later version of the same physical key belongs to both people.
+        lineage.record(bob, subjects=[self.subjects[3]])
+        lineage.record(VersionRef("desk", "answer", "2"), inputs=[summary, bob])
+        self.assertEqual(self.request(0)[1], 3)
+        # Direct journal events alone can also establish shared ownership.
+        self.log.record(self.subjects[1], store="desk", key="summary", source="test", action="stored")
+        self.assertIn("external-or-shared-key", self.request(0)[0]["requests"][0]["gaps"])
+
+    def test_sqlite_binary_or_mixed_keys_cannot_prove_absence(self):
+        with closing(sqlite3.connect(self.data)) as db, db:
+            db.execute("INSERT INTO notes VALUES(?, 'synthetic')", (b"key-2",))
+        self.assertEqual(self.request(2)[1], 3)
+        with closing(sqlite3.connect(self.data)) as db, db:
+            db.execute("ALTER TABLE notes RENAME TO original")
+            db.execute("CREATE TABLE notes(id TEXT COLLATE NOCASE PRIMARY KEY)")
+            db.execute("INSERT INTO notes VALUES ('permanent')")
+        self.assertEqual(self.request(2)[1], 3)
+
+    def test_store_query_does_not_hold_production_journal_lock(self):
+        writes = []
+
+        @contextmanager
+        def concurrent_read(spec):
+            with closing(sqlite3.connect(self.journal, timeout=0.01)) as db, db:
+                db.execute("UPDATE copy_events SET details=details WHERE event=1")
+            writes.append(True)
+            with key_reader(spec) as exists:
+                yield exists
+
+        with patch("setrya.casework.observe.key_reader", concurrent_read):
+            report, code = self.request(0)
+        self.assertEqual((code, writes), (0, [True]))
+        row, = report["requests"]
+        self.assertLessEqual(row["journal_read_at"], row["checked_at"])
 
     def test_weekly_frame_reproducible_and_census_bounds_include_unknowns(self):
         self.requests.append(dict(self.requests[0], id="outside", completed_at="2020-01-13T00:00:00Z"))
