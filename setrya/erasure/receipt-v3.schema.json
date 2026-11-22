@@ -730,7 +730,7 @@
         },
         "write_attribution": {
           "type": "array",
-          "maxItems": 1024,
+          "maxItems": 1536,
           "items": {
             "type": "object",
             "properties": {

@@ -53,8 +53,11 @@ def run(args, *, validate, receipt_limit=MAX_BUNDLE_FILE_BYTES, signature_limit=
                 if not key.resolve().is_file():
                     raise InvalidReport("Expected a local Cosign key file.")
                 if signing:
+                    # Cosign 3 defaults to the keyless bundle format. The
+                    # existing --key contract publishes a detached signature.
                     command = ["cosign", "sign-blob", "--yes", "--key", str(key.resolve()), "--tlog-upload=false",
-                               "--use-signing-config=false", "--output-signature", str(bundle), str(snapshot)]
+                               "--use-signing-config=false", "--new-bundle-format=false",
+                               "--output-signature", str(bundle), str(snapshot)]
                 else:
                     bundle.write_bytes(read_regular_bytes(args.bundle, "detached signature"))
                     command = ["cosign", "verify-blob", "--key", str(key.resolve()), "--insecure-ignore-tlog",
