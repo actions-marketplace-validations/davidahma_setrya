@@ -19,6 +19,7 @@ REASONS = {
     "answer": ("The endpoint returned the erased finding", "answers"),
     "control": ("A required retained finding disappeared", "answers"),
     "store": ("A direct store read found a residual or an unexpected change", "stored"),
+    "discovered": ("A discovered copy still exists", "discovered"),
     "canary": ("A scanner found the synthetic marker", "scans"),
     "failure": ("A required erasure check failed", None),
     "worker": ("A required worker observation is missing", None),
@@ -38,12 +39,21 @@ def summary(code, review):
 
 def signals(receipt):
     counts = Counter()
+    case = receipt["case"]
+    callers = set(case["callers"])
+    stores = {f"{row['store']}/{row['key']}" for row in case["artifacts"]}
     for failure in receipt["failures"]:
         kind = "failure"
         if "recovered the erased finding" in failure:
             kind = "answer"
         elif "lost the retained finding" in failure:
-            kind = "control" if "/" not in failure.split(" lost ")[0] else "store"
+            location = failure.rsplit(" lost the retained finding at ", 1)[0]
+            if location in callers and location not in stores:
+                kind = "control"
+            elif location in stores and location not in callers:
+                kind = "store"
+        elif failure.startswith("Discovered copy ") and " still exists at " in failure:
+            kind = "discovered"
         elif "Canary found in " in failure:
             kind = "canary"
         elif any(fragment in failure for fragment in ("still exists at ", "contains the erased finding", "artifact ")):
