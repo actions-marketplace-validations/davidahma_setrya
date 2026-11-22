@@ -13,7 +13,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 LABELS = ("PASS", "FAIL", "ERROR", "NOT TESTED")
 EXPECTED = {"PASS": {"OPEN_ITEMS", "READY_FOR_REVIEW"}, "FAIL": {"RESIDUAL_FOUND"},
             "ERROR": {"OPEN_ITEMS", "UNAVAILABLE"}, "NOT TESTED": {"OPEN_ITEMS", "UNAVAILABLE"}}
-MARKER = "<!-- setrya:erasure-verdict:v1 -->"
+MARKER = "<!-- setrya:receipt -->"
+LEGACY_MARKER = "<!-- setrya:erasure-verdict:v1 -->"
 # Only these public descriptions can cross from fixture execution into the privileged comment job.
 REASONS = {
     "answer": ("The endpoint returned the erased finding", "answers"),
@@ -172,7 +173,7 @@ def comment():
         comments = api("GET", f"{path}?per_page=100&page={page}")
         for row in comments:
             if (row["user"]["login"] == "github-actions[bot]" and row["user"]["type"] == "Bot"
-                    and (row.get("body") or "").startswith(MARKER + "\n")):
+                    and (row.get("body") or "").startswith((MARKER + "\n", LEGACY_MARKER + "\n"))):
                 comment_id = int(row["id"])
                 break
         if comment_id or len(comments) < 100:
