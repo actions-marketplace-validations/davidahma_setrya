@@ -33,7 +33,7 @@ def _unique_ids(items, limit, name):
 
 
 def check_spec(spec):
-    from setrya.casework.controls import validate_controls
+    from setrya.control_references import validate_controls
     controls = isinstance(spec, dict) and "controls" in spec
     judged = isinstance(spec, dict) and "judges" in spec
     sampled = isinstance(spec, dict) and "sampling" in spec

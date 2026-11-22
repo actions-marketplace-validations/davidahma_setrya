@@ -21,6 +21,7 @@ PACKAGE_FILES = (
     "LICENSE",
     "setrya/__init__.py",
     "setrya/adapter.py",
+    "setrya/control_references.py",
     "setrya/checker.py",
     "setrya/drill.py",
     "setrya/evidence.py",

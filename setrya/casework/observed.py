@@ -4,7 +4,7 @@ import re
 
 from setrya.erasure.journal import identifier
 from setrya.offboarding.inputs import require
-from .controls import validate_controls
+from setrya.control_references import validate_controls
 from .observe import check_request
 from .profiles import OBSERVED, day, fields, issue, new_bundle, sha, stamp
 from .sampling import load_population

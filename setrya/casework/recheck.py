@@ -212,6 +212,7 @@ def derive_followup(e, folder):
     verdict = "FAIL" if found else original_verdict
     review = "RESIDUAL_FOUND" if verdict == "FAIL" else "OPEN_ITEMS" if remaining or verdict != "PASS" else "READY_FOR_REVIEW"
     return {"scope": parent["scope"], **({"subject": {"ref": subject}} if subject else {}),
+            **{key: parent[key] for key in ("case_id", "request_id") if key in parent},
             "parent_sha256": digest, "observed_at": e["observed_at"], "original_verdict": original_verdict,
             "technical_verdict": verdict, "review_status": review, "items": items, "open_items": remaining,
             **({"controls": parent["controls"]} if "controls" in parent else {})}

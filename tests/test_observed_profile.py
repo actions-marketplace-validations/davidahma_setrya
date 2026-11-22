@@ -110,6 +110,19 @@ follow_up="2020-01-02"
         self.assertEqual(result["technical_verdict"], "NOT TESTED")
         self.assertIn("external-or-shared-key", result["gaps"])
 
+    def test_linked_customer_summary_preserves_the_original_request_on_each_recheck(self):
+        from setrya.casework.receipt_summary import receipt_summary
+
+        self.observe("initial")
+        for source, output in (("initial", "first"), ("first", "second")):
+            receipt = self.follow(source, output)
+            with self.subTest(generation=output):
+                self.assertEqual(receipt["request_id"], "N-42")
+                self.assertEqual(replay(self.p / output), receipt)
+                self.assertIn("Deletion review for N-42", receipt_summary(self.p / output, audience="customer"))
+                with self.assertRaisesRegex(InvalidReport, "differs from the replayed evidence"):
+                    receipt_summary(self.p / output, audience="customer", case_id="WRONG")
+
     def test_independent_reads_replay_offline_and_public_entrypoints(self):
         before = [p.read_bytes() for p in (self.store, self.journal)]
         with redirect_stdout(StringIO()):

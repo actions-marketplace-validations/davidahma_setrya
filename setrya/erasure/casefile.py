@@ -171,12 +171,14 @@ class StoreApplication:
 
     def inspect(self, subject, store, key):
         row = self.observers[store].inspect(key, *self.spec.store_facts)
+        self.journal.record_boundary(subject, store=store, kind="namespace", name=self.observers[store].scope)
         if row.exists and row.target_present is True:
             self._record(subject, store, key, "fixture.inspect")
         return row
 
     def scan(self, subject, store):
         keys = self.observers[store].scan(self.spec.markers[0])
+        self.journal.record_boundary(subject, store=store, kind="namespace", name=self.observers[store].scope)
         for key in sorted(keys):
             self._record(subject, store, key, "fixture.scan")
         return keys
@@ -239,7 +241,7 @@ def load_case(path, *, locate=False):
     fields(settings, ("format", "conversation", "subject_ref_env", "origin_env", "read_route", "erase_route",
                       "caller_tokens", "erase_token_env", "facts", "stores"), ("samples", "controls"))
     if "controls" in settings:
-        from setrya.casework.controls import validate_controls
+        from setrya.control_references import validate_controls
         validate_controls(settings["controls"])
     if settings["format"] != FORMAT:
         raise InputError("unknown HTTP case format")

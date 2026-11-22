@@ -75,6 +75,18 @@ class DiscoveryCaseTests(TestCase):
         self.options = dict(subject=self.subject, case=case, application=self.app, mode="deletion",
                             environment=self.binding["environment"], revision=self.binding["revision"])
 
+    def test_followup_customer_summary_retains_the_verified_discovery_case(self):
+        from setrya.casework.receipt_summary import receipt_summary
+        from setrya.casework.recheck import recheck
+
+        source, followup = self.root / "original", self.root / "followup"
+        discovery.run_case(self.binding, **self.options, output=source)
+        receipt = recheck(source, output=followup)
+        self.assertEqual(receipt["case_id"], self.binding["case_id"])
+        self.assertIn(self.binding["case_id"], receipt_summary(followup, audience="customer"))
+        with self.assertRaisesRegex(InvalidReport, "differs from the replayed evidence"):
+            receipt_summary(followup, audience="customer", case_id="WRONG")
+
     def test_unread_service_lists_owner_and_external_exhibit_is_separate(self):
         self.binding["services"].append({"id": "other", "role": "cache", "owner": "ops",
                                         "store": "other", "key": "shared", "action": "rewrite"})

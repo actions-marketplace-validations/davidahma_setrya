@@ -1,11 +1,18 @@
 """Customer-supplied control identifiers attached to the observations in a receipt."""
 import re
 
-from setrya.offboarding.inputs import require
+from setrya.offboarding.inputs import read_json, require
 
 
 # A control is an identifier suitable for display, not free-form contractual text.
 REFERENCE = r"[A-Za-z0-9](?:[A-Za-z0-9 .:/()_-]{0,94}[A-Za-z0-9)])?"
+
+
+def read_controls(path):
+    if path is None:
+        return None
+    value, _ = read_json(path, "control references")
+    return validate_controls(value)
 
 
 def validate_controls(value):

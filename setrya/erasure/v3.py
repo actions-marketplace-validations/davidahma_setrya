@@ -97,7 +97,7 @@ class SharedCase:
             spec["judges"] = self.judges.spec()
         require(isinstance(self.controls, tuple), "Use a tuple of control references.")
         if self.controls:
-            from setrya.casework.controls import validate_controls
+            from setrya.control_references import validate_controls
             spec["controls"] = validate_controls(list(self.controls))
         rules.check_spec(spec)
         _check_answer_budget(spec, self.judges)

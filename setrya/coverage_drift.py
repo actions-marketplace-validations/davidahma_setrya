@@ -19,11 +19,12 @@ def observed(journals):
             db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 1024 * 1024)
             readers = {
                 "copy_events": "SELECT store, subject, details FROM main.copy_events",
+                "observed_boundaries": "SELECT store, subject, details FROM main.observed_boundaries",
                 "collected_events": "SELECT NULL, ref, record FROM main.collected_events",
                 "lineage_versions": "SELECT store, NULL, NULL FROM main.lineage_versions",
             }
             tables = db.execute("SELECT name FROM main.sqlite_schema WHERE name IN "
-                                "('copy_events','collected_events','lineage_versions')").fetchall()
+                                "('copy_events','observed_boundaries','collected_events','lineage_versions')").fetchall()
             require(tables, "Expected a concrete journal table.")
             for (table,) in tables:
                 _sqlite_table(db, table)

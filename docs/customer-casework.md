@@ -29,6 +29,8 @@ controls:
 
 For a Python fixture, supply the same dictionaries as a tuple in `SharedCase(controls=(...), ...)`. The runner binds these references to the original evidence. Editing only the issued receipt causes replay to fail. References carry forward into linked follow-ups. They help the reviewer locate the relevant agreement or control. The technical verdict covers the recorded observations only. Older receipts that omitted references retain their original verdict and replay rules.
 
+For a tenant receipt, save the references as a JSON array, for example `[{"framework":"DPA","reference":"clause 4.2"}]`. Add `--controls controls.json` to `setrya run --scope tenant` alongside the original ticket digest, policy and evidence. Python callers pass the same list to `setrya.offboarding.tenant_v3.issue(controls=..., ...)`. The tenant input manifest binds those references to the request and exhibits. All three receipt summaries show them.
+
 A tenant or discovery receipt has its own request or case ID. Supplying a different ID is an error. On a synthetic drill the optional case number is identified as a label supplied at rendering time. The rendering command exits 0 when it produces the summary, including for a correctly recorded failure. Use `setrya replay` for the engineering gate and `setrya verify` for signer authentication.
 
 ## Observe one completed request
@@ -152,4 +154,4 @@ setrya recheck N-204-observed --journal copies.sqlite --inventory observer.toml 
 setrya replay N-204-followup --case-review
 ```
 
-Each linked receipt includes the original evidence needed to replay it offline. Keep the original signed receipt separately and pass its expected SHA-256 to `recheck --expect-parent` when an independent ticket or reviewer supplies it. The output marks each original open item `verified` or `still open`. Both direct and scanned absence are needed to close an item. The original technical verdict remains visible. New residuals fail the follow-up, and a follow-up can never turn the original failed drill into a PASS. The command exits 0 for a clear case, 1 for residuals, 2 for invalid inputs, or 3 when evidence or follow-up remains outstanding.
+Each linked receipt includes the original evidence needed to replay it offline. Follow-ups carry the case or request number from that evidence, including across repeated rechecks. Keep the original signed receipt separately and pass its expected SHA-256 to `recheck --expect-parent` when an independent ticket or reviewer supplies it. The output marks each original open item `verified` or `still open`. Both direct and scanned absence are needed to close an item. The original technical verdict remains visible. New residuals fail the follow-up, and a follow-up can never turn the original failed drill into a PASS. The command exits 0 for a clear case, 1 for residuals, 2 for invalid inputs, or 3 when evidence or follow-up remains outstanding.

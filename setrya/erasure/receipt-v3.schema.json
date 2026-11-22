@@ -869,6 +869,9 @@
         "scope": {
           "const": "tenant"
         },
+        "controls": {
+          "$ref": "#/$defs/controls"
+        },
         "run": {
           "$ref": "#/$defs/token"
         },
@@ -1905,6 +1908,12 @@
             "NOT TESTED",
             "ERROR"
           ]
+        },
+        "case_id": {
+          "$ref": "#/$defs/id"
+        },
+        "request_id": {
+          "$ref": "#/$defs/id"
         },
         "parent_sha256": {
           "$ref": "#/$defs/sha256"

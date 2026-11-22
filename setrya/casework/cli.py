@@ -37,13 +37,13 @@ def command(argv):
         sub.add_argument("--output", type=Path, help="save a new local JSON report (default: stdout)")
     args = parser.parse_args(tail)
     if getattr(args, "receipt", None) is not None:
-        from setrya.offboarding.inputs import read_json, require
+        from setrya.offboarding.inputs import require
         from setrya.receipts import report
+        from setrya.control_references import read_controls
         from .observed import observe_deletion
         require(args.output is None, "Choose --receipt or --output.")
-        controls = read_json(args.controls, "control references")[0] if args.controls is not None else None
         receipt = observe_deletion(frame=args.population, request=args.id, inventory_file=args.inventory,
-                                   journal=args.journal, output=args.receipt, controls=controls)
+                                   journal=args.journal, output=args.receipt, controls=read_controls(args.controls))
         return report(receipt)
     if getattr(args, "controls", None) is not None:
         parser.error("--controls requires --receipt")

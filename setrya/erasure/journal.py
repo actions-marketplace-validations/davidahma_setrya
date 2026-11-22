@@ -87,6 +87,20 @@ class CopyJournal:
             )""")
             db.execute("CREATE INDEX IF NOT EXISTS by_subject ON copy_events(subject, store, copy_key)")
 
+    def record_boundary(self, subject: Subject, *, store: str, kind: str, name: str) -> None:
+        """Record a store that was read, including when the read found no subject copy."""
+        if not isinstance(subject, Subject):
+            raise InputError("expected a Subject for the inspected boundary")
+        identifier(store, "store")
+        details = validate_details({"boundary_kind": kind, "boundary": name})
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("""CREATE TABLE IF NOT EXISTS observed_boundaries (
+                subject TEXT NOT NULL, store TEXT NOT NULL, details TEXT NOT NULL,
+                PRIMARY KEY(subject, store, details)
+            ) WITHOUT ROWID""")
+            db.execute("INSERT OR IGNORE INTO observed_boundaries(subject,store,details) VALUES(?,?,?)",
+                       (subject.ref, store, json.dumps(details, sort_keys=True, separators=(",", ":"))))
+
     def record(self, subject: Subject, *, store: str, key: str, source: str, action: str,
                details: Mapping | None = None) -> Copy:
         if not isinstance(subject, Subject) or action not in _ACTIONS:

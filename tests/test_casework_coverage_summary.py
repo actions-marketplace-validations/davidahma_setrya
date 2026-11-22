@@ -1,13 +1,14 @@
 import json
 import sqlite3
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import closing, ExitStack, redirect_stdout, redirect_stderr
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 
-from setrya.casework.controls import validate_controls
+from setrya.control_references import validate_controls
 from setrya.casework.receipt_summary import receipt_summary
 from setrya.cli import main
 from setrya.coverage_drift import compare
@@ -124,6 +125,37 @@ class Drift(unittest.TestCase):
             report, code = compare([journal.path], inventory)
             self.assertEqual(code, 3)
             self.assertIsNone(next(r for r in report["boundaries"] if r["store"] == "new-sink")["owner"])
+
+    def test_retained_only_and_empty_namespaces_are_seen_without_claiming_subject_ownership(self):
+        from setrya.erasure.case_stores import open_observer
+        from setrya.erasure.casefile import StoreApplication
+
+        with TemporaryDirectory() as tmp, ExitStack() as stack:
+            root = Path(tmp)
+            app_db = root / "application.sqlite"
+            with closing(sqlite3.connect(app_db)) as db, db:
+                db.execute("CREATE TABLE records (id TEXT PRIMARY KEY, scope TEXT, answer TEXT)")
+                db.executemany("INSERT INTO records VALUES(?,?,?)",
+                               [("old", "mapped", "private-marker"), ("keep", "new-cache", "retained-fact")])
+            config = {"kind": "sqlite", "table": "records", "key_column": "id",
+                      "content_column": "answer", "scope_column": "scope"}
+            stores = {name: open_observer(stack, {**config, "scope": scope}, app_db)
+                      for name, scope in (("notes", "mapped"), ("cache", "new-cache"), ("summary", "empty"))}
+            journal = CopyJournal(root / "journal.sqlite")
+            app = StoreApplication(SimpleNamespace(markers=("private-marker",), store_facts=("private-marker", "retained-fact")),
+                                   stores, journal)
+            subject = Subject.derive(b"a" * 32, "tenant", "person", "private")
+            self.assertIs(app.inspect(subject, "notes", "old").target_present, True)
+            self.assertIs(app.inspect(subject, "cache", "keep").control_present, True)
+            self.assertEqual(app.scan(subject, "summary"), set())
+            self.assertEqual([(copy.store, copy.key) for copy in journal.copies(subject)], [("notes", "old")])
+            inv = root / "inventory.toml"
+            inv.write_text("version=1\n" + system("notes", "sqlite") + binding("notes", "namespace", "mapped"))
+            report, code = compare([journal.path], inv)
+            self.assertEqual(code, 3)
+            self.assertEqual({(r["store"], r["name"]) for r in report["boundaries"]
+                              if r["kind"] == "namespace" and not r["mapped"]},
+                             {("cache", "new-cache"), ("summary", "empty")})
 
     def test_no_observations_and_invalid_journal(self):
         with TemporaryDirectory() as tmp:
