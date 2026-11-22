@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from setrya.control_references import read_controls, validate_controls
 from setrya.offboarding import receipt as offboarding
 from setrya.offboarding.inputs import (
     MAX_JSON_BYTES, keys_match, publish_new, publish_new_bytes,
@@ -33,10 +34,14 @@ def derive(directory, *, expected_request=None, expected_job=None):
     folder = Path(directory)
     packet = _input(folder, MANIFEST)
     manifest = _json(packet)
-    require(keys_match(manifest, {"format", "version", "request_sha256", "records"})
-            and manifest["format"] == "setrya.tenant.input" and type(manifest["version"]) is int
-            and manifest["version"] == 1 and type(manifest["records"]) is int
+    require(isinstance(manifest, dict) and type(manifest.get("version")) is int
+            and manifest["version"] in (1, 2), "Invalid tenant input version.")
+    fields = {"format", "version", "request_sha256", "records"}
+    has_controls = manifest["version"] == 2
+    require(keys_match(manifest, fields | ({"controls"} if has_controls else set()))
+            and manifest["format"] == "setrya.tenant.input" and type(manifest["records"]) is int
             and 0 <= manifest["records"] <= offboarding.MAX_ITEMS, "Invalid tenant input manifest.")
+    control_fields = {"controls": validate_controls(manifest["controls"])} if has_controls else {}
     request, policy, evidence = (_input(folder, name) for name in ("request.json", "policy.json", "evidence.json"))
     digest = sha256(request).hexdigest()
     require(digest == manifest["request_sha256"] and expected_request in (None, digest),
@@ -62,13 +67,14 @@ def derive(directory, *, expected_request=None, expected_job=None):
                   for i, item in enumerate(result["items"]) if item["status"] != "PROVIDER_REPORTED"]
     return {"format": RECEIPT_FORMAT, **result, "version": 3, "scope": "tenant", "run": result["run_id"],
             "technical_verdict": "NOT TESTED" if status == "INCONCLUSIVE" else status, "open_items": open_items,
-            "evidence": {"file": MANIFEST, "sha256": sha256(packet).hexdigest()}}
+            "evidence": {"file": MANIFEST, "sha256": sha256(packet).hexdigest()}, **control_fields}
 
 
-def issue(*, request, expect_request, policy, evidence, output, records=(), expect_job=None):
+def issue(*, request, expect_request, policy, evidence, output, records=(), expect_job=None, controls=None):
     """Write a new v3 bundle, requiring the original request digest from the case system."""
     records = tuple(records)
     require(len(records) <= offboarding.MAX_ITEMS, "Too many tenant exhibits.")
+    control_fields = {"controls": validate_controls(controls)} if controls is not None else {}
     output = Path(output)
     require(not output.exists() and not output.is_symlink(), "Choose a fresh output directory.")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -83,8 +89,8 @@ def issue(*, request, expect_request, policy, evidence, output, records=(), expe
             raw = read_regular_bytes(document, "record document", min(MAX_DOCUMENT_BYTES, remaining))
             publish_new_bytes(raw, folder / f"record-{i}.bin", max_bytes=MAX_DOCUMENT_BYTES)
             remaining -= len(raw)
-        publish_new({"format": "setrya.tenant.input", "version": 1,
-                     "request_sha256": expect_request, "records": len(records)}, folder / MANIFEST)
+        publish_new({"format": "setrya.tenant.input", "version": 2 if control_fields else 1,
+                     "request_sha256": expect_request, "records": len(records), **control_fields}, folder / MANIFEST)
         result = derive(folder, expected_request=expect_request, expected_job=expect_job)
         publish_new(result, folder / RECEIPT, max_bytes=MAX_BUNDLE_FILE_BYTES)
         # Claim the destination first. Never replace a concurrently created directory.
@@ -124,11 +130,13 @@ def command(argv, *, prog):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--expect-request", required=True, help="SHA-256 from the independent request ticket")
     parser.add_argument("--expect-job", help="expected ID from the dispatch log")
+    parser.add_argument("--controls", type=Path, help="JSON list of customer control and DPA references")
     parser.add_argument("--record", action="append", nargs=2, type=Path, default=[], metavar=("DESCRIPTOR", "DOCUMENT"))
     parser.add_argument("--case-review", action="store_true")
     opts = parser.parse_args(argv)
     result = issue(request=opts.request, expect_request=opts.expect_request, policy=opts.policy,
-                   evidence=opts.evidence, output=opts.output, records=opts.record, expect_job=opts.expect_job)
+                   evidence=opts.evidence, output=opts.output, records=opts.record, expect_job=opts.expect_job,
+                   controls=read_controls(opts.controls))
     return report(result, case_review=opts.case_review)
 
 

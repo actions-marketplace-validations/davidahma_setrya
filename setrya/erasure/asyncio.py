@@ -7,7 +7,8 @@ from functools import partial
 from threading import Event
 
 from .adapters import (
-    _MEMORY_SCHEMA, _checkpoint_rows, _keys, _memory_keys, _memory_relations, _memory_rows,
+    _MEMORY_SCHEMA, _PG_CHECKPOINT_TABLES, _PG_PHYSICAL_TABLE, _check_pg_visibility,
+    _checkpoint_rows, _keys, _memory_keys, _memory_relations, _memory_rows,
     _memory_tables, memory_namespace,
 )
 
@@ -24,6 +25,13 @@ async def _connection(client):
             yield conn
 
 
+async def _require_pg_tables(conn, tables):
+    for table in tables:
+        await conn.execute(f"SELECT 1 FROM ONLY {table} LIMIT 0")
+        cursor = await conn.execute(_PG_PHYSICAL_TABLE, (table,))
+        _check_pg_visibility(await cursor.fetchone())
+
+
 class AsyncPostgresCheckpointAdapter:
     """Subject-exclusive LangGraph AsyncPostgresSaver threads and all their physical rows."""
     proof = "direct"
@@ -36,6 +44,7 @@ class AsyncPostgresCheckpointAdapter:
 
     async def find(self, subject):
         async with self.saver.lock, _connection(self.saver.conn) as conn:
+            await _require_pg_tables(conn, _PG_CHECKPOINT_TABLES)
             cur = await conn.execute(*_checkpoint_rows(subject))
             return _keys(await cur.fetchall())
 
@@ -61,7 +70,9 @@ class AsyncPostgresMemoryAdapter:
         cur = await conn.execute(_MEMORY_SCHEMA)
         table, vectors = _memory_relations(await cur.fetchone())
         cur = await conn.execute("SELECT to_regclass(%s) IS NOT NULL AS present", (vectors,))
-        return _memory_tables(table, vectors, await cur.fetchone(), self.store.index_config)
+        tables = _memory_tables(table, vectors, await cur.fetchone(), self.store.index_config)
+        await _require_pg_tables(conn, tables)
+        return tables
 
     async def find(self, subject):
         async with self.store.lock, _connection(self.store.conn) as conn:

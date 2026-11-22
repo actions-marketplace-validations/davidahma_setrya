@@ -3,7 +3,7 @@ import json
 from collections.abc import Mapping
 
 from setrya.drill import InputError
-from .adapters import _pg_connection, _scoped_memory_key
+from .adapters import _PG_CHECKPOINT_TABLES, _pg_connection, _require_pg_base_table, _scoped_memory_key, _sqlite_snapshot
 from .canary import LIMIT, contains_marker, validate_probe
 from .journal import identifier
 
@@ -16,13 +16,12 @@ class SQLiteCheckpointCanaryScanner:
 
     def find(self, *, scope: str, marker: str) -> set[str]:
         validate_probe(scope, marker)
-        if self.db.in_transaction:
-            raise InputError("commit application writes before scanning")
-        rows = self.db.execute("""
-            SELECT type, checkpoint, metadata FROM checkpoints WHERE thread_id=? COLLATE BINARY
-            UNION ALL SELECT type, value, NULL FROM writes WHERE thread_id=? COLLATE BINARY LIMIT 4097
-        """, (scope, scope))
-        return _checkpoint_hits(rows, scope, marker)
+        with _sqlite_snapshot(self.db, ("checkpoints", "writes")) as db:
+            rows = db.execute("""
+                SELECT type, checkpoint, metadata FROM main.checkpoints WHERE thread_id=? COLLATE BINARY
+                UNION ALL SELECT type, value, NULL FROM main.writes WHERE thread_id=? COLLATE BINARY LIMIT 4097
+            """, (scope, scope))
+            return _checkpoint_hits(rows, scope, marker)
 
 
 class PostgresCheckpointCanaryScanner:
@@ -34,6 +33,8 @@ class PostgresCheckpointCanaryScanner:
     def find(self, *, scope: str, marker: str) -> set[str]:
         validate_probe(scope, marker)
         with _pg_connection(self.db) as conn:
+            for table in _PG_CHECKPOINT_TABLES:
+                _require_pg_base_table(conn, table)
             rows = conn.execute("""
                 SELECT 'json' AS type, NULL::bytea AS payload, jsonb_build_array(checkpoint, metadata) AS metadata
                     FROM checkpoints WHERE thread_id COLLATE "C" = %s
@@ -99,6 +100,7 @@ class PostgresMemoryCanaryScanner:
             raise InputError("LangGraph namespace components cannot contain periods")
         prefix = ".".join(root)
         with _pg_connection(self.connection) as conn:
+            _require_pg_base_table(conn, "store")
             rows = conn.execute("""
                 SELECT prefix, key, value FROM store WHERE prefix COLLATE "C" = %s
                    OR starts_with(prefix, %s) LIMIT 4097

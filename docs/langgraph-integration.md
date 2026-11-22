@@ -5,7 +5,7 @@ A checkpoint can still hold a support note after the source row has gone. A new 
 ## See the failure on a laptop
 
 ```sh
-python -m pip install 'setrya[erasure]==1.1.0'
+python -m pip install 'setrya[erasure]==1.2.0'
 setrya demo analyst --output investigation
 setrya replay investigation/broken
 setrya replay investigation/guarded
@@ -16,7 +16,7 @@ The broken replay exits 1. The guarded replay exits 0. The demo reopens the same
 ## Connect your application's Postgres memory
 
 ```sh
-python -m pip install 'setrya[case-yaml,erasure-postgres]==1.1.0'
+python -m pip install 'setrya[case-yaml,erasure-postgres]==1.2.0'
 setrya init --stack langgraph-postgres --output graph-case
 setrya doctor --case graph-case/case.yml
 ```

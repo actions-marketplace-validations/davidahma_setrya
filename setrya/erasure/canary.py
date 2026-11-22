@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 
 from setrya.drill import InputError
-from .adapters import _keys, _pg_connection, _sql_name
+from .adapters import _keys, _pg_connection, _require_pg_base_table, _sql_name, _sqlite_snapshot
 from .journal import identifier
 
 
@@ -34,21 +34,8 @@ class SQLiteCanaryScanner:
               AND (typeof(t."{content}") NOT IN ('text', 'null') OR instr(t."{content}",?)>0) LIMIT 4097
         """
 
-    @contextmanager
     def snapshot(self):
-        if self.db.in_transaction:
-            raise InputError("commit application writes before scanning")
-        self.db.execute("BEGIN")
-        try:
-            cursor = self.db.cursor()
-            cursor.row_factory = None
-            relation = cursor.execute("SELECT type FROM pragma_table_list WHERE schema='main' AND name=?",
-                                      (self.table,)).fetchone()
-            if relation != ("table",):
-                raise InputError("direct SQLite observation requires a base table")
-            yield self.db
-        finally:
-            self.db.execute("ROLLBACK")
+        return _sqlite_snapshot(self.db, (f'"{self.table}"',))
 
     def find(self, *, scope: str, marker: str) -> set[str]:
         validate_probe(scope, marker)
@@ -79,18 +66,7 @@ class PostgresCanaryScanner:
     def snapshot(self):
         with _pg_connection(self.connection) as conn:
             conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-            # Pin the relation until the existence/content read completes. A
-            # view of active records or a lagging replica can hide live data.
-            conn.execute(f"SELECT 1 FROM ONLY {self.table} LIMIT 0")
-            cursor = conn.execute("""
-                SELECT NOT pg_catalog.pg_is_in_recovery() AND c.relkind = 'r'
-                       AND NOT c.relrowsecurity AND NOT c.relispartition
-                       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits WHERE inhparent = c.oid OR inhrelid = c.oid) AS visible
-                FROM pg_catalog.pg_class c WHERE c.oid = pg_catalog.to_regclass(%s)
-            """, (self.table,))
-            row = cursor.fetchone()
-            if row is None or (row["visible"] if isinstance(row, Mapping) else row[0]) is not True:
-                raise InputError("direct observation requires an unfiltered PostgreSQL primary base table")
+            _require_pg_base_table(conn, self.table)
             yield conn
 
     def find(self, *, scope: str, marker: str) -> set[str]:

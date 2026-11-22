@@ -52,7 +52,7 @@ def run_person_starter(starter, mode, output):
             return 3, None
         with spec.open_fixture() as (subject, application, items):
             live = run_shared(subject, case=spec.case, application=application, mode=mode, output=output,
-                              external_items=items)
+                              external_items=items, journal=application.journal)
         replayed = load_directory(output)
         if live != replayed:
             raise InputError("Replayed evidence differs from the live HTTP case.")
@@ -88,6 +88,7 @@ def main(argv, *, prog="setrya erasure"):
     init.add_argument("--example", choices=("shared", "investigation"))
     run = commands.add_parser("run", help="execute a trusted local starter or evaluate a tenant gate")
     run.add_argument("--scope", choices=("person", "tenant"), default="person")
+    run.add_argument("case_path", nargs="?", type=Path, help="declarative YAML case (default output: setrya-receipt)")
     case_arg = run.add_mutually_exclusive_group()
     case_arg.add_argument("--starter", type=Path, help="trusted generated test file")
     case_arg.add_argument("--case", type=Path, help="trusted declarative YAML file")
@@ -137,6 +138,11 @@ def main(argv, *, prog="setrya erasure"):
                 raise InputError("Supply the directory containing the receipt and its evidence.")
             return replay_directory(args.directory, case_review=args.case_review, expected_scope=args.scope)
         if args.action == "run":
+            if args.case_path:
+                if args.case or args.starter:
+                    raise InputError("Choose one positional case, --case or --starter.")
+                args.case = args.case_path
+                args.output = args.output or Path("setrya-receipt")
             if args.case and args.case.suffix.lower() not in (".yaml", ".yml"):
                 raise InputError("Use a .yaml or .yml file with --case.")
             code, receipt = run_person_starter(args.case or args.starter, args.mode or "deletion", args.output)

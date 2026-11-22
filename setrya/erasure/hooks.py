@@ -106,9 +106,11 @@ class CopyHooks:
 
     def put_memory(self, memory, key: str, value: dict, *, store: str, source: str, **options):
         from .adapters import memory_namespace
-        self._attempt(store, key, source, "stored")
-        value = memory.put(memory_namespace(self.subject), key, value, **options)
-        self._record(store, key, source, "stored", stage="returned")
+        namespace = memory_namespace(self.subject)
+        details = {"boundary_kind": "namespace", "boundary": "/".join(namespace)}
+        self._attempt(store, key, source, "stored", **details)
+        value = memory.put(namespace, key, value, **options)
+        self._record(store, key, source, "stored", stage="returned", **details)
         return value
 
     def add_documents(self, vector_store, documents, *, ids, store: str, **kwargs):

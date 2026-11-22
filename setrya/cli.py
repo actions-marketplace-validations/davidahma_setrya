@@ -220,7 +220,7 @@ def main(argv=None) -> int:
 
         return erasure_main(argv[1:])
     if argv[:1] == ["coverage"]:
-        from .coverage import main as coverage_main
+        from .route_coverage import main as coverage_main
 
         return coverage_main(argv[1:])
     if argv[:1] == ["run-pr"]:

@@ -1,0 +1,25 @@
+name: Request a deletion adapter
+description: Describe a store whose copies you want to discover, delete and verify.
+title: "[Adapter] "
+body:
+  - type: input
+    id: store
+    attributes:
+      label: Store, SDK and versions
+      placeholder: e.g. SQLite, Python 3.13
+    validations:
+      required: true
+  - type: textarea
+    id: ownership
+    attributes:
+      label: What identifies a copy?
+      description: Use a fictional key and namespace. Explain how the adapter distinguishes the target from a retained subject and handles shared objects.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: How could another reader verify deletion?
+      description: Describe the direct read, permissions, any stale-read window and a positive control. Include a disposable test setup or public documentation when available.
+    validations:
+      required: true

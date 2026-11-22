@@ -73,6 +73,7 @@ class SharedCase:
     target_variants: tuple[str, ...] = ()
     control_variants: tuple[str, ...] = ()
     model_backed: bool | None = None
+    controls: tuple[dict[str, str], ...] = ()
 
     def questions(self):
         require(all(isinstance(group, tuple) and len(group) <= 7 for group in
@@ -94,6 +95,10 @@ class SharedCase:
         if self.judges is not None:
             require(isinstance(self.judges, AnswerJudges), "Expected target and control answer judges.")
             spec["judges"] = self.judges.spec()
+        require(isinstance(self.controls, tuple), "Use a tuple of control references.")
+        if self.controls:
+            from setrya.control_references import validate_controls
+            spec["controls"] = validate_controls(list(self.controls))
         rules.check_spec(spec)
         _check_answer_budget(spec, self.judges)
         return spec
@@ -167,24 +172,39 @@ def _stage(subject, case, application, spec, observe, discovered=None):
     return {"answers": answers, "stored": stored, "scans": scans, "discovered": found}
 
 
-def observe_baseline(subject, case, application, *, external_items=()):
-    """Read the declared fixture scope without holding a worker or applying erasure."""
+def observe_baseline(subject, case, application, *, external_items=(), on_gap=None):
+    """Read the fixture without erasing or holding a worker. Optionally report individual gaps."""
     require(isinstance(subject, Subject) and isinstance(case, SharedCase), "Expected a subject and shared case.")
     spec = case.spec()
     external = [asdict(item) for item in external_items]
     rules.check_external(external, spec, subject.ref)
 
-    def observe(_operation, fn):
-        return fn()
+    def observe(operation, fn):
+        if on_gap is None:
+            return fn()
+        try:
+            return fn()
+        except Exception as error:
+            # Keep checking the other boundaries. Hook errors can include secrets.
+            on_gap(operation, None, None, f"Hook reported {type(error).__name__}.")
+            return None
 
     baseline = _stage(subject, case, application, spec, observe)
     rules.check_stage(baseline, spec)
-    if not rules.baseline_ready(spec, baseline):
+    issues = set(rules.baseline_issues(spec, baseline))
+    if on_gap is not None:
+        for issue in sorted(issues):
+            on_gap(*issue)
+    if issues:
         return False
     if spec["require_lineage"]:
-        lineage = application.lineage(subject)
+        lineage = observe("lineage", lambda: application.lineage(subject))
         checks = {"case": spec, "baseline": baseline, "lineage": lineage}
-        return not rules.lineage_gaps(checks, {(x["store"], x["key"]) for x in external})
+        gaps = rules.lineage_gaps(checks, {(x["store"], x["key"]) for x in external})
+        if on_gap is not None:
+            for reason in sorted(gaps):
+                on_gap("lineage", None, None, reason)
+        return not gaps
     return True
 
 

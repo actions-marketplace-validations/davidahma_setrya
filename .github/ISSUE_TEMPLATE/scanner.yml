@@ -1,0 +1,24 @@
+name: Request a canary scanner
+description: Propose a bounded search for copies that lost their subject tag.
+title: "[Scanner] "
+body:
+  - type: input
+    id: surface
+    attributes:
+      label: Store, trace sink or memory namespace and version
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: What exactly can the scanner read?
+      description: Describe the scoped query, pagination, searchable fields and the least-privileged reader. Use synthetic identifiers.
+    validations:
+      required: true
+  - type: textarea
+    id: trial
+    attributes:
+      label: How could someone test completeness?
+      description: Describe a seeded marker, a retained visibility control and a case where the reader should report uncertainty.
+    validations:
+      required: true

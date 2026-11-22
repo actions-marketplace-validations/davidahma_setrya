@@ -163,19 +163,24 @@ def _trace_field_matches(field, marker):
         if marker in field:
             return True
         try:
-            field = json.loads(field)
-        except ValueError:
+            # Search every decoded field name and value, including repeated
+            # names in stringified tool payloads. A dict would drop earlier copies.
+            field = json.loads(field, object_pairs_hook=list)
+        except json.JSONDecodeError:
             pass  # A plain string is a valid trace input or output.
     return contains_marker(field, marker)
 
 
 @contextmanager
-def langfuse_observation(hooks: CopyHooks, client, *, session: str, store: str, source: str, name: str, **fields):
+def langfuse_observation(hooks: CopyHooks, client, *, session: str, store: str, source: str, name: str,
+                         sink: str | None = None, **fields):
     """Open a real Langfuse span and journal its pointer. The scanner checks export independently."""
     from langfuse import propagate_attributes
     identifier(session, "Langfuse session")
+    details = {"operation": "langfuse.observation", "boundary_kind": "trace",
+               "boundary": identifier(store if sink is None else sink, "Langfuse sink")}
     with propagate_attributes(session_id=session), client.start_as_current_observation(name=name, **fields) as span:
         key = identifier(f"{span.trace_id}/{span.id}", "Langfuse trace/observation")
-        hooks._attempt(store, key, source, "stored", operation="langfuse.observation")
+        hooks._attempt(store, key, source, "stored", **details)
         yield span
-    hooks._record(store, key, source, "stored", stage="returned", operation="langfuse.observation")
+    hooks._record(store, key, source, "stored", stage="returned", **details)

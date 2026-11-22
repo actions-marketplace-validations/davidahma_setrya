@@ -6,6 +6,7 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 
+from setrya.drill import InputError
 from setrya.erasure.canary import ElasticsearchCanaryScanner, PostgresCanaryScanner, RedisCanaryScanner
 from setrya.erasure.langgraph_canary import (
     LangGraphMemoryCanaryScanner, PostgresCheckpointCanaryScanner, PostgresMemoryCanaryScanner,
@@ -108,6 +109,12 @@ class PostgresTest(unittest.TestCase):
         self.assertEqual(mem.find(scope="trial", marker=MARKER), set())
         self.assertEqual(cp.find(scope="other", marker=MARKER), {"other"})
         self.assertEqual(mem.find(scope="other", marker=MARKER), {"saved"})
+        self.db.execute("ALTER TABLE checkpoint_writes ENABLE ROW LEVEL SECURITY")
+        self.db.execute("ALTER TABLE store ENABLE ROW LEVEL SECURITY")
+        for scanner in (cp, mem):
+            with self.assertRaisesRegex(InputError, "primary base table"):
+                scanner.find(scope="other", marker=MARKER)
+
 
 
 @unittest.skipUnless(os.getenv("SETRYA_REDIS_URL") and installed("redis"), "configure disposable Redis")

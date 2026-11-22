@@ -35,11 +35,15 @@ def validate_details(values: Mapping | None) -> dict:
         if fields.get("evidence_level", "configuration") != "configuration":
             raise InputError("provider settings support configuration evidence only")
         fields["evidence_level"] = "configuration"
+    if {"boundary", "boundary_kind"} & fields.keys():
+        identifier(fields.get("boundary"), "observed boundary")
+        if fields.get("boundary_kind") not in ("trace", "namespace"):
+            raise InputError("observed boundary requires kind trace or namespace")
     for key, value in fields.items():
         if key in {"invocation_logging", "prompt_caching"}:
             if value is not None and type(value) is not bool:
                 raise InputError(f"{key} must be a boolean or unknown (None)")
-        elif key in {"model", "provider", "region", "tool", "direction", "stage", "evidence_level", "operation"}:
+        elif key in {"model", "provider", "region", "tool", "direction", "stage", "evidence_level", "operation", "boundary", "boundary_kind"}:
             if value is not None:
                 identifier(value, key)
         elif key == "payload_hmac":
@@ -82,6 +86,20 @@ class CopyJournal:
                 classification TEXT NOT NULL, observed_at TEXT NOT NULL, details TEXT NOT NULL
             )""")
             db.execute("CREATE INDEX IF NOT EXISTS by_subject ON copy_events(subject, store, copy_key)")
+
+    def record_boundary(self, subject: Subject, *, store: str, kind: str, name: str) -> None:
+        """Record a store that was read, including when the read found no subject copy."""
+        if not isinstance(subject, Subject):
+            raise InputError("expected a Subject for the inspected boundary")
+        identifier(store, "store")
+        details = validate_details({"boundary_kind": kind, "boundary": name})
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("""CREATE TABLE IF NOT EXISTS observed_boundaries (
+                subject TEXT NOT NULL, store TEXT NOT NULL, details TEXT NOT NULL,
+                PRIMARY KEY(subject, store, details)
+            ) WITHOUT ROWID""")
+            db.execute("INSERT OR IGNORE INTO observed_boundaries(subject,store,details) VALUES(?,?,?)",
+                       (subject.ref, store, json.dumps(details, sort_keys=True, separators=(",", ":"))))
 
     def record(self, subject: Subject, *, store: str, key: str, source: str, action: str,
                details: Mapping | None = None) -> Copy:

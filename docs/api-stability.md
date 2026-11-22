@@ -4,7 +4,7 @@ The supported developer entry points are `setrya init`, `run`, `replay`, `demo` 
 
 ## Writing a fixture
 
-Use `setrya.erasure` for the person-erasure fixture types, `observe_baseline`, `run_shared`, text judges and decisions. The `setrya.erasure.v3` and `setrya.erasure.judges` import paths continue to expose their original classes. A fixture implements the documented store, caller and worker methods. Keyword names, required fields and the meanings of actions and exit codes are public contracts. New optional capabilities can arrive in a minor release. A change requiring an existing 1.x fixture to be rewritten requires a major version. [Fixture contract](erasure-v3.md)
+New Python fixtures import from `setrya.erasure`, independent of the receipt version. Use that namespace for the person-erasure fixture types, `observe_baseline`, `run_shared`, text judges and decisions. The `setrya.erasure.v3` and `setrya.erasure.judges` import paths continue to expose their original classes. A fixture implements the documented store, caller and worker methods. Keyword names, required fields and the meanings of actions and exit codes are public contracts. New optional capabilities can arrive in a minor release. A change requiring an existing 1.x fixture to be rewritten requires a major version. [Fixture contract](erasure-v3.md)
 
 ## Reviewing a receipt
 

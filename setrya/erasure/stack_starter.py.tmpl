@@ -12,18 +12,19 @@ CASE = PROFILE.case
 
 
 @contextmanager
-def open_fixture():
-    with PROFILE.open_stores() as (subject, application, items):
+def open_fixture(*, on_unavailable=None):
+    with PROFILE.open_stores(on_unavailable=on_unavailable) as (subject, application, items):
         # Bind your application's methods here:
         # application.read = read_as_test_user
         # application.erase = erase_fixture_subject
-        # inspect and scan already read the configured store.
+        # inspect, scan and app.journal are connected to the configured store.
         yield subject, application, items
 
 
 def run(output, mode="deletion"):
     with open_fixture() as (subject, app, items):
-        return run_shared(subject, case=CASE, application=app, external_items=items, mode=mode, output=output)
+        return run_shared(subject, case=CASE, application=app, external_items=items, journal=app.journal,
+                          mode=mode, output=output)
 
 
 def test_erasure(tmp_path):
