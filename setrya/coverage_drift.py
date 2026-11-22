@@ -5,7 +5,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from setrya.casework.stores import sqlite_reader
+from setrya.casework.stores import _sqlite_table, sqlite_reader
 from setrya.erasure.inventory import load_coverage
 from setrya.erasure.journal import identifier, validate_details
 from setrya.offboarding.inputs import require, unique_fields
@@ -17,15 +17,16 @@ def observed(journals):
     for path in journals:
         with sqlite_reader(path) as db:
             db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 1024 * 1024)
-            tables = dict(db.execute("SELECT name,type FROM pragma_table_list WHERE schema='main' "
-                                     "AND name IN ('copy_events','collected_events','lineage_versions')"))
-            require(tables and all(t == "table" for t in tables.values()), "Expected a concrete journal table.")
             readers = {
                 "copy_events": "SELECT store, subject, details FROM main.copy_events",
                 "collected_events": "SELECT NULL, ref, record FROM main.collected_events",
                 "lineage_versions": "SELECT store, NULL, NULL FROM main.lineage_versions",
             }
-            for table in tables:
+            tables = db.execute("SELECT name FROM main.sqlite_schema WHERE name IN "
+                                "('copy_events','collected_events','lineage_versions')").fetchall()
+            require(tables, "Expected a concrete journal table.")
+            for (table,) in tables:
+                _sqlite_table(db, table)
                 for store, subject, raw in db.execute(readers[table]):
                     total += 1
                     require(total <= 100_000, "Drift input exceeds the observation budget.")

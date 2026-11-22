@@ -41,6 +41,19 @@ class Fixture(unittest.TestCase):
 
 
 class SQLiteTests(Fixture):
+    def test_missing_post_delete_observation_fails_conformance(self):
+        class MissingRead(SQLiteAdapter):
+            def verify_absent(self, subject):
+                keys = super().verify_absent(subject)
+                return keys or None
+
+        with closing(sqlite3.connect(":memory:")) as db:
+            db.execute("CREATE TABLE docs(id, setrya_subject)")
+            with db:
+                db.executemany("INSERT INTO docs VALUES(?, ?)", [("a", self.a.ref), ("b", self.b.ref)])
+            with self.assertRaisesRegex(ValueError, "both direct reads must return an empty set"):
+                self.exercise(MissingRead(db, "docs"), ["a"], ["b"])
+
     def test_sqlite_conformance_scopes_and_errors(self):
         with closing(sqlite3.connect(":memory:")) as db:
             db.execute("CREATE TABLE docs (id, setrya_subject, payload)")
@@ -57,6 +70,24 @@ class SQLiteTests(Fixture):
             self.assertEqual(db.execute("SELECT payload FROM docs").fetchall(), [{"payload": "fixture"}])
             with self.assertRaises(InputError):
                 SQLiteAdapter(db, "main.docs")
+
+    def test_physical_table_for_reads_and_writes(self):
+        with closing(sqlite3.connect(":memory:")) as db:
+            db.execute("CREATE TABLE notes(id, setrya_subject, active)")
+            with db:
+                db.execute("INSERT INTO notes VALUES ('archived', ?, 0)", (self.a.ref,))
+                db.execute("INSERT INTO notes VALUES ('retained', ?, 1)", (self.b.ref,))
+            db.execute("CREATE VIEW active_notes AS SELECT * FROM notes WHERE active = 1")
+            view = SQLiteAdapter(db, "active_notes")
+            for operation in (view.find, view.verify_absent, view.delete):
+                with self.assertRaisesRegex(InputError, "base table"):
+                    operation(self.a)
+            db.execute("CREATE TEMP VIEW notes AS SELECT * FROM main.active_notes")
+            base = SQLiteAdapter(db, "notes")
+            self.assertEqual(base.verify_absent(self.a), {"archived"})
+            base.delete(self.a)
+            self.assertEqual(base.find(self.b), {"retained"})
+            self.assertEqual(db.execute("SELECT id FROM main.notes").fetchall(), [("retained",)])
 
     def test_open_transactions_and_duplicate_ids_are_inconclusive(self):
         with closing(sqlite3.connect(":memory:")) as db:
@@ -191,6 +222,26 @@ class PostgreSQLTests(Fixture):
             self.db.execute("INSERT INTO documents VALUES (%s, '[1,2]', %s)", (key, Jsonb(subject.metadata())))
         self.exercise(PgvectorAdapter(self.db, "documents", metadata_column="metadata"))
         self.assertEqual(self.db.execute("SELECT metadata FROM documents").fetchone()["metadata"], self.b.metadata())
+
+    def test_pgvector_direct_reads_require_an_unfiltered_primary_relation(self):
+        self.db.execute("CREATE TABLE notes(id text, setrya_subject text, active boolean)")
+        self.db.execute("INSERT INTO notes VALUES ('archived', %s, false)", (self.a.ref,))
+        self.db.execute("CREATE VIEW active_notes AS SELECT * FROM notes WHERE active")
+        self.db.execute("CREATE TABLE region_notes(id text, setrya_subject text) PARTITION BY LIST (id)")
+        self.db.execute("CREATE TABLE local_notes PARTITION OF region_notes DEFAULT")
+        self.db.execute("ALTER TABLE notes ENABLE ROW LEVEL SECURITY")
+        for relation in ("active_notes", "region_notes", "local_notes", "notes"):
+            adapter = PgvectorAdapter(self.db, relation)
+            for operation in (adapter.find, adapter.verify_absent, adapter.delete):
+                with self.subTest(relation=relation, operation=operation.__name__):
+                    with self.assertRaisesRegex(InputError, "primary base table"):
+                        operation(self.a)
+        self.db.execute("ALTER TABLE notes DISABLE ROW LEVEL SECURITY")
+        self.db.execute("CREATE TEMP TABLE notes(id text, setrya_subject text)")
+        with self.assertRaisesRegex(InputError, "primary base table"):
+            PgvectorAdapter(self.db, "notes").verify_absent(self.a)
+        self.db.execute("DROP TABLE pg_temp.notes")
+        self.assertEqual(PgvectorAdapter(self.db, "notes").find(self.a), {"archived"})
 
     def test_shared_document_fails_closed(self):
         from psycopg.types.json import Jsonb

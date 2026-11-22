@@ -56,6 +56,60 @@ follow_up="2020-01-02"
     def follow(self, source, name, **kwargs):
         return recheck(self.p/source, output=self.p/name, journal=self.journal, inventory_file=self.mapping, **kwargs)
 
+    def test_collector_and_local_events_share_one_observation_and_recheck(self):
+        from setrya.erasure.journal_merge import CollectedJournal, WorkerJournal
+
+        self.journal = self.p / "combined.sqlite"
+        collector = CollectedJournal(self.journal, run_id="delete-42")
+        CopyJournal(self.journal).record(self.subject, store="archive", key="removed",
+                                         source="api", action="stored")
+        worker = WorkerJournal(self.p / "worker.sqlite", run_id="delete-42", producer="worker")
+        worker.record(self.subject, store="archive", key="worker-key", source="memo", action="derived")
+        packet = self.p / "worker.json"
+        worker.seal(self.subject, packet)
+        collector.ingest(packet, producer="worker")
+        with closing(connect(self.store)) as db, db:
+            db.execute("INSERT INTO notes VALUES (?,?)", ("worker-key", self.subject.ref))
+        self.assertEqual(self.observe("no-roster")["technical_verdict"], "NOT TESTED")
+        original_mapping = self.mapping.read_text()
+        roster = '\n[journal]\nrun_id="delete-42"\nexpected_producers=["worker"]\n'
+        self.mapping.write_text(original_mapping + roster)
+        original = self.observe("worker-still-present")
+        self.assertEqual(original["technical_verdict"], "FAIL")
+        self.assertCountEqual([row["status"] for row in original["checks"]], ["ABSENT", "PRESENT"])
+        self.assertTrue(all(len(row["collector_sha256"]) == 64 for row in original["checks"]))
+        self.assertEqual(replay(self.p / "worker-still-present"), original)
+        with closing(connect(self.store)) as db, db:
+            db.execute("DELETE FROM notes WHERE id=?", ("worker-key",))
+        self.assertEqual(self.follow("worker-still-present", "completed")["items"][0]["status"], "verified")
+        self.assertEqual(self.observe("now-absent")["technical_verdict"], "PASS")
+        self.mapping.write_text(original_mapping + roster.replace('["worker"]', '["api","worker"]'))
+        pending = self.observe("missing-producer")
+        self.assertEqual(pending["technical_verdict"], "NOT TESTED")
+        self.assertIn("journal-producer-coverage-incomplete", pending["gaps"])
+        self.assertEqual(self.follow("worker-still-present", "pending")["items"][0]["status"], "still open")
+
+    def test_collector_only_checks_keys_and_keeps_shared_or_provider_obligations_open(self):
+        from setrya.erasure.journal_merge import CollectedJournal, WorkerJournal
+
+        self.journal = self.p / "review.sqlite"
+        collector = CollectedJournal(self.journal, run_id="observed")
+        worker = WorkerJournal(self.p / "worker.sqlite", run_id="observed", producer="web")
+        for subject in (self.subject, self.control):
+            worker.record(subject, store="archive", key="shared", source="team", action="stored")
+            if subject == self.subject:
+                worker.record(subject, store="archive", key="sent", source="remote", action="sent")
+                worker.record(subject, store="archive", key="own", source="local", action="stored")
+            path = self.p / (subject.ref + ".json")
+            worker.seal(subject, path)
+            collector.ingest(path, producer="web")
+        with self.mapping.open("a") as stream:
+            stream.write('\n[journal]\nrun_id="observed"\nexpected_producers=["web"]\n')
+        result = self.observe("scope")
+        self.assertCountEqual([row["status"] for row in result["checks"]], ["UNKNOWN", "UNKNOWN", "ABSENT"])
+        self.assertEqual(result["technical_verdict"], "NOT TESTED")
+        self.assertIn("external-or-shared-key", result["gaps"])
+
     def test_independent_reads_replay_offline_and_public_entrypoints(self):
         before = [p.read_bytes() for p in (self.store, self.journal)]
         with redirect_stdout(StringIO()):

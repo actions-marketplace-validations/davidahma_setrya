@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from .sampling import draw_week, load_population, statistics
-from .stores import inventory, journal_rows, key_reader, sqlite_reader
+from .stores import IncompleteProducerCoverage, journal_rows, key_reader, observer_config, sqlite_reader
 from setrya.offboarding.inputs import require
 
 
@@ -15,12 +15,16 @@ def key_digest(subject_ref, store, key):
     return sha256(json.dumps([subject_ref, store, key], separators=(",", ":")).encode()).hexdigest()
 
 
-def check_request(row, journal, stores, *, identify_keys=False):
+def check_request(row, journal, stores, *, identify_keys=False, roster=None):
     findings, gaps = [], []
     try:
         with sqlite_reader(journal) as db:
-            copies = journal_rows(db, row["subject_ref"])
+            copies, collector = journal_rows(db, row["subject_ref"], roster)
             snapshot_at = datetime.now(UTC).isoformat()
+    except IncompleteProducerCoverage:
+        gaps.append("journal-producer-coverage-incomplete")
+        copies = None
+        snapshot_at = None
     except Exception:
         copies = None
         snapshot_at = None
@@ -60,6 +64,8 @@ def check_request(row, journal, stores, *, identify_keys=False):
                     location = {"store": label, "state": state}
                     if identify_keys:
                         location["key_sha256"] = key_digest(row["subject_ref"], store, key)
+                    if collector is not None:
+                        location["collector_sha256"] = collector
                     if event is not None:
                         location["journal_event"] = event
                     if version is not None:
@@ -75,7 +81,7 @@ def check_request(row, journal, stores, *, identify_keys=False):
 
 def observe(*, frame, config, journal, request=None, week=None, count=None, seed=None, output=None):
     rows, digest = load_population(frame)
-    stores = inventory(config)
+    stores, roster = observer_config(config)
     if output is not None:
         destination = Path(output).resolve()
         inputs = [Path(frame), Path(config), Path(journal), *(s["path"] for s in stores.values() if s["kind"] == "sqlite")]
@@ -88,7 +94,7 @@ def observe(*, frame, config, journal, request=None, week=None, count=None, seed
         selected = [rows[request]]
     else:
         selected, draw = draw_week(rows, week=week, count=count, seed=seed)
-    results = [check_request(row, journal, stores) for row in selected]
+    results = [check_request(row, journal, stores, roster=roster) for row in selected]
     report = {"format": "setrya.key-observation.v1", "population_sha256": digest, "requests": results}
     if draw is not None:
         report["sampling"] = {**draw, **statistics(draw["eligible"], results)}

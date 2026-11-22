@@ -13,6 +13,7 @@ from setrya.cli import main
 from setrya.coverage_drift import compare
 from setrya.erasure.hooks import CopyHooks
 from setrya.erasure.journal import CopyJournal
+from setrya.erasure.journal_merge import CollectedJournal, WorkerJournal
 from setrya.erasure.lineage import VersionLineage, VersionRef
 from setrya.erasure.subject import Subject
 from setrya.erasure.v3 import run_shared
@@ -107,8 +108,7 @@ class Drift(unittest.TestCase):
             report, code = compare([journal.path], inventory)
             self.assertEqual(code, 3)
             self.assertEqual({(r["kind"], r["name"]) for r in report["boundaries"] if not r["mapped"]},
-                             {("store", "traces"), ("trace", "traces"), ("namespace", "/".join(memory.ns)),
-                              })
+                             {("store", "traces"), ("trace", "traces"), ("namespace", "/".join(memory.ns))})
             content += (binding("notes", "namespace", "setrya/{subject}")
                         + binding("traces", "store", "traces") + binding("traces", "trace", "traces"))
             inventory.write_text(content)
@@ -137,3 +137,22 @@ class Drift(unittest.TestCase):
             db.close()
             with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
                 self.assertEqual(main(["coverage-drift", "--journal", str(root / "view.sqlite"), "--inventory", str(inv)]), 2)
+
+    def test_remote_trace_boundary_survives_packet_collection(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subject = Subject.derive(b"a" * 32, "tenant", "person", "private")
+            worker = WorkerJournal(root / "worker.sqlite", run_id="case-7", producer="retriever")
+            worker.record(subject, store="traces", key="span-1", source="request", action="stored",
+                          details={"boundary_kind": "trace", "boundary": "remote-sink"})
+            worker.seal(subject, root / "packet.json")
+            collector = CollectedJournal(root / "collected.sqlite", run_id="case-7")
+            collector.ingest(root / "packet.json", producer="retriever")
+            inv = root / "inventory.toml"
+            stores = "version=1\n" + system("traces", "trace-reader")
+            inv.write_text(stores)
+            report, code = compare([collector.path], inv)
+            self.assertEqual(code, 3)
+            self.assertEqual([r["name"] for r in report["boundaries"] if not r["mapped"]], ["remote-sink"])
+            inv.write_text(stores + binding("traces", "trace", "remote-sink"))
+            self.assertEqual(compare([collector.path], inv)[1], 0)

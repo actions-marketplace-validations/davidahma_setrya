@@ -5,6 +5,7 @@
 - Connect an existing application with journal-aware stack starters. Doctor names missing hooks, scoped store reads and scanner baselines. Run a declarative case directly with `setrya run case.yaml`.
 - Issue a read-only observed-deletion receipt for journalled keys. Recheck due follow-ups and replay the linked result. Generate text or Markdown for engineering, review and customer audiences, and associate evidence with customer-defined control references.
 - Check inventory drift against observed storage boundaries. Each of the four stack recipes has a standalone application example and CI.
+- Direct absence checks require a physical store with sufficient read visibility. Distributed journal checks bind the expected producers and keep the case open when a producer is missing.
 - Weekly SDK qualification now includes LangGraph and opens a tracking issue on a regression. Adapter and scanner request forms and the contributor conformance guide are available.
 
 ## 1.1.0

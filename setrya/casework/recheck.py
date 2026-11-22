@@ -11,7 +11,7 @@ from setrya.offboarding.inputs import InvalidReport, MAX_JSON_BYTES, publish_new
 from setrya.receipt_format import FORMAT_V3, MAX_BUNDLE_FILE_BYTES, RECEIPT
 from .observe import key_digest
 from .profiles import EVIDENCE, FOLLOWUP, OBSERVED, day, decode, fields, issue, new_bundle, sha, snapshot, stamp
-from .stores import inventory, journal_rows, key_reader, sqlite_reader
+from .stores import journal_rows, key_reader, observer_config, sqlite_reader
 
 PARENT = "parent"
 MAX_LINKS = 8
@@ -120,12 +120,12 @@ def observe_due(parent, checked_at, journal, inventory_file):
         return rows
     # All I/O destinations come from the operator's local inventory. The
     # previous receipt supplies an opaque target only; never a connection URL.
-    stores = inventory(inventory_file) if inventory_file is not None else {}
+    stores, roster = observer_config(inventory_file) if inventory_file is not None else ({}, None)
     copies = {}
     if journal is not None:
         try:
             with sqlite_reader(journal) as db:
-                observed = journal_rows(db, subject)
+                observed, collector = journal_rows(db, subject, roster)
             if len(observed) <= 512:
                 copies = {(store, key_digest(subject, store, key)): (key, sent or shared, event, version)
                           for store, key, event, version, sent, shared in observed}
@@ -144,7 +144,8 @@ def observe_due(parent, checked_at, journal, inventory_file):
                 key, _, event, version = known
                 rows[i]["target"] = {"store": store, "key_sha256": digest, "subject_ref": subject,
                                      **({"journal_event": event} if event is not None else {}),
-                                     **({"lineage_version": version} if version is not None else {})}
+                                     **({"lineage_version": version} if version is not None else {}),
+                                     **({"collector_sha256": collector} if collector is not None else {})}
                 reads.append((key, i))
         if not reads:
             continue
@@ -191,10 +192,11 @@ def derive_followup(e, folder):
         require(reason is None or direct is None and scan is None, "Unexpected reads for an inaccessible or deferred item.")
         target = read["target"]
         if reason is None:
-            fields(target, "store key_sha256 subject_ref", ("journal_event", "lineage_version"))
+            fields(target, "store key_sha256 subject_ref", ("journal_event", "lineage_version", "collector_sha256"))
             pointers = [target[k] for k in ("journal_event", "lineage_version") if k in target]
+            collector = sha(target["collector_sha256"]) if "collector_sha256" in target else None
             require(target["store"] == item["store"] and target["key_sha256"] == item_identity(item, subject)
-                    and target["subject_ref"] == subject and pointers and all(type(n) is int and n > 0 for n in pointers),
+                    and target["subject_ref"] == subject and (pointers or collector) and all(type(n) is int and n > 0 for n in pointers),
                     "Follow-up read target differs from the original obligation.")
         else:
             require(target is None, "Unexpected follow-up target.")

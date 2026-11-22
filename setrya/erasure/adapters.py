@@ -71,14 +71,29 @@ class _Direct:
         return self.find(subject)
 
 
-def _require_sqlite_base_table(db, name):
+def _require_sqlite_base_table(db, quoted_table):
     cursor = db.cursor()
     cursor.row_factory = None
     with closing(cursor):
         # PRAGMA cannot be shadowed by an application table of the same name.
-        rows = cursor.execute(f"PRAGMA main.table_list({_sql_name(name)})").fetchall()
+        rows = cursor.execute(f"PRAGMA main.table_list({quoted_table})").fetchall()
     if len(rows) != 1 or rows[0][0] != "main" or rows[0][2] != "table":
         raise InputError("direct SQLite observation requires a base table in main")
+
+
+@contextmanager
+def _sqlite_snapshot(db, tables, *, write=False):
+    if db.in_transaction:
+        raise InputError("use a SQLite connection with committed application writes")
+    db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+    try:
+        for table in tables:
+            _require_sqlite_base_table(db, table)
+        yield db
+        db.execute("COMMIT" if write else "ROLLBACK")
+    finally:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
 
 
 class SQLiteAdapter(_Direct):
@@ -86,33 +101,19 @@ class SQLiteAdapter(_Direct):
 
     def __init__(self, connection: sqlite3.Connection, table: str, *, key_column="id", subject_column="setrya_subject"):
         self.db = connection
-        self.table_name = table
         self.table = _sql_name(table)
         self.key = _sql_name(key_column)
         self.scope = _sql_name(subject_column)
 
-    @contextmanager
-    def _snapshot(self, *, write=False):
-        if self.db.in_transaction:
-            raise ValueError("give the SQLite adapter a connection with committed application writes")
-        self.db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
-        try:
-            _require_sqlite_base_table(self.db, self.table_name)
-            yield self.db
-            self.db.execute("COMMIT" if write else "ROLLBACK")
-        finally:
-            if self.db.in_transaction:
-                self.db.execute("ROLLBACK")
-
     def find(self, subject):
-        with self._snapshot() as db:
+        with _sqlite_snapshot(self.db, (self.table,)) as db:
             return _keys(db.execute(
                 f"SELECT s.{self.key} AS copy_key FROM main.{self.table} AS s WHERE s.{self.scope} COLLATE BINARY = ?",
                 (_ref(subject),),
             ))
 
     def delete(self, subject):
-        with self._snapshot(write=True) as db:
+        with _sqlite_snapshot(self.db, (self.table,), write=True) as db:
             db.execute(f"DELETE FROM main.{self.table} WHERE {self.table}.{self.scope} COLLATE BINARY = ?",
                        (_ref(subject),))
 
@@ -132,18 +133,23 @@ def _pg_connection(client):
             yield conn
 
 
-def _require_pg_base_table(conn, table):
-    # Lock the resolved relation until the transaction finishes. A view, a
-    # session-local table or a replica can hide persisted application rows.
-    conn.execute(f"SELECT 1 FROM ONLY {table} LIMIT 0")
-    row = conn.execute("""
-        SELECT NOT pg_catalog.pg_is_in_recovery() AND c.relkind = 'r'
-               AND c.relpersistence <> 't' AND NOT c.relrowsecurity AND NOT c.relispartition
-               AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits WHERE inhparent = c.oid OR inhrelid = c.oid) AS visible
-        FROM pg_catalog.pg_class c WHERE c.oid = pg_catalog.to_regclass(%s)
-    """, (table,)).fetchone()
+_PG_PHYSICAL_TABLE = """
+    SELECT NOT pg_catalog.pg_is_in_recovery() AND c.relkind = 'r'
+           AND c.relpersistence <> 't' AND NOT c.relrowsecurity AND NOT c.relispartition
+           AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits WHERE inhparent = c.oid OR inhrelid = c.oid) AS visible
+    FROM pg_catalog.pg_class c WHERE c.oid = pg_catalog.to_regclass(%s)
+"""
+
+
+def _check_pg_visibility(row):
     if row is None or (row["visible"] if isinstance(row, Mapping) else row[0]) is not True:
         raise InputError("direct observation requires an unfiltered PostgreSQL primary base table")
+
+
+def _require_pg_base_table(conn, table):
+    # The lock binds the catalog check and subsequent data reads to the same relation.
+    conn.execute(f"SELECT 1 FROM ONLY {table} LIMIT 0")
+    _check_pg_visibility(conn.execute(_PG_PHYSICAL_TABLE, (table,)).fetchone())
 
 
 class PgvectorAdapter(_Direct):
@@ -221,25 +227,25 @@ class LangGraphSQLiteCheckpointAdapter(_Direct):
         prefix = f"setrya:{_ref(subject)}:"
         tables = ("checkpoints", "writes")
         query = " UNION ".join(
-            f"SELECT thread_id AS copy_key FROM {table} WHERE substr(thread_id, 1, ?) = ? COLLATE BINARY" for table in tables
+            f"SELECT thread_id AS copy_key FROM main.{table} WHERE substr(thread_id, 1, ?) = ? COLLATE BINARY" for table in tables
         )
-        with self.saver.lock:
-            if self.saver.conn.in_transaction:
-                raise ValueError("commit application writes before an erasure drill")
-            return _keys(self.saver.conn.execute(query, (len(prefix), prefix) * len(tables)))
+        with self.saver.lock, _sqlite_snapshot(self.saver.conn, tables) as db:
+            return _keys(db.execute(query, (len(prefix), prefix) * len(tables)))
 
     def delete(self, subject):
         for thread in self.find(subject):
             self.saver.delete_thread(thread)
 
 
+_PG_CHECKPOINT_TABLES = ("checkpoints", "checkpoint_blobs", "checkpoint_writes")
+
+
 def _checkpoint_rows(subject):
     prefix = f"setrya:{_ref(subject)}:"
-    tables = ("checkpoints", "checkpoint_blobs", "checkpoint_writes")
     query = " UNION ".join(
-        f"SELECT thread_id AS copy_key FROM {table} WHERE starts_with(thread_id, %s)" for table in tables
+        f"SELECT thread_id AS copy_key FROM {table} WHERE starts_with(thread_id, %s)" for table in _PG_CHECKPOINT_TABLES
     )
-    return query, (prefix,) * len(tables)
+    return query, (prefix,) * len(_PG_CHECKPOINT_TABLES)
 
 
 class LangGraphPostgresCheckpointAdapter(_Direct):
@@ -253,6 +259,8 @@ class LangGraphPostgresCheckpointAdapter(_Direct):
 
     def find(self, subject):
         with self.saver.lock, _pg_connection(self.saver.conn) as conn:
+            for table in _PG_CHECKPOINT_TABLES:
+                _require_pg_base_table(conn, table)
             return _keys(conn.execute(*_checkpoint_rows(subject)))
 
     def delete(self, subject):
@@ -356,7 +364,10 @@ class LangGraphPostgresMemoryAdapter(_Direct):
     def _tables(self, conn):
         table, vectors = _memory_relations(conn.execute(_MEMORY_SCHEMA).fetchone())
         row = conn.execute("SELECT to_regclass(%s) IS NOT NULL AS present", (vectors,)).fetchone()
-        return _memory_tables(table, vectors, row, self.store.index_config)
+        tables = _memory_tables(table, vectors, row, self.store.index_config)
+        for relation in tables:
+            _require_pg_base_table(conn, relation)
+        return tables
 
     def find(self, subject):
         with _pg_connection(self.store.conn) as conn:

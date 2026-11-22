@@ -8,9 +8,9 @@ from .controls import validate_controls
 from .observe import check_request
 from .profiles import OBSERVED, day, fields, issue, new_bundle, sha, stamp
 from .sampling import load_population
-from .stores import inventory
+from .stores import observer_config
 
-GAPS = {"journal-unavailable", "key-limit", "unmapped-journal-store", "store-or-control-unavailable",
+GAPS = {"journal-unavailable", "journal-producer-coverage-incomplete", "key-limit", "unmapped-journal-store", "store-or-control-unavailable",
         "external-or-shared-key", "key-read-unavailable", "control-is-subject-key", "expected-store-missing-from-journal"}
 
 
@@ -19,10 +19,10 @@ class JournalObserver:
 
     def __init__(self, *, journal, inventory_file):
         self._journal = Path(journal)
-        self._stores = inventory(inventory_file)
+        self._stores, self._roster = observer_config(inventory_file)
 
     def _read(self, request):
-        return check_request(request, self._journal, self._stores, identify_keys=True)
+        return check_request(request, self._journal, self._stores, identify_keys=True, roster=self._roster)
 
     def find(self, request):
         """Read the direct and derived keys journalled for this completed request."""
@@ -67,11 +67,12 @@ def _readings(stage, request):
         require(completed <= stamp(stage["journal_read_at"]) <= checked, "Invalid journal observation time.")
     readings = {}
     for check in stage["checks"]:
-        fields(check, "store key_sha256 state", ("journal_event", "lineage_version"))
+        fields(check, "store key_sha256 state", ("journal_event", "lineage_version", "collector_sha256"))
         identifier(check["store"], "store")
         key = (check["store"], sha(check["key_sha256"]))
         refs = [check[k] for k in ("journal_event", "lineage_version") if k in check]
-        require(refs and all(type(n) is int and n > 0 for n in refs) and key not in readings
+        collected = sha(check["collector_sha256"]) if "collector_sha256" in check else None
+        require((refs or collected) and all(type(n) is int and n > 0 for n in refs) and key not in readings
                 and check["state"] in ("PRESENT", "ABSENT", "UNKNOWN"), "Invalid direct key evidence.")
         readings[key] = check
     states = {r["state"] for r in readings.values()}
@@ -81,7 +82,7 @@ def _readings(stage, request):
 
 
 def evidence_ids(row):
-    return {k: row[k] for k in ("journal_event", "lineage_version") if row and k in row}
+    return {k: row[k] for k in ("journal_event", "lineage_version", "collector_sha256") if row and k in row}
 
 
 def derive_observed(e):
