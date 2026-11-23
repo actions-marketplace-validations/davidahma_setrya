@@ -20,7 +20,7 @@ jobs:
           python-version: '3.13'
       - run: python -m pip install setrya==1.8.0
       - id: erasure
-        uses: davidahma/setrya@3814427d8bb5bbde28dd9a03e2b2861aee7cf96d # 1.8.0
+        uses: davidahma/setrya@13f3fe6531c7bbf587b721b31d5b0bba839bcc2c # 1.8.0
         with:
           starter: setrya-case/test_erasure.py
           mode: deletion
@@ -42,7 +42,7 @@ jobs:
     permissions:
       pull-requests: write
     steps:
-      - uses: davidahma/setrya@3814427d8bb5bbde28dd9a03e2b2861aee7cf96d # 1.8.0
+      - uses: davidahma/setrya@13f3fe6531c7bbf587b721b31d5b0bba839bcc2c # 1.8.0
         with:
           operation: comment
           token: ${{ github.token }}
