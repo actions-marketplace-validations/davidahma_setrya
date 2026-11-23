@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
-from setrya.casework import JournalObserver, observe_deletion
+from setrya.casework import JournalObserver, observe_deletion, stores
 from setrya.casework.recheck import recheck
 from setrya.cli import main
 from setrya.erasure import ExternalItem, run_shared
@@ -190,7 +190,9 @@ follow_up="2020-01-02"
         self.assertEqual(live["parent_sha256"], fingerprint)
         with closing(connect(self.store)) as db, db:
             db.execute("DELETE FROM notes WHERE id='other-id'")
-        guard = self.follow("original", "clear")
+        with patch.object(stores, "sqlite_reader", wraps=stores.sqlite_reader) as snapshot:
+            guard = self.follow("original", "clear")
+        snapshot.assert_called_once_with(self.store)
         self.assertEqual(guard["technical_verdict"], "PASS")
         self.assertEqual(guard["review_status"], "OPEN_ITEMS")
         self.assertEqual([i["status"] for i in guard["items"]], ["verified", "still open", "still open"])
@@ -225,6 +227,11 @@ follow_up="2020-01-02"
         self.assertEqual(after["original_verdict"], "FAIL")
         self.assertEqual(after["controls"], controls)
         with closing(connect(self.store)) as db, db:
+            db.execute("INSERT INTO notes VALUES(?,?)", ("exclusive-key", self.subject.ref))
+        positive = self.follow("observed", "direct-hit")
+        self.assertEqual(positive["items"][0]["reason"], "residual-found")
+        with closing(connect(self.store)) as db, db:
+            db.execute("DELETE FROM notes WHERE id='exclusive-key'")
             db.execute("UPDATE notes SET ref=? WHERE id='keep'", (self.control.ref,))
         after = self.follow("observed", "verified")
         self.assertEqual(after["items"][0]["status"], "verified")

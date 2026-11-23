@@ -199,7 +199,8 @@ def journal_rows(conn, subject_ref, roster=None):
 
 
 @contextmanager
-def key_reader(spec, *, scan=False):
+def store_readers(spec):
+    """Yield a direct reader and a subject-scan factory on one authorized snapshot."""
     if spec["kind"] == "sqlite":
         with sqlite_reader(spec["path"]) as db:
             deadline = time.monotonic() + 5
@@ -223,7 +224,7 @@ def key_reader(spec, *, scan=False):
             def exists(key):
                 return db.execute(query, (key,)).fetchone() is not None
             require(exists(spec["control_key"]), "The positive visibility control was missing.")
-            if scan:
+            def subject_lookup():
                 field = spec["subject_column"]
                 dtype = db.execute("SELECT UPPER(type) FROM pragma_table_info(?) WHERE name=?", (table, field)).fetchone()
                 require(dtype == ("TEXT",), "Use a TEXT subject column.")
@@ -234,10 +235,10 @@ def key_reader(spec, *, scan=False):
                 ctrl = db.execute(f'SELECT "{field}" FROM main."{table}" WHERE "{column}" COLLATE BINARY=?',
                                   (spec["control_key"],)).fetchone()
                 require(ctrl == (spec["control_subject_ref"],), "Missing retained subject scan control.")
-                yield lambda subject: db.execute(f'SELECT 1 FROM main."{table}" WHERE "{field}" COLLATE BINARY=? LIMIT 1',
-                                                 (subject,)).fetchone() is not None
-            else:
-                yield exists
+                subject_query = f'SELECT 1 FROM main."{table}" WHERE "{field}" COLLATE BINARY=? LIMIT 1'
+                return lambda subject: db.execute(subject_query, (subject,)).fetchone() is not None
+
+            yield exists, subject_lookup
         return
 
     import psycopg
@@ -274,7 +275,7 @@ def key_reader(spec, *, scan=False):
         def exists(key):
             return db.execute(query, (key,)).fetchone() is not None
         require(exists(spec["control_key"]), "The positive visibility control was missing.")
-        if scan:
+        def subject_lookup():
             field = sql.Identifier(spec["subject_column"])
             kind = db.execute("""
                 SELECT a.atttypid IN ('text'::regtype,'varchar'::regtype) FROM pg_attribute a
@@ -286,7 +287,13 @@ def key_reader(spec, *, scan=False):
             ctrl = db.execute(sql.SQL("SELECT {} FROM ONLY {} WHERE {} = %s").format(
                 field, table, sql.Identifier(spec["key_column"])), (spec["control_key"],)).fetchone()
             require(ctrl == (spec["control_subject_ref"],), "Missing retained subject scan control.")
-            query = sql.SQL('SELECT 1 FROM ONLY {} WHERE {} COLLATE "C" = %s LIMIT 1').format(table, field)
-            yield lambda subject: db.execute(query, (subject,)).fetchone() is not None
-        else:
-            yield exists
+            subject_query = sql.SQL('SELECT 1 FROM ONLY {} WHERE {} COLLATE "C" = %s LIMIT 1').format(table, field)
+            return lambda subject: db.execute(subject_query, (subject,)).fetchone() is not None
+
+        yield exists, subject_lookup
+
+
+@contextmanager
+def key_reader(spec, *, scan=False):
+    with store_readers(spec) as (direct, subject_lookup):
+        yield subject_lookup() if scan else direct

@@ -41,6 +41,14 @@ with TemporaryDirectory() as tmp:
     call(path, "replay", "branches/fixed")
     call(path, "recheck", "branches/fixed", "--output", "branch-follow-up", code=3)
     call(path, "receipt", "summary", "branch-follow-up", "--audience", "customer")
+    call(path, "demo", "northline")
+    call(path, "discovery", "init", "--example", "northline", "--output", "northline-inputs")
+    call(path, "discovery", "import", "--finding", "northline-inputs/finding.json", "--output", "finding.json")
+    approval = ("--finding", "finding.json", "--mapping", "northline-inputs/mapping.json")
+    call(path, "discovery", "replay", "northline/broken", *approval, code=1)
+    call(path, "discovery", "replay", "northline/guarded", *approval)
+    call(path, "replay", "northline/guarded", "--case-review", code=3)
+    call(path, "discovery", "export", "northline/guarded", *approval, "--output", "N-204.json")
     schema = files("setrya.erasure").joinpath("copy-event.v1.schema.json")
     skill = files("setrya").joinpath("resources/skills/setrya-erasure/SKILL.md")
     if json.loads(schema.read_text(encoding="utf-8"))["$id"] != "urn:setrya:copy-event:v1" or not skill.is_file():
@@ -62,4 +70,4 @@ with TemporaryDirectory() as tmp:
         receipt = json.loads((path / mode / "erasure-receipt.json").read_bytes())
         if len(receipt["case"]["callers"]) != 1 or receipt["case"]["artifacts"][0]["action"] != "delete":
             raise RuntimeError("The starter must exercise a single-caller delete-only case.")
-print("Installed workspace and branch demos, case review, starter, doctor, deletion, late writer and replay passed.")
+print("Installed workspace, branch and Northline demos, case review, starter, doctor, deletion, late writer and replay passed.")

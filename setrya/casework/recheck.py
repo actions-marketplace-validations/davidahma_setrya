@@ -11,7 +11,7 @@ from setrya.offboarding.inputs import InvalidReport, MAX_JSON_BYTES, publish_new
 from setrya.receipt_format import FORMAT_V3, MAX_BUNDLE_FILE_BYTES, RECEIPT
 from .observe import key_digest
 from .profiles import BRANCHES, CRYPTO, EVIDENCE, FOLLOWUP, PROFILES, VENDOR, day, decode, fields, issue, new_bundle, sha, snapshot, stamp
-from .stores import journal_rows, key_reader, observer_config, sqlite_reader
+from .stores import journal_rows, observer_config, sqlite_reader, store_readers
 
 PARENT = "parent"
 MAX_LINKS = 8
@@ -153,20 +153,15 @@ def observe_due(parent, checked_at, journal, inventory_file):
         if not reads:
             continue
         try:
-            with key_reader(spec) as lookup:
+            with store_readers(spec) as (lookup, subject_lookup):
                 for key, i in reads:
                     rows[i]["direct"] = lookup(key)
+                if "subject_column" in spec and spec["control_subject_ref"] != subject:
+                    scan = subject_lookup()(subject)
+                    for _, i in reads:
+                        rows[i]["scan"] = scan
         except Exception:
-            pass
-        scan = None
-        if "subject_column" in spec and spec["control_subject_ref"] != subject:
-            try:
-                with key_reader(spec, scan=True) as lookup:
-                    scan = lookup(subject)
-            except Exception:
-                pass
-        for _, i in reads:
-            rows[i]["scan"] = scan
+            pass  # Preserve any earlier positive evidence when a scan is unavailable.
     return rows
 
 

@@ -686,10 +686,10 @@ def human_issue(text):
     return text.replace(" at after erasure.", " after erasure.")
 
 
-def attribution_lines(receipt):
+def attribution_lines(receipt, *, prefix=""):
     return [
         f'{row["store"]}/{row["key"]} · turn {row["turn"]} · agent {row["agent"]} · initiator {row["initiator"]}. '
-        f'The journaled late write matches the residual revision ({EVIDENCE}#/journal/{row["journal_entry"]}).'
+        f'The journaled late write matches the residual revision ({prefix}{EVIDENCE}#/journal/{row["journal_entry"]}).'
         for row in receipt.get("write_attribution", ())
     ]
 

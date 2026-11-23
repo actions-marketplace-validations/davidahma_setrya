@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: python -m pip install '.[erasure,celery-langchain,crypto-aws,mcp]' anthropic
-      - run: python -m pytest -q tests/test_erasure*.py tests/test_shared_investigation.py tests/test_discovery*.py tests/test_branch_lineage.py tests/test_crypto_erasure.py
+      - run: python -m pytest -q tests/test_erasure*.py tests/test_shared_investigation.py tests/test_discovery*.py tests/test_branch_lineage.py tests/test_crypto_erasure.py tests/test_northline*.py
       - name: Test the public commands outside the checkout
         run: python -I scripts/verify-installed-v1.py
       - name: Run the workspace demo and create a delete-only starter
@@ -105,6 +105,30 @@ jobs:
           path: |
             ${{ runner.temp }}/discovery/
             !${{ runner.temp }}/discovery/example/**
+          if-no-files-found: error
+      - name: Exercise the installed Northline discovery demo
+        working-directory: ${{ runner.temp }}
+        run: |
+          setrya demo northline --output northline
+          failed=0
+          setrya replay northline/broken || failed=$?
+          test "$failed" -eq 1
+          setrya replay northline/guarded
+          review=0
+          setrya replay northline/guarded --case-review || review=$?
+          test "$review" -eq 3
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: checked-northline
+          path: |
+            ${{ runner.temp }}/northline/broken/case-input.json
+            ${{ runner.temp }}/northline/broken/case-result.json
+            ${{ runner.temp }}/northline/broken/erasure/erasure-evidence.json
+            ${{ runner.temp }}/northline/broken/erasure/erasure-receipt.json
+            ${{ runner.temp }}/northline/guarded/case-input.json
+            ${{ runner.temp }}/northline/guarded/case-result.json
+            ${{ runner.temp }}/northline/guarded/erasure/erasure-evidence.json
+            ${{ runner.temp }}/northline/guarded/erasure/erasure-receipt.json
           if-no-files-found: error
       - name: Replay the three frozen v0.16.0 receipts
         working-directory: ${{ runner.temp }}
@@ -255,6 +279,31 @@ jobs:
             ${{ runner.temp }}/discovery/
             !${{ runner.temp }}/discovery/example/**
           if-no-files-found: error
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: checked-northline
+          path: ${{ runner.temp }}/northline
+      - name: Sign the two Northline case results
+        run: |
+          for lane in broken guarded; do
+            d="$RUNNER_TEMP/northline/$lane"
+            python3 -m setrya discovery sign --receipt "$d/case-result.json" --bundle "$d/receipt.sigstore.json"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: signed-northline
+          path: |
+            ${{ runner.temp }}/northline/broken/case-input.json
+            ${{ runner.temp }}/northline/broken/case-result.json
+            ${{ runner.temp }}/northline/broken/erasure/erasure-evidence.json
+            ${{ runner.temp }}/northline/broken/erasure/erasure-receipt.json
+            ${{ runner.temp }}/northline/broken/receipt.sigstore.json
+            ${{ runner.temp }}/northline/guarded/case-input.json
+            ${{ runner.temp }}/northline/guarded/case-result.json
+            ${{ runner.temp }}/northline/guarded/erasure/erasure-evidence.json
+            ${{ runner.temp }}/northline/guarded/erasure/erasure-receipt.json
+            ${{ runner.temp }}/northline/guarded/receipt.sigstore.json
+          if-no-files-found: error
 
   signed-replay:
     needs: sign
@@ -306,6 +355,37 @@ jobs:
             python3 -m setrya discovery export "$d" --output "$RUNNER_TEMP/ticket-${spec%:*}.json"
             cmp "$d/case-result.json" "$RUNNER_TEMP/ticket-${spec%:*}.json"
           done
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: signed-northline
+          path: ${{ runner.temp }}/northline-review
+      - name: Verify and replay the downloaded Northline cases against the packaged finding
+        env:
+          TUF_ROOT: ${{ runner.temp }}/reviewer-trust
+          SIGNER: ${{ github.server_url }}/${{ github.workflow_ref }}
+        run: |
+          root="$TUF_ROOT/tuf-repo-cdn.sigstore.dev/targets/trusted_root.json"
+          approved="$RUNNER_TEMP/northline-approved"
+          python3 -m setrya discovery init --example northline --output "$approved"
+          binding=(--finding "$approved/finding.json" --mapping "$approved/mapping.json")
+          for spec in broken:1 guarded:0; do
+            lane="${spec%:*}"
+            result="$RUNNER_TEMP/northline-review/$lane"
+            python3 -m setrya discovery verify --receipt "$result/case-result.json" --bundle "$result/receipt.sigstore.json" \
+              --identity "$SIGNER" --issuer https://token.actions.githubusercontent.com --trusted-root "$root"
+            code=0
+            python3 -m setrya replay "$result" || code=$?
+            test "$code" -eq "${spec##*:}"
+            code=0
+            python3 -m setrya discovery replay "$result" "${binding[@]}" || code=$?
+            test "$code" -eq "${spec##*:}"
+            exported="$RUNNER_TEMP/northline-$lane.ticket.json"
+            python3 -m setrya discovery export "$result" "${binding[@]}" --output "$exported"
+            cmp "$result/case-result.json" "$exported"
+          done
+          review=0
+          python3 -m setrya discovery replay "$RUNNER_TEMP/northline-review/guarded" "${binding[@]}" --case-review || review=$?
+          test "$review" -eq 3
 
   graphiti:
     runs-on: ubuntu-24.04

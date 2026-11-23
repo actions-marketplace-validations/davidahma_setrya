@@ -1,0 +1,52 @@
+{
+  "version": "0",
+  "source": "aws.macie",
+  "detail-type": "Macie Finding",
+  "id": "91fdb329-e4ed-4bb8-91cd-e10e4447645d",
+  "account": "111122223333",
+  "region": "us-east-1",
+  "time": "2026-11-20T14:30:00Z",
+  "resources": [],
+  "detail": {
+    "schemaVersion": "1.0",
+    "id": "a8d43d77-7789-411c-aed7-ddbe7a258c6c",
+    "type": "SensitiveData:S3Object/CustomIdentifier",
+    "category": "CLASSIFICATION",
+    "accountId": "111122223333",
+    "partition": "aws",
+    "region": "us-east-1",
+    "createdAt": "2026-11-20T14:30:00Z",
+    "updatedAt": "2026-11-20T14:30:00Z",
+    "sample": true,
+    "archived": false,
+    "resourcesAffected": {
+      "s3Bucket": {
+        "arn": "arn:aws:s3:::setrya-northline-fixture",
+        "name": "setrya-northline-fixture"
+      },
+      "s3Object": {
+        "bucketArn": "arn:aws:s3:::setrya-northline-fixture",
+        "key": "security/findings/F-42.json",
+        "path": "setrya-northline-fixture/security/findings/F-42.json",
+        "versionId": "northline-finding-source-v1"
+      }
+    },
+    "classificationDetails": {
+      "result": {
+        "status": {
+          "code": "COMPLETE"
+        },
+        "customDataIdentifiers": {
+          "totalCount": 1,
+          "detections": [
+            {
+              "name": "fictional-finding-owner",
+              "arn": "arn:aws:macie2:us-east-1:111122223333:custom-data-identifier/bfca321c687a44eaabe284391c063b60",
+              "count": 1
+            }
+          ]
+        }
+      }
+    }
+  }
+}

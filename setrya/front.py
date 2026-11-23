@@ -21,7 +21,7 @@ def help_parser():
         ("run", "test erasure in a disposable application and save a receipt"),
         ("doctor", "check fixture wiring and observations before running a drill"),
         ("replay", "recompute the verdict from saved evidence"),
-        ("demo", "run the workspace, analyst, memory-files or branches example"),
+        ("demo", "run the workspace, analyst, memory-files, branches or Northline example"),
         ("journal", "verify journal integrity or import copy events from OTLP"),
         ("branches", "check live forks and disclosed restore windows"),
         ("conformance", "run a replayable vendor self-check"),
@@ -46,7 +46,7 @@ def _start(command, args):
     parser.add_argument("--scope", choices=("person", "tenant"), default="person", help="deletion scope (default: person)")
     parser.add_argument("--output", type=Path, help="fresh output directory")
     if is_demo:
-        parser.add_argument("example", choices=("workspace", "analyst", "memory-files", "branches"), nargs="?", help="person example (default: workspace)")
+        parser.add_argument("example", choices=("workspace", "analyst", "memory-files", "branches", "northline"), nargs="?", help="person example (default: workspace)")
         parser.add_argument("--mode", choices=("deletion", "late-write"), help="person drill mode (default: late-write)")
     else:
         from .erasure.case_starters import STACKS
@@ -60,6 +60,11 @@ def _start(command, args):
         print(f"Created {case}. Configure the disposable app and storage bindings.")
         print(join(["setrya", "doctor", "--case", str(case)]))
         return 0
+    if is_demo and opts.example == "northline":
+        if opts.scope != "person" or opts.mode not in (None, "late-write"):
+            raise InputError("Northline tests person erasure with a delayed refresh.")
+        from .discovery.northline import demo
+        return demo(opts.output or Path("northline"))
     if is_demo and opts.example == "branches":
         if opts.scope != "person" or opts.mode is not None:
             raise InputError("The branch demo supplies its own fork and restore schedule.")

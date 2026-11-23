@@ -17,6 +17,8 @@ setrya discovery demo --output trial
 
 All three runs use the same mapped source, environment, application revision, route, questions, callers, and list of required services. The lanes change the worker guard and which cache the fixture inspects. The second cache lives in a separate SQLite file. Reading the assistant’s cache cannot establish what the analyst’s handoff cache contains. During setup a synthetic classifier receives the seeded source through the same recording hook used with the Anthropic client. The journal records the call and source revision without the laptop text. A provider exhibit gives `provider-owner` a follow-up date. The classifier runs locally and the exhibit represents configuration in the fictional deployment.
 
+The [Northline fixture](northline.md) uses the same handoff to test selective erasure in a saved chart and rendered PDF on the base installation.
+
 ## Give the result back to the case owner
 
 Recompute the result against the finding and the mapping the case owner approved. Export writes the verified case result as JSON. Attach that file to the original case or have your case system ingest it. Keep the complete bundle for reviewers who need to replay the decision or follow its evidence links after the application shuts down.
