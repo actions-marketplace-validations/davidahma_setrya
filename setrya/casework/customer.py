@@ -107,8 +107,10 @@ def customer_text(receipt, *, case_id=None, failure_kinds=()):
                 label = "Backup restore window"
             elif "retain" in status or kind in ("retained", "backup") or "retention" in status:
                 label = "Record retention"
-            elif kind in ("configuration", "provider") or status == "configuration":
+            elif kind == "configuration" or status == "configuration":
                 label = "Provider configuration"
+            elif kind == "provider":
+                label = "Provider evidence unavailable"
             elif kind == "attested" or status == "attested":
                 label = "Owner attestation"
             else:

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.0
+
+- Run `setrya demo northline` to check a shared security finding, saved chart and rendered PDF after selective erasure. The fixture uses a held refresh worker and authenticated reads of the same investigation.
+- Run `setrya discovery init --example northline` to try the Macie handoff with separately pinned finding and application revisions. The signed release bundles replay the late-write failure and the guarded result with the unobserved provider open.
+
+- Recheck known keys and scan the subject within one read-only store snapshot before closing an obligation. Discovery summaries show whether the provider was observed and which recorded worker restored a copy.
+
 ## 1.5.0
 
 - Count scanner findings in customer and reviewer summaries and identify residuals and lost control data separately. Preserve file paths from dangling Git commits and detached trees when the objects survive.

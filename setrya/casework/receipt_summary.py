@@ -124,13 +124,23 @@ def _outcome(bundle, receipt, *, audience):
     if profile == "discovery":
         counts = Counter(row["status"] for row in receipt["services"])
         kinds = set()
-        if "erasure_receipt" in receipt:
+        lines = ["Recorded results: " + ", ".join(f"{n} {label}" for label, n in sorted(counts.items())) + "."]
+        if receipt.get("erasure_receipt"):
             from setrya.discovery.case import DRILL
             from setrya.receipt_format import RECEIPT
 
             linked = _linked(folder / DRILL, RECEIPT, receipt["erasure_receipt"]["sha256"])
             kinds, _ = _outcome(folder / DRILL, linked, audience=audience)
-        return kinds, ["Recorded results: " + ", ".join(f"{n} {label}" for label, n in sorted(counts.items())) + "."]
+            if audience != "customer":
+                lines.extend("- " + line for line in attribution_lines(linked, prefix=f"{DRILL}/"))
+        if audience != "customer":
+            for row in receipt["services"]:
+                if row["role"] == "provider" and "invocation" in row:
+                    invocation = row["invocation"]["status"].lower().replace("_", " ")
+                    retention = ("A configuration exhibit is recorded." if "exhibit" in row
+                                 else "Provider retention evidence is unavailable.")
+                    lines.append(f"- {row['id']} · Invocation {invocation}. {retention}")
+        return kinds, lines
     if receipt["scope"] == "tenant":
         counts = Counter(row["verdict"] for row in receipt["probes"])
         reasons = {reason for row in receipt["probes"] for reason in row["reasons"]}

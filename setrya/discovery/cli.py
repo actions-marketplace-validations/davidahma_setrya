@@ -79,6 +79,9 @@ def main(argv):
                               ("init", "write synthetic finding, mapping and a connected sample fixture")):
         sub = commands.add_parser(name, help=description)
         sub.add_argument("--output", required=True, type=Path, help="new directory")
+        if name == "init":
+            sub.add_argument("--example", choices=("investigation", "northline"), default="investigation",
+                             help="choose the packaged finding and fixture")
     normalize = commands.add_parser("import", help="normalize a Macie finding without connecting to AWS")
     normalize.add_argument("--finding", required=True, type=Path)
     normalize.add_argument("--output", required=True, type=Path)
@@ -98,11 +101,15 @@ def main(argv):
     signature.add_commands(commands, local_keys=True, aliases=True, scope=False)
     args = parser.parse_args(argv)
     try:
-        if args.action in ("demo", "init"):
-            from . import demo
-            if args.action == "demo":
-                return demo.run_demo(args.output)
-            demo.init_example(args.output)
+        if args.action == "demo":
+            from .demo import run_demo
+            return run_demo(args.output)
+        if args.action == "init":
+            if args.example == "northline":
+                from .northline import init_example
+            else:
+                from .demo import init_example
+            init_example(args.output)
             print(f"Created discovery example in {args.output}")
             return 0
         if args.action == "import":
