@@ -163,8 +163,9 @@ class PublicCLI(unittest.TestCase):
             main(["--help"])
         help_text = out.getvalue()
         self.assertIn(POSITIONING, help_text)
-        self.assertIn("{init,run,doctor,replay,demo,journal,branches,conformance,crypto-erasure,mcp,receipt,recheck,route-coverage,coverage-drift,observe,verify}", help_text)
+        self.assertIn("{init,run,doctor,replay,demo,journal,branches,conformance,crypto-erasure,mcp,receipt,recheck,discovery,route-coverage,coverage-drift,observe,verify}", help_text)
         self.assertIn("doctor", help_text)
+        self.assertIn("scan Python PDF writes", help_text)
         self.assertNotIn("qualify", help_text)
 
     def test_four_action_outputs_and_comment_allowlist(self):
