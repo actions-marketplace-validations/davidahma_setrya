@@ -1,0 +1,12 @@
+{
+  "format": "setrya.pdf-source-approvals.v1",
+  "binding_sha256": "d6c938c21e72ccf8cd719c2487a824b6f1d4844e659c83b1e7668b0ff989aa7f",
+  "sites": [
+    {
+      "candidate_id": "1994eb3dfafeabae914c1baac35a74d7207b26f21b04f935f4721ea5d4b55740",
+      "service_id": "archive-pdf",
+      "store": "archive-exports",
+      "key": "archive-f42.pdf"
+    }
+  ]
+}

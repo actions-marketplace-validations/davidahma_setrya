@@ -251,6 +251,11 @@ def store_readers(spec):
         db.execute("SET LOCAL search_path = pg_catalog")
         db.execute("SET LOCAL statement_timeout = '5s'")
         db.execute("SET LOCAL lock_timeout = '3s'")
+        table = sql.Identifier(spec["schema"], spec["table"])
+        key_column = sql.Identifier(spec["key_column"])
+        # Hold an ACCESS SHARE lock on the exact relation before classifying it.
+        # Selecting the key preserves support for a column-only SELECT grant.
+        db.execute(sql.SQL("SELECT {} FROM ONLY {} LIMIT 0").format(key_column, table))
         # pg_has_role rejects inherited owner rights; the catalog check excludes
         # views, partitions, RLS-filtered reads, composite keys and writable roles.
         eligible = db.execute("""
@@ -265,13 +270,12 @@ def store_readers(spec):
                                AND a.attnum=i.indkey[0] WHERE i.indrelid=c.oid AND i.indisprimary
                                AND i.indnkeyatts=1 AND a.attname=%s AND i.indisvalid
                                AND a.atttypid IN ('text'::regtype, 'varchar'::regtype, 'uuid'::regtype))
-              FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-              JOIN pg_roles r ON r.rolname=current_user
-             WHERE n.nspname=%s AND c.relname=%s
-        """, (spec["key_column"], spec["schema"], spec["table"])).fetchone()
+              FROM pg_class c JOIN pg_roles r ON r.rolname=current_user
+             WHERE c.oid = to_regclass(%s)
+        """, (spec["key_column"], table.as_string(db))).fetchone()
         require(eligible == (True,), "Require an unfiltered primary table and a dedicated read-only role.")
-        query = sql.SQL("SELECT 1 FROM ONLY {}.{} WHERE {} = %s LIMIT 1").format(
-            sql.Identifier(spec["schema"]), sql.Identifier(spec["table"]), sql.Identifier(spec["key_column"]))
+        db.execute("SET LOCAL row_security = off")
+        query = sql.SQL("SELECT 1 FROM ONLY {} WHERE {} = %s LIMIT 1").format(table, key_column)
         def exists(key):
             return db.execute(query, (key,)).fetchone() is not None
         require(exists(spec["control_key"]), "The positive visibility control was missing.")
@@ -283,9 +287,8 @@ def store_readers(spec):
                 WHERE n.nspname=%s AND c.relname=%s AND a.attname=%s AND NOT a.attisdropped
             """, (spec["schema"], spec["table"], spec["subject_column"])).fetchone()
             require(kind == (True,), "Use a text subject column.")
-            table = sql.Identifier(spec["schema"], spec["table"])
             ctrl = db.execute(sql.SQL("SELECT {} FROM ONLY {} WHERE {} = %s").format(
-                field, table, sql.Identifier(spec["key_column"])), (spec["control_key"],)).fetchone()
+                field, table, key_column), (spec["control_key"],)).fetchone()
             require(ctrl == (spec["control_subject_ref"],), "Missing retained subject scan control.")
             subject_query = sql.SQL('SELECT 1 FROM ONLY {} WHERE {} COLLATE "C" = %s LIMIT 1').format(table, field)
             return lambda subject: db.execute(subject_query, (subject,)).fetchone() is not None

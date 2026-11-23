@@ -1,0 +1,99 @@
+{
+  "format": "setrya.discovery.mapping",
+  "version": 1,
+  "catalog": "aws-macie",
+  "sample": true,
+  "finding_sha256": "5fc333f2c2283a54cbd6665d6655d53026b46764585a2fa181d077edbc5bc980",
+  "categories": [
+    "CUSTOM_IDENTIFIER"
+  ],
+  "asset_sha256": "357c58a520df4d7ec496cf0da35ca35eba8810de2c8b59cb5ebbae2a916a1473",
+  "finding_id": "a8d43d77-7789-411c-aed7-ddbe7a258c6c",
+  "finding_type": "SensitiveData:S3Object/CustomIdentifier",
+  "observed_at": "2026-11-20T14:30:00Z",
+  "case_id": "N-204",
+  "subject_ref": "559eee908aa8dc42c31df411ec000e0fd34027d7e1469b015987f6a24cd35173",
+  "classification": "restricted",
+  "environment": "northline-fixture",
+  "revision": "82a1f4e75a3c5e24e463544e8bd2751858891072",
+  "conversation": "case-F42",
+  "route": "/investigations/case-F42/ask",
+  "callers": [
+    "analyst-east",
+    "analyst-west"
+  ],
+  "questions": [
+    "5541b2efa479592b34893693b56233ec40a8969ff6c2a91a16d930d975930681",
+    "da14ed1a43768932bfc491788bbc78edc75ee36c15578d317389b672021bdd4e"
+  ],
+  "source": {
+    "store": "findings",
+    "key": "F-42",
+    "revision": "finding-v1",
+    "action": "rewrite"
+  },
+  "services": [
+    {
+      "id": "security-finding",
+      "role": "source",
+      "owner": "incident-team",
+      "store": "findings",
+      "key": "F-42",
+      "action": "rewrite"
+    },
+    {
+      "id": "retained-detection",
+      "role": "store",
+      "owner": "incident-team",
+      "store": "detections",
+      "key": "event-f42",
+      "action": "preserve"
+    },
+    {
+      "id": "saved-chart",
+      "role": "store",
+      "owner": "dashboard-team",
+      "store": "dashboard",
+      "key": "saved-chart-f42",
+      "action": "rewrite"
+    },
+    {
+      "id": "saved-conversation",
+      "role": "checkpoint",
+      "owner": "assistant-team",
+      "store": "saved-investigations",
+      "key": "case-F42",
+      "action": "rewrite"
+    },
+    {
+      "id": "pdf-export",
+      "role": "store",
+      "owner": "export-team",
+      "store": "pdf-exports",
+      "key": "dashboard-f42.pdf",
+      "action": "rewrite"
+    },
+    {
+      "id": "model-invocation",
+      "role": "provider",
+      "owner": "provider-owner",
+      "store": "model-provider",
+      "key": "synthetic-invocation",
+      "action": "external"
+    },
+    {
+      "id": "investigation-api",
+      "role": "endpoint",
+      "owner": "assistant-team",
+      "route": "/investigations/case-F42/ask"
+    },
+    {
+      "id": "archive-pdf",
+      "role": "store",
+      "owner": "export-team",
+      "store": "archive-exports",
+      "key": "archive-f42.pdf",
+      "action": "rewrite"
+    }
+  ]
+}

@@ -14,6 +14,10 @@ Setrya checks the files, request binding, and internal consistency. Someone who 
 
 Run destructive adapters against disposable test subjects. Only propagate subject headers, trace baggage and LangGraph configuration across trusted application boundaries. A tenant-keyed subject reference is linkable pseudonymous data. Store keys, labels, caller aliases, model names and source IDs must be safe to share before publishing a receipt. The observer, its inventory, and its credentials define the scope of a verified result. The default judge capture stores digests. Excerpt capture records matched text and can disclose the fact under test to anyone who receives the receipt bundle. [Evidence and signature verification](docs/receipt-format.md)
 
+## Source coverage review
+
+`setrya discovery source-scan` parses source files without importing them. Run the released scanner on PR code and generate the comparison baseline from a trusted base revision. Protect mapping and approval changes with review. The reports contain source filenames, literal destinations and mapped keys. Check those values before uploading reports from a private repository. Only supply a trusted fixture to `setrya discovery run`. [Source coverage and CI setup](docs/source-coverage.md)
+
 ## Python dependency checks
 
 Core Setrya has no runtime dependencies. CI audits the resolved packages used by the PostgreSQL, Redis, LangChain, Celery and pytest integration job, including its Python packaging tools. The OpenDesk image audit separately checks the native executable and service images on amd64 and arm64. [Integration workflow](.github/workflows/ci.yml) · [Image audit](.github/workflows/offboarding-trial-images.yml)

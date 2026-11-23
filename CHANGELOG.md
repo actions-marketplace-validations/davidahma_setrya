@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.0
+
+- Run `setrya discovery source-scan` to locate supported PDF writes in Python without running the application. Static relative destinations are recorded when known, and dynamic destinations are marked unresolved.
+- Run `setrya discovery source-check` against a trusted baseline to flag new writes without a reviewed store and key. Optional replay links each approved site to the runtime baseline and deletion observations from the matching case.
+- Run `setrya demo northline-source` to see an archive PDF move from a source coverage gap to a reproducible late-write failure. The guarded case passes with a provider follow-up open.
+- Keep the read-only PostgreSQL observer’s eligibility check and reads on the same locked relation.
+
 ## 1.6.0
 
 - Run `setrya demo northline` to check a shared security finding, saved chart and rendered PDF after selective erasure. The fixture uses a held refresh worker and authenticated reads of the same investigation.
