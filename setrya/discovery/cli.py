@@ -80,8 +80,17 @@ def main(argv):
         sub = commands.add_parser(name, help=description)
         sub.add_argument("--output", required=True, type=Path, help="new directory")
         if name == "init":
-            sub.add_argument("--example", choices=("investigation", "northline"), default="investigation",
+            sub.add_argument("--example", choices=("investigation", "northline", "northline-source"), default="investigation",
                              help="choose the packaged finding and fixture")
+    scan = commands.add_parser("source-scan", help="find possible Python PDF writes without running application code")
+    check = commands.add_parser("source-check", help="check candidate PDF writes against approved discovery services")
+    for command in (scan, check):
+        command.add_argument("source", type=Path, help="directory of Python source to scan")
+        command.add_argument("--output", type=Path, help="write a new JSON report")
+    _binding_options(check, True)
+    check.add_argument("--approvals", type=Path, help="reviewed candidate-to-service approvals")
+    check.add_argument("--baseline", type=Path, help="source-check report from a trusted earlier revision")
+    check.add_argument("--receipt", type=Path, help="optional replayable discovery receipt directory")
     normalize = commands.add_parser("import", help="normalize a Macie finding without connecting to AWS")
     normalize.add_argument("--finding", required=True, type=Path)
     normalize.add_argument("--output", required=True, type=Path)
@@ -104,8 +113,21 @@ def main(argv):
         if args.action == "demo":
             from .demo import run_demo
             return run_demo(args.output)
+        if args.action in ("source-scan", "source-check"):
+            from .source_coverage import assess, load_document, scan, summarize
+            result = (scan(args.source) if args.action == "source-scan" else
+                      assess(args.source, _binding(args),
+                             approvals=load_document(args.approvals, "source approvals"),
+                             baseline=load_document(args.baseline, "baseline source review"),
+                             bundle=args.receipt))
+            if args.output:
+                publish_new(result, args.output)
+            print(summarize(result))
+            return 3 if result.get("review_required") else 0
         if args.action == "init":
-            if args.example == "northline":
+            if args.example == "northline-source":
+                from .northline_source import init_example
+            elif args.example == "northline":
                 from .northline import init_example
             else:
                 from .demo import init_example

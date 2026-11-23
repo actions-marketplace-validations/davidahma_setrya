@@ -130,6 +130,40 @@ jobs:
             ${{ runner.temp }}/northline/guarded/erasure/erasure-evidence.json
             ${{ runner.temp }}/northline/guarded/erasure/erasure-receipt.json
           if-no-files-found: error
+      - name: Find the unmapped PDF and exercise both Northline source verdicts
+        working-directory: ${{ runner.temp }}
+        run: |
+          setrya demo northline-source --output northline-source
+          example=northline-source/example
+          gap=0
+          setrya discovery source-check "$example/source" --finding "$example/finding.json" \
+            --mapping "$example/unmapped.json" --baseline northline-source/baseline.json || gap=$?
+          test "$gap" -eq 3
+          for spec in broken:1 guarded:0; do
+            code=0
+            setrya replay "northline-source/${spec%:*}" || code=$?
+            test "$code" -eq "${spec##*:}"
+          done
+          review=0
+          setrya replay northline-source/guarded --case-review || review=$?
+          test "$review" -eq 3
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: checked-northline-source
+          path: |
+            ${{ runner.temp }}/northline-source/baseline.json
+            ${{ runner.temp }}/northline-source/unmapped.json
+            ${{ runner.temp }}/northline-source/broken-source.json
+            ${{ runner.temp }}/northline-source/guarded-source.json
+            ${{ runner.temp }}/northline-source/broken/case-input.json
+            ${{ runner.temp }}/northline-source/broken/case-result.json
+            ${{ runner.temp }}/northline-source/broken/erasure/erasure-evidence.json
+            ${{ runner.temp }}/northline-source/broken/erasure/erasure-receipt.json
+            ${{ runner.temp }}/northline-source/guarded/case-input.json
+            ${{ runner.temp }}/northline-source/guarded/case-result.json
+            ${{ runner.temp }}/northline-source/guarded/erasure/erasure-evidence.json
+            ${{ runner.temp }}/northline-source/guarded/erasure/erasure-receipt.json
+          if-no-files-found: error
       - name: Replay the three frozen v0.16.0 receipts
         working-directory: ${{ runner.temp }}
         run: |
@@ -304,6 +338,35 @@ jobs:
             ${{ runner.temp }}/northline/guarded/erasure/erasure-receipt.json
             ${{ runner.temp }}/northline/guarded/receipt.sigstore.json
           if-no-files-found: error
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: checked-northline-source
+          path: ${{ runner.temp }}/northline-source
+      - name: Sign the two Northline source case results
+        run: |
+          for lane in broken guarded; do
+            d="$RUNNER_TEMP/northline-source/$lane"
+            python3 -m setrya discovery sign --receipt "$d/case-result.json" --bundle "$d/receipt.sigstore.json"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: signed-northline-source
+          path: |
+            ${{ runner.temp }}/northline-source/baseline.json
+            ${{ runner.temp }}/northline-source/unmapped.json
+            ${{ runner.temp }}/northline-source/broken-source.json
+            ${{ runner.temp }}/northline-source/guarded-source.json
+            ${{ runner.temp }}/northline-source/broken/case-input.json
+            ${{ runner.temp }}/northline-source/broken/case-result.json
+            ${{ runner.temp }}/northline-source/broken/erasure/erasure-evidence.json
+            ${{ runner.temp }}/northline-source/broken/erasure/erasure-receipt.json
+            ${{ runner.temp }}/northline-source/broken/receipt.sigstore.json
+            ${{ runner.temp }}/northline-source/guarded/case-input.json
+            ${{ runner.temp }}/northline-source/guarded/case-result.json
+            ${{ runner.temp }}/northline-source/guarded/erasure/erasure-evidence.json
+            ${{ runner.temp }}/northline-source/guarded/erasure/erasure-receipt.json
+            ${{ runner.temp }}/northline-source/guarded/receipt.sigstore.json
+          if-no-files-found: error
 
   signed-replay:
     needs: sign
@@ -313,6 +376,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.11'
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: signed-erasure
@@ -385,6 +451,50 @@ jobs:
           done
           review=0
           python3 -m setrya discovery replay "$RUNNER_TEMP/northline-review/guarded" "${binding[@]}" --case-review || review=$?
+          test "$review" -eq 3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: signed-northline-source
+          path: ${{ runner.temp }}/northline-source-review
+      - name: Verify the downloaded case signatures and reconstruct their source review
+        env:
+          TUF_ROOT: ${{ runner.temp }}/reviewer-trust
+          SIGNER: ${{ github.server_url }}/${{ github.workflow_ref }}
+        run: |
+          root="$TUF_ROOT/tuf-repo-cdn.sigstore.dev/targets/trusted_root.json"
+          archive="$RUNNER_TEMP/northline-source-review"
+          sample="$RUNNER_TEMP/northline-source-sample"
+          python3 -m setrya discovery init --example northline-source --output "$sample"
+          unapproved=(--finding "$sample/finding.json" --mapping "$sample/unmapped.json")
+          approved=(--finding "$sample/finding.json" --mapping "$sample/mapping.json")
+          baseline="$RUNNER_TEMP/northline-source-baseline.json"
+          base=0
+          python3 -m setrya discovery source-check "$sample/base" "${unapproved[@]}" --output "$baseline" || base=$?
+          test "$base" -eq 0 || test "$base" -eq 3
+          cmp "$archive/baseline.json" "$baseline"
+          gap=0
+          python3 -m setrya discovery source-check "$sample/source" "${unapproved[@]}" --baseline "$baseline" \
+            --output "$RUNNER_TEMP/northline-source-unmapped.json" || gap=$?
+          test "$gap" -eq 3
+          cmp "$archive/unmapped.json" "$RUNNER_TEMP/northline-source-unmapped.json"
+          for spec in broken:1 guarded:0; do
+            lane="${spec%:*}"
+            result="$archive/$lane"
+            output="$RUNNER_TEMP/northline-source-$lane.json"
+            python3 -m setrya discovery verify --receipt "$result/case-result.json" --bundle "$result/receipt.sigstore.json" \
+              --identity "$SIGNER" --issuer https://token.actions.githubusercontent.com --trusted-root "$root"
+            code=0
+            python3 -m setrya replay "$result" || code=$?
+            test "$code" -eq "${spec##*:}"
+            code=0
+            python3 -m setrya discovery replay "$result" "${approved[@]}" || code=$?
+            test "$code" -eq "${spec##*:}"
+            python3 -m setrya discovery source-check "$sample/source" "${approved[@]}" --baseline "$baseline" \
+              --approvals "$sample/source-approvals.json" --receipt "$result" --output "$output"
+            cmp "$archive/$lane-source.json" "$output"
+          done
+          review=0
+          python3 -m setrya discovery replay "$archive/guarded" "${approved[@]}" --case-review || review=$?
           test "$review" -eq 3
 
   graphiti:

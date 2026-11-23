@@ -18,11 +18,14 @@ def _git_id(kind, data):
     return sha1(f"{kind} {len(data)}\0".encode("ascii") + data, usedforsecurity=False)
 
 
-def fixture_revision():
+def fixture_revision(*, source_export=False):
     """Identify a reproducible Git commit of the packaged synthetic application."""
     folder = files("setrya.examples")
     entries = []
-    for name in ("northline_app.py", "northline_pdf.py"):
+    names = ["northline_app.py", "northline_pdf.py"]
+    if source_export:
+        names.append("northline_export_app.py")
+    for name in sorted(names):
         blob = _git_id("blob", folder.joinpath(name).read_bytes()).digest()
         entries.append(b"100644 " + name.encode("ascii") + b"\0" + blob)
     tree = _git_id("tree", b"".join(entries)).hexdigest()
