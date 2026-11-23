@@ -136,6 +136,8 @@ print(receipt["technical_verdict"])
 
 `JournalObserver(journal=..., inventory_file=...)` also exposes `find(request)` and `verify_absent(request)` for one validated request row from the frame above. Each operation takes a new read-only snapshot. The operator controls the local store mapping. SQLite uses a read-only URI and query-only transactions. PostgreSQL requires a dedicated role with read privileges on the mapped table, rejects roles with write privileges there, and uses a read-only transaction on the primary. The API accepts the built-in read-only mappings and never invokes an application’s seeding, deletion, worker or synthetic-caller hooks.
 
+For a handoff to an independent reviewer, sign the original evidence with `setrya receipt pack`. Give the receiver the exchange and provision signer trust and the original ticket pins separately. [PostgreSQL walkthrough](receipt-handoff.md) · [Draft v1 exchange](receipt-exchange.md)
+
 ## Recheck a due obligation
 
 `setrya recheck` reads the original v3 receipt and verifies its evidence. For an elapsed UTC follow-up date, it looks up the exact store and key in the subject’s current journal. For directly inspectable retained or attested copies, it reads the physical key and scans the mapped subject-reference column for any remaining row. An unrelated retained row anchors the scan. Configure that row, its actual tenant-bound reference, and optional ownership fields inside the relevant store section of `observer.toml`.

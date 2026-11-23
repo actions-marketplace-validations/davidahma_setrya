@@ -72,6 +72,11 @@ with TemporaryDirectory() as tmp:
     skill = files("setrya").joinpath("resources/skills/setrya-erasure/SKILL.md")
     if json.loads(schema.read_text(encoding="utf-8"))["$id"] != "urn:setrya:copy-event:v1" or not skill.is_file():
         raise RuntimeError("The installed copy-event schema or erasure skill is missing.")
+    schema = files("setrya.casework").joinpath("receipt-exchange-v1.schema.json")
+    if json.loads(schema.read_text(encoding="utf-8"))["$id"] != "urn:setrya:deletion-receipt-exchange:v1":
+        raise RuntimeError("The draft receipt exchange schema is missing.")
+    for action in ("pack", "verify-exchange"):
+        call(path, "receipt", action, "--help")
     call(path, "init")
     # A consumer's fixture commonly lives in tests/ or setrya-case/ and imports
     # an application package in the root of a checkout that is not pip-installed.
