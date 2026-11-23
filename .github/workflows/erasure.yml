@@ -228,8 +228,74 @@ jobs:
           evidence-summary: ${{ needs.drill.outputs.evidence }}
           artifact-id: ${{ needs.drill.outputs.artifact }}
 
+  receipt-handoff:
+    name: PostgreSQL deletion receipt exchange
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg17-bookworm@sha256:b513c48566e4777cd3370451400000c78eda6a08131d68f4c31d4a76f27bd8fd
+        env:
+          POSTGRES_DB: setrya_fixture
+          POSTGRES_USER: setrya
+          POSTGRES_PASSWORD: setrya-local
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U setrya -d setrya_fixture"
+          --health-interval 2s --health-timeout 2s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.11'
+      - run: python -m pip install '.[pgvector]' jsonschema
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+      - name: Test the receipt contract and observe completed tickets with a read-only PostgreSQL role
+        working-directory: ${{ runner.temp }}
+        env:
+          SETRYA_PGVECTOR_DSN: postgresql://setrya:setrya-local@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/setrya_fixture
+        run: |
+          python -I -m unittest discover -s "$GITHUB_WORKSPACE/tests" -p 'test_receipt*.py'
+          python -I -m setrya.examples.receipt_postgres --output receipt-originals
+      - name: Exercise the installed pack and offline review commands with a disposable signer
+        working-directory: ${{ runner.temp }}
+        env:
+          COSIGN_PASSWORD: ""
+        run: |
+          cosign generate-key-pair --output-key-prefix exchange-key
+          mkdir exchange-check
+          for spec in passed:0 residual:1 unavailable:3; do
+            lane="${spec%:*}"
+            source="receipt-originals/$lane"
+            ticket=$(jq -er --arg lane "$lane" '.[$lane].ticket_id' receipt-originals/ticket-pins.json)
+            frame=$(jq -er --arg lane "$lane" '.[$lane].frame_sha256' receipt-originals/ticket-pins.json)
+            setrya receipt pack "$source" --output "exchange-check/$lane" \
+              --system synthetic-support --system-version 1 --key exchange-key.key
+            code=0
+            setrya receipt verify-exchange "exchange-check/$lane" --key exchange-key.pub \
+              --expect-ticket "$ticket" --expect-frame "$frame" || code=$?
+            test "$code" -eq "${spec##*:}"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: checked-receipt-exchange
+          path: |
+            ${{ runner.temp }}/receipt-originals/ticket-pins.json
+            ${{ runner.temp }}/receipt-originals/passed/erasure-receipt.json
+            ${{ runner.temp }}/receipt-originals/passed/observation-evidence.json
+            ${{ runner.temp }}/receipt-originals/residual/erasure-receipt.json
+            ${{ runner.temp }}/receipt-originals/residual/observation-evidence.json
+            ${{ runner.temp }}/receipt-originals/unavailable/erasure-receipt.json
+            ${{ runner.temp }}/receipt-originals/unavailable/observation-evidence.json
+          if-no-files-found: error
+
   sign:
-    needs: drill
+    needs: [drill, receipt-handoff]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 8
@@ -368,6 +434,44 @@ jobs:
             ${{ runner.temp }}/northline-source/guarded/receipt.sigstore.json
           if-no-files-found: error
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: checked-receipt-exchange
+          path: ${{ runner.temp }}/receipt-originals
+      - name: Sign the four draft receipt exchanges
+        run: |
+          out="$RUNNER_TEMP/receipt-exchange"
+          mkdir "$out"
+          for lane in passed residual unavailable; do
+            python3 -m setrya receipt pack "$RUNNER_TEMP/receipt-originals/$lane" --output "$out/$lane" \
+              --system synthetic-support --system-version 1
+          done
+          python3 -m setrya receipt pack "$RUNNER_TEMP/workspace/guarded" \
+            --output "$out/open-items" --system synthetic-support --system-version 1 --synthetic
+          cp "$RUNNER_TEMP/receipt-originals/ticket-pins.json" "$out/"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: signed-receipt-exchange
+          path: |
+            ${{ runner.temp }}/receipt-exchange/ticket-pins.json
+            ${{ runner.temp }}/receipt-exchange/passed/exchange.json
+            ${{ runner.temp }}/receipt-exchange/passed/exchange.sig
+            ${{ runner.temp }}/receipt-exchange/passed/erasure-receipt.json
+            ${{ runner.temp }}/receipt-exchange/passed/observation-evidence.json
+            ${{ runner.temp }}/receipt-exchange/residual/exchange.json
+            ${{ runner.temp }}/receipt-exchange/residual/exchange.sig
+            ${{ runner.temp }}/receipt-exchange/residual/erasure-receipt.json
+            ${{ runner.temp }}/receipt-exchange/residual/observation-evidence.json
+            ${{ runner.temp }}/receipt-exchange/unavailable/exchange.json
+            ${{ runner.temp }}/receipt-exchange/unavailable/exchange.sig
+            ${{ runner.temp }}/receipt-exchange/unavailable/erasure-receipt.json
+            ${{ runner.temp }}/receipt-exchange/unavailable/observation-evidence.json
+            ${{ runner.temp }}/receipt-exchange/open-items/exchange.json
+            ${{ runner.temp }}/receipt-exchange/open-items/exchange.sig
+            ${{ runner.temp }}/receipt-exchange/open-items/erasure-receipt.json
+            ${{ runner.temp }}/receipt-exchange/open-items/erasure-evidence.json
+          if-no-files-found: error
+
   signed-replay:
     needs: sign
     runs-on: ubuntu-24.04
@@ -495,6 +599,43 @@ jobs:
           done
           review=0
           python3 -m setrya discovery replay "$archive/guarded" "${approved[@]}" --case-review || review=$?
+          test "$review" -eq 3
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: checked-receipt-exchange
+          path: ${{ runner.temp }}/original-tickets
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: signed-receipt-exchange
+          path: ${{ runner.temp }}/exchange-review
+      - name: Verify the downloaded exchanges in a network-isolated reviewer process
+        env:
+          TUF_ROOT: ${{ runner.temp }}/reviewer-trust
+          SIGNER: ${{ github.server_url }}/${{ github.workflow_ref }}
+        run: |
+          archive="$RUNNER_TEMP/exchange-review"
+          pins="$RUNNER_TEMP/original-tickets/ticket-pins.json"
+          cmp "$pins" "$archive/ticket-pins.json"
+          root="$TUF_ROOT/tuf-repo-cdn.sigstore.dev/targets/trusted_root.json"
+          trust=(--identity "$SIGNER" --issuer https://token.actions.githubusercontent.com --trusted-root "$root")
+          offline=(sudo -n -- /usr/bin/unshare --net /usr/bin/setpriv --reuid "$(id -u)" \
+            --regid "$(id -g)" --clear-groups --no-new-privs /usr/bin/env "PATH=$PATH" \
+            "TUF_ROOT=$RUNNER_TEMP/exchange-offline-trust" "$(command -v python3)" \
+            -m setrya receipt verify-exchange)
+          for spec in passed:0 residual:1 unavailable:3 open-items:0; do
+            lane="${spec%:*}"
+            pins_args=()
+            if [[ "$lane" != open-items ]]; then
+              pins_args=(--expect-ticket "$(jq -er --arg lane "$lane" '.[$lane].ticket_id' "$pins")" \
+                --expect-frame "$(jq -er --arg lane "$lane" '.[$lane].frame_sha256' "$pins")")
+            fi
+            code=0
+            "${offline[@]}" "$archive/$lane" "${trust[@]}" "${pins_args[@]}" || code=$?
+            test "$code" -eq "${spec##*:}"
+          done
+          review=0
+          "${offline[@]}" "$archive/open-items" "${trust[@]}" --case-review || review=$?
           test "$review" -eq 3
 
   graphiti:

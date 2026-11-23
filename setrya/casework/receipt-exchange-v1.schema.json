@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:setrya:deletion-receipt-exchange:v1",
+  "title": "Setrya Deletion Receipt v1 draft exchange manifest",
+  "description": "A signed index of unmodified v3 evidence and its replayed result. Schema validation does not authenticate the issuer or replay the evidence.",
+  "type": "object",
+  "required": [
+    "format",
+    "status",
+    "evidence_kind",
+    "system",
+    "scope",
+    "signature_type",
+    "observation",
+    "ticket",
+    "surfaces",
+    "technical_verdict",
+    "review_status",
+    "open_items",
+    "files"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "format": { "const": "setrya.deletion-receipt-exchange.v1" },
+    "status": { "const": "draft" },
+    "evidence_kind": { "enum": ["read-only-observation", "synthetic-drill"] },
+    "system": {
+      "description": "System labels supplied by the issuer.",
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "$ref": "#/$defs/systemLabel" },
+        "version": { "$ref": "#/$defs/systemLabel" }
+      }
+    },
+    "scope": { "const": "person" },
+    "signature_type": { "enum": ["cosign-detached", "sigstore-bundle"] },
+    "observation": {
+      "type": "object",
+      "required": ["last_checked_at"],
+      "additionalProperties": false,
+      "properties": {
+        "first_checked_at": { "type": "string", "format": "date-time" },
+        "last_checked_at": { "type": "string", "format": "date-time" },
+        "drill_duration_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "ticket": {
+      "type": ["object", "null"],
+      "required": ["id", "frame_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,95}(?![\\s\\S])" },
+        "frame_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "surfaces": {
+      "type": "object",
+      "required": ["stores", "routes"],
+      "additionalProperties": false,
+      "properties": {
+        "stores": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 640,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/opaqueIdentifier" }
+        },
+        "routes": {
+          "type": "array",
+          "maxItems": 1,
+          "items": {
+            "type": "string",
+            "maxLength": 1024,
+            "pattern": "^(?:/|/?[A-Za-z0-9][A-Za-z0-9_./:@+-]*)(?![\\s\\S])"
+          }
+        }
+      }
+    },
+    "technical_verdict": { "enum": ["PASS", "FAIL", "NOT TESTED", "ERROR"] },
+    "review_status": { "enum": ["READY_FOR_REVIEW", "RESIDUAL_FOUND", "OPEN_ITEMS"] },
+    "open_items": {
+      "type": "array",
+      "maxItems": 1088,
+      "items": {
+        "type": "object",
+        "required": ["kind", "surface", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": { "enum": ["configuration", "attested", "retained", "verification", "coverage"] },
+          "surface": { "$ref": "#/$defs/opaqueIdentifier" },
+          "owner": { "$ref": "#/$defs/opaqueIdentifier" },
+          "follow_up": { "type": "string", "format": "date" },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[!-~]+(?![\\s\\S])"
+          }
+        }
+      }
+    },
+    "files": {
+      "type": "object",
+      "required": ["erasure-receipt.json"],
+      "additionalProperties": false,
+      "properties": {
+        "erasure-receipt.json": { "$ref": "#/$defs/sha256" },
+        "observation-evidence.json": { "$ref": "#/$defs/sha256" },
+        "erasure-evidence.json": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  },
+  "if": { "properties": { "evidence_kind": { "const": "read-only-observation" } } },
+  "then": {
+    "properties": {
+      "observation": {
+        "required": ["first_checked_at"],
+        "not": { "required": ["drill_duration_ms"] }
+      },
+      "ticket": { "type": "object" },
+      "surfaces": {
+        "properties": {
+          "stores": {
+            "maxItems": 64,
+            "items": { "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}(?![\\s\\S])" }
+          },
+          "routes": { "maxItems": 0 }
+        }
+      },
+      "files": {
+        "required": ["observation-evidence.json"],
+        "not": { "required": ["erasure-evidence.json"] }
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "observation": {
+        "required": ["drill_duration_ms"],
+        "not": { "required": ["first_checked_at"] }
+      },
+      "ticket": { "type": "null" },
+      "surfaces": { "properties": { "routes": { "minItems": 1 } } },
+      "open_items": { "maxItems": 640 },
+      "files": {
+        "required": ["erasure-evidence.json"],
+        "not": { "required": ["observation-evidence.json"] }
+      }
+    }
+  },
+  "$defs": {
+    "systemLabel": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+:-]{0,95}(?![\\s\\S])"
+    },
+    "opaqueIdentifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_./:@+-]{0,1023}(?![\\s\\S])"
+    },
+    "sha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

@@ -3,8 +3,9 @@ import argparse
 import json
 from pathlib import Path
 
-from .observe import observe
 from setrya.offboarding.inputs import publish_new
+
+from .observe import observe
 
 
 def command(argv):
@@ -19,7 +20,40 @@ def command(argv):
         render.add_argument("--audience", choices=("engineer", "reviewer", "customer"), default="reviewer")
         render.add_argument("--format", choices=("text", "md", "markdown"), default="text", dest="output_format")
         render.add_argument("--case-id", help="opaque reference for the customer copy")
+        pack = commands.add_parser("pack", help="sign an original v3 person receipt in a draft v1 exchange")
+        pack.add_argument("bundle", type=Path)
+        pack.add_argument("--output", type=Path, required=True, help="new exchange directory")
+        pack.add_argument("--system", required=True, help="system label supplied by the issuer")
+        pack.add_argument("--system-version", required=True, help="version label supplied by the issuer")
+        pack.add_argument("--synthetic", action="store_true", help="confirm that a person drill used synthetic data")
+        pack.add_argument("--key", type=Path, help="local Cosign private key (default: keyless Sigstore signing)")
+
+        verify = commands.add_parser("verify-exchange", help="authenticate and replay a draft v1 exchange offline")
+        verify.add_argument("bundle", type=Path)
+        verify.add_argument("--key", type=Path, help="independently trusted Cosign public key")
+        verify.add_argument("--identity", help="exact trusted Sigstore certificate identity")
+        verify.add_argument("--issuer", help="exact trusted Sigstore OIDC issuer")
+        verify.add_argument("--trusted-root", type=Path, help="independently provisioned Sigstore root JSON")
+        verify.add_argument("--expect-ticket", help="expected completed ticket ID from the originating case")
+        verify.add_argument("--expect-frame", help="expected SHA-256 of the completed request export")
+        verify.add_argument("--case-review", action="store_true", help="treat outstanding obligations as exit 3")
+
         args = parser.parse_args(tail)
+        if args.action == "pack":
+            from . import exchange
+            exchange.pack(args.bundle, output=args.output, system=args.system, version=args.system_version,
+                          key=args.key, synthetic=args.synthetic)
+            print(f"Signed draft receipt exchange in {args.output}")
+            return 0
+        if args.action == "verify-exchange":
+            from setrya.receipts import exit_code
+
+            from . import exchange
+            result = exchange.verify(args.bundle, key=args.key, identity=args.identity, issuer=args.issuer,
+                                     trusted_root=args.trusted_root, expect_ticket=args.expect_ticket,
+                                     expect_frame=args.expect_frame)
+            print(exchange.summary(result))
+            return exit_code(result, case_review=args.case_review)
         print(receipt_summary(args.bundle, audience=args.audience, output_format=args.output_format, case_id=args.case_id))
         return 0
 
@@ -38,9 +72,10 @@ def command(argv):
         sub.add_argument("--output", type=Path, help="save a new local JSON report (default: stdout)")
     args = parser.parse_args(tail)
     if getattr(args, "receipt", None) is not None:
+        from setrya.control_references import read_controls
         from setrya.offboarding.inputs import require
         from setrya.receipts import report
-        from setrya.control_references import read_controls
+
         from .observed import observe_deletion
         require(args.output is None, "Choose --receipt or --output.")
         receipt = observe_deletion(frame=args.population, request=args.id, inventory_file=args.inventory,

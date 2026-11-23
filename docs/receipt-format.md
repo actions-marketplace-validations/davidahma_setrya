@@ -16,6 +16,8 @@ code = exit_code(receipt, case_review=True)
 
 Replay establishes what the captured reads and exhibits support. Authenticate those bytes with `setrya verify --receipt FILE --bundle SIGNATURE --key independently-trusted.pub` for a local Cosign signature, or supply a trusted Sigstore root, exact identity and issuer for a keyless bundle. A signed receipt still depends on the app's observer and the scope it tested.
 
+The draft exchange wraps an original person receipt so another team can authenticate the issuer and replay the evidence offline. It supports synthetic drills and observed-deletion receipts. [Draft v1 exchange](receipt-exchange.md)
+
 ## Historical v1 tenant receipts
 
 A receipt records the evidence for one previously issued deletion request. The [JSON Schema](../setrya/offboarding/receipt-v1.schema.json) defines the wire format. Setrya and Axiom v0.3.2 use the same version. The field names, types, status values and meanings are frozen. A future incompatible format will have a different version and its own schema. Setrya will continue to accept v1 in `verify-receipt`.

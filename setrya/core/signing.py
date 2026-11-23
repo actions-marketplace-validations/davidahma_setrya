@@ -1,13 +1,13 @@
 """Sign exact receipt bytes and check the signer against a caller-supplied policy."""
 
 import os
-from pathlib import Path
-from tempfile import TemporaryDirectory
 import subprocess
 import sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from .inputs import MAX_JSON_BYTES, InvalidReport, read_regular_bytes, require
 from .receipt_format import MAX_BUNDLE_FILE_BYTES
-from .inputs import InvalidReport, read_regular_bytes
 
 MAX_SIGSTORE_BYTES = 32 * 1024 * 1024
 
@@ -30,57 +30,75 @@ def add_commands(commands, *, local_keys=False, aliases=False, scope=True):
             command.add_argument("--trusted-root", required=not local_keys, type=Path, help="independently provisioned Sigstore root JSON")
 
 
+def _cosign(command):
+    try:
+        subprocess.run(command, check=True)
+    except FileNotFoundError:
+        raise InvalidReport("Install Cosign 3 to sign or verify receipt signatures.") from None
+    except subprocess.CalledProcessError:
+        raise InvalidReport("Check the receipt, bundle, trust root and Cosign result.") from None
+
+
+def sign_bytes(raw, output, *, key=None):
+    """Publish a signature for a caller-owned snapshot of the exact signed bytes."""
+    require(not os.path.lexists(output), "Choose a new output path for the signature bundle.")
+    if key is not None:
+        require(key.is_file(), "Expected a local Cosign key file.")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=output.parent) as folder:
+        snapshot = Path(folder, "receipt.json").resolve()
+        snapshot.write_bytes(raw)
+        bundle = snapshot.with_name("sigstore.json")
+        if key is not None:
+            # Cosign 3 uses a detached signature for the existing --key contract.
+            _cosign(["cosign", "sign-blob", "--yes", "--key", str(key.resolve()), "--tlog-upload=false",
+                     "--use-signing-config=false", "--new-bundle-format=false",
+                     "--output-signature", str(bundle), str(snapshot)])
+        else:
+            _cosign(["cosign", "sign-blob", "--yes", "--bundle", str(bundle), str(snapshot)])
+        os.link(bundle, output)
+
+
+def verify_bytes(raw, signature, *, key=None, identity=None, issuer=None, trusted_root=None):
+    """Verify exact snapshots with independently supplied signer trust."""
+    require(not key or not any((identity, issuer, trusted_root)), "Choose one signer policy.")
+    require(key or (identity and issuer and trusted_root), "Both an exact signer identity and issuer are required.")
+    with TemporaryDirectory() as folder:
+        snapshot = Path(folder, "receipt.json")
+        snapshot.write_bytes(raw)
+        bundle = snapshot.with_name("sigstore.json")
+        bundle.write_bytes(signature)
+        if key:
+            public_key = snapshot.with_name("public.key")
+            public_key.write_bytes(read_regular_bytes(key, "trusted verification key"))
+            command = ["cosign", "verify-blob", "--key", str(public_key), "--insecure-ignore-tlog",
+                       "--signature", str(bundle), str(snapshot)]
+        else:
+            root = snapshot.with_name("trusted-root.json")
+            root.write_bytes(trusted_root)
+            command = ["cosign", "verify-blob", "--bundle", str(bundle), "--trusted-root", str(root),
+                       "--certificate-identity", identity, "--certificate-oidc-issuer", issuer, str(snapshot)]
+        _cosign(command)
+
+
 def run(args, *, validate, receipt_limit=MAX_BUNDLE_FILE_BYTES, signature_limit=MAX_SIGSTORE_BYTES):
     signing = args.offboarding_action == "sign-receipt"
     try:
         raw = read_regular_bytes(args.receipt, "receipt", receipt_limit)
         validate(raw)
         key = getattr(args, "key", None)
-        if key and not signing and any((args.identity, args.issuer, args.trusted_root)):
-            raise InvalidReport("Choose one signer policy.")
         if signing:
-            if os.path.lexists(args.bundle):
-                raise InvalidReport("Choose a new output path for the signature bundle.")
-            args.bundle.parent.mkdir(parents=True, exist_ok=True)
-        elif not key and not (args.identity and args.issuer and args.trusted_root):
-            raise InvalidReport("Both an exact signer identity and issuer are required.")
-        with TemporaryDirectory(dir=args.bundle.parent if signing else None) as folder:
-            # Sign and verify the same bytes inspected above, even if the original is replaced.
-            snapshot = Path(folder, "receipt.json").resolve()
-            snapshot.write_bytes(raw)
-            bundle = Path(folder, "sigstore.json").resolve()
-            if key:
-                if not key.resolve().is_file():
-                    raise InvalidReport("Expected a local Cosign key file.")
-                if signing:
-                    # Cosign 3 defaults to the keyless bundle format. The
-                    # existing --key contract publishes a detached signature.
-                    command = ["cosign", "sign-blob", "--yes", "--key", str(key.resolve()), "--tlog-upload=false",
-                               "--use-signing-config=false", "--new-bundle-format=false",
-                               "--output-signature", str(bundle), str(snapshot)]
-                else:
-                    bundle.write_bytes(read_regular_bytes(args.bundle, "detached signature"))
-                    command = ["cosign", "verify-blob", "--key", str(key.resolve()), "--insecure-ignore-tlog",
-                               "--signature", str(bundle), str(snapshot)]
-            elif signing:
-                command = ["cosign", "sign-blob", "--yes", "--bundle", str(bundle), str(snapshot)]
-            else:
-                root = Path(folder, "trusted-root.json").resolve()
-                bundle.write_bytes(read_regular_bytes(args.bundle, "signature bundle", signature_limit))
-                root.write_bytes(read_regular_bytes(args.trusted_root, "trusted root", signature_limit))
-                command = ["cosign", "verify-blob", "--bundle", str(bundle),
-                           "--trusted-root", str(root),
-                           "--certificate-identity", args.identity, "--certificate-oidc-issuer", args.issuer,
-                           str(snapshot)]
-            try:
-                subprocess.run(command, check=True)
-            except FileNotFoundError:
-                raise InvalidReport("Install Cosign 3 to sign or verify receipt signatures.") from None
-            if signing:
-                os.link(bundle, args.bundle)
+            sign_bytes(raw, args.bundle, key=key)
+        else:
+            require(not key or not any((args.identity, args.issuer, args.trusted_root)), "Choose one signer policy.")
+            require(key or (args.identity and args.issuer and args.trusted_root),
+                    "Both an exact signer identity and issuer are required.")
+            signature = read_regular_bytes(args.bundle, "signature bundle", signature_limit if not key else MAX_JSON_BYTES)
+            root = read_regular_bytes(args.trusted_root, "trusted root", signature_limit) if args.trusted_root else None
+            verify_bytes(raw, signature, key=key, identity=args.identity, issuer=args.issuer, trusted_root=root)
         print("Receipt signature bundle saved." if signing else "Receipt signature and signer verified.")
         return 0
-    except (ValueError, OSError, RecursionError, subprocess.CalledProcessError) as error:
+    except (ValueError, OSError, RecursionError) as error:
         message = str(error) if isinstance(error, InvalidReport) else "Check the receipt, bundle, trust root and Cosign result."
         print(f"Signature operation failed. {message}", file=sys.stderr)
         return 2

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.8.0
+
+- Pack a v3 person receipt and its original evidence into a signed draft v1 exchange with `setrya receipt pack`. A reviewer can authenticate the issuer, pin the completed ticket and replay the evidence offline with `setrya receipt verify-exchange`.
+- Run the completed-ticket handoff against disposable PostgreSQL. The fixture captures journalled note and summary keys with a dedicated read-only observer. The release includes signed results for verified absence, a residual summary, a missing visibility control and a synthetic provider follow-up. The exchange checks that the second journal snapshot follows the first completed observation.
+
 ## 1.7.0
 
 - Run `setrya discovery source-scan` to locate supported PDF writes in Python without running the application. Static relative destinations are recorded when known, and dynamic destinations are marked unresolved.

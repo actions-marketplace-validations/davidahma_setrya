@@ -27,7 +27,7 @@ def help_parser():
         ("conformance", "run a replayable vendor self-check"),
         ("crypto-erasure", "observe AWS KMS key destruction using read-only credentials"),
         ("mcp", "serve local erasure tools over MCP stdio"),
-        ("receipt", "summarize a replayed receipt for an engineer, reviewer or customer"),
+        ("receipt", "summarize, pack or verify a deletion receipt"),
         ("recheck", "recheck due follow-up items using read-only evidence"),
         ("discovery", "import findings, scan Python PDF writes, and check reviewed mappings"),
         ("route-coverage", "match changed routes and jobs to candidate evidence"),

@@ -56,6 +56,36 @@ follow_up="2020-01-02"
     def follow(self, source, name, **kwargs):
         return recheck(self.p/source, output=self.p/name, journal=self.journal, inventory_file=self.mapping, **kwargs)
 
+    def test_exchange_requires_sequential_observer_snapshots(self):
+        from setrya.casework import exchange
+        from setrya.casework.profiles import EVIDENCE, OBSERVED, issue
+
+        self.observe("chronology")
+        original_evidence = json.loads((self.p / "chronology" / EVIDENCE).read_bytes())
+        original_evidence["find"]["journal_read_at"] = "2020-01-01T00:00:01Z"
+        original_evidence["find"]["checked_at"] = "2020-01-01T00:00:02Z"
+        for lane, timestamp in (
+            ("sequential", original_evidence["find"]["checked_at"]),
+            ("overlap", original_evidence["find"]["journal_read_at"]),
+        ):
+            with self.subTest(lane=lane):
+                evidence = {**original_evidence, "verify_absent": {
+                    **original_evidence["verify_absent"], "journal_read_at": timestamp,
+                }}
+                folder, output = self.p / lane, self.p / f"{lane}-exchange"
+                folder.mkdir()
+                original = issue(OBSERVED, evidence, folder)
+                self.assertEqual(replay(folder), original)
+                options = {"output": output, "system": "test-app", "version": "1"}
+                if lane == "overlap":
+                    with self.assertRaisesRegex(InvalidReport, "second journal snapshot"):
+                        exchange.pack(folder, **options)
+                    self.assertFalse(output.exists())
+                else:
+                    with patch.object(exchange.signing, "sign_bytes", side_effect=lambda raw, path, **_: path.touch()):
+                        manifest = exchange.pack(folder, **options)
+                    self.assertEqual(manifest["technical_verdict"], "PASS")
+
     def test_collector_and_local_events_share_one_observation_and_recheck(self):
         from setrya.erasure.journal_merge import CollectedJournal, WorkerJournal
 
