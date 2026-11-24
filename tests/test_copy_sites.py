@@ -1,21 +1,20 @@
 """Exercise the fixture-free copy scan and its advisory PR boundary."""
 
 import contextlib
+import json
+import os
+import subprocess
+import unittest
 from hashlib import sha256
 from importlib.util import module_from_spec, spec_from_file_location
 from io import StringIO
-import json
-import os
 from pathlib import Path
-import subprocess
 from tempfile import TemporaryDirectory
 from textwrap import dedent
-import unittest
 from unittest.mock import patch
 
 from setrya.cli import main
 from setrya.discovery import copy_sites
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = spec_from_file_location("setrya_copy_action", ROOT / "scripts/action.py")

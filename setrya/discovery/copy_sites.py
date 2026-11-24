@@ -1,22 +1,37 @@
 """Find possible customer-data copy sites without importing application code."""
 
 import ast
+import json
+import re
 from dataclasses import asdict, dataclass
 from hashlib import sha256
-import json
 from pathlib import Path
-import re
 
-from setrya.core.inputs import InvalidReport, keys_match, read_regular_bytes, require, unique_fields
+from setrya.core.inputs import (
+    InvalidReport,
+    keys_match,
+    read_regular_bytes,
+    require,
+    unique_fields,
+)
 from setrya.core.provenance import verify_pins
 from setrya.git_refs import git_bytes, resolve_commit
 from setrya.receipt_format import MAX_BUNDLE_FILE_BYTES, RECEIPT
 from setrya.route_coverage import _blob, _path
 
 from .source_scan import (
-    MAX_SOURCE_CANDIDATE_BYTES, MAX_SOURCE_CANDIDATES, _MAX_FILE_BYTES, _MAX_FILES,
-    _MAX_PATH, _MAX_TOTAL_BYTES, _SKIP_DIRECTORIES, _Scanner, _argument,
-    _expression, _parse_tree, _scan_python,
+    _MAX_FILE_BYTES,
+    _MAX_FILES,
+    _MAX_PATH,
+    _MAX_TOTAL_BYTES,
+    _SKIP_DIRECTORIES,
+    MAX_SOURCE_CANDIDATE_BYTES,
+    MAX_SOURCE_CANDIDATES,
+    _argument,
+    _expression,
+    _parse_tree,
+    _scan_python,
+    _Scanner,
 )
 
 SCAN_FORMAT = "setrya.copy-scan.v1"
