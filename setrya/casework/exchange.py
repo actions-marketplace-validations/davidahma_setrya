@@ -76,14 +76,15 @@ def _utc(value):
     return stamp(value).astimezone(UTC).isoformat()
 
 
-def _project(source, system, signature_type):
+def _project(source, system, signature_type, *, expected_provenance=None, expected_app_commit=None):
     raw, evidence_name, evidence = source
     # Replay the same bytes that are hashed into the manifest and copied to the bundle.
     with TemporaryDirectory() as path:
         folder = Path(path)
         (folder / RECEIPT).write_bytes(raw)
         (folder / evidence_name).write_bytes(evidence)
-        receipt = replay_bytes(folder, raw)
+        receipt = replay_bytes(folder, raw, expected_provenance=expected_provenance,
+                               expected_app_commit=expected_app_commit)
 
     ticket = None
     observation = {"last_checked_at": _utc(receipt["observed_at"])}
@@ -129,7 +130,8 @@ def pack(directory, *, output, system, version, key=None, synthetic=False):
     return manifest
 
 
-def verify(directory, *, key=None, identity=None, issuer=None, trusted_root=None, expect_ticket=None, expect_frame=None):
+def verify(directory, *, key=None, identity=None, issuer=None, trusted_root=None, expect_ticket=None, expect_frame=None,
+           expected_provenance=None, expected_app_commit=None):
     """Authenticate and independently replay one exchange with caller-owned trust."""
     folder = Path(directory)
     require(folder.is_dir() and not folder.is_symlink(), "Supply an exchange bundle directory.")
@@ -153,7 +155,8 @@ def verify(directory, *, key=None, identity=None, issuer=None, trusted_root=None
     require({path.name for path in islice(folder.iterdir(), len(expected_files) + 1)} == expected_files,
             "Expected exactly the manifest, signature, original receipt and original evidence.")
     require(manifest["files"] == _file_digests(source), "Exchange file digests differ from the signed manifest.")
-    result = _project(source, system, signature_type)
+    result = _project(source, system, signature_type, expected_provenance=expected_provenance,
+                      expected_app_commit=expected_app_commit)
     require(json.dumps(manifest, sort_keys=True) == json.dumps(result, sort_keys=True),
             "Exchange claims differ from the original evidence.")
     if expect_ticket is not None or expect_frame is not None:

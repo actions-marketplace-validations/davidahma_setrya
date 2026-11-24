@@ -2,11 +2,13 @@ name: Setrya erasure drill
 description: Catch deleted data resurfacing in AI answers after a background job finishes. Get a PR verdict and replayable receipt.
 inputs:
   operation:
-    description: Run a fixture, run a vendor conformance self-check, or post an erasure result (run, conformance, or comment).
+    description: Run or comment on an erasure drill, inspect changed copy sites or comment on them, or run conformance.
     default: run
   starter:
     description: Trusted test fixture in the checked-out application.
     default: setrya-case/test_erasure.py
+  test-files:
+    description: Additional trusted test files to fingerprint, one path per line.
   mode:
     description: deletion or late-write.
     default: deletion
@@ -28,18 +30,36 @@ inputs:
     description: Bounded observation codes from the run job.
   artifact-id:
     description: Optional receipt artifact ID from the upload step.
+  base:
+    description: Full base commit SHA for copy-scan.
+  candidate:
+    description: Full candidate commit SHA for copy-scan.
+  copy-repo:
+    description: Local Git checkout directory for copy-scan.
+    default: '.'
+  copy-map:
+    description: Committed copy mapping path relative to the repository.
+    default: setrya-copy-coverage.json
+  copy-output:
+    description: New JSON report path for copy-scan.
+    default: setrya-copy-report.json
+  copy-summary:
+    description: For copy-comment only, bounded review signals from the copy-scan job.
   token:
     description: For comment only, a token with pull-requests write permission.
 outputs:
   exit-code:
     description: 0 PASS, 1 FAIL, 2 ERROR, or 3 NOT TESTED.
-    value: ${{ steps.drill.outputs.exit-code }}
+    value: ${{ steps.drill.outputs.exit-code || steps.copy.outputs.exit-code }}
   review-status:
     description: Case review status, or UNAVAILABLE if no receipt was produced.
     value: ${{ steps.drill.outputs.review-status }}
   evidence-summary:
     description: Sanitised failure, gap and review signals.
     value: ${{ steps.drill.outputs.evidence-summary }}
+  copy-summary:
+    description: Bounded copy-site review signals.
+    value: ${{ steps.copy.outputs.copy-summary }}
 runs:
   using: composite
   steps:
@@ -49,12 +69,23 @@ runs:
       env:
         SETRYA_OPERATION: ${{ inputs.operation }}
         SETRYA_STARTER: ${{ inputs.starter }}
+        SETRYA_TEST_FILES: ${{ inputs.test-files }}
         SETRYA_MODE: ${{ inputs.mode }}
         SETRYA_OUTPUT: ${{ inputs.output }}
         SETRYA_CONFORMANCE_TARGET: ${{ inputs.conformance-target }}
         SETRYA_CONFORMANCE_KEY: ${{ inputs.conformance-key }}
         SETRYA_CONFORMANCE_KEYLESS: ${{ inputs.conformance-keyless }}
       run: python -I "$GITHUB_ACTION_PATH/scripts/action.py" "$SETRYA_OPERATION"
+    - id: copy
+      if: inputs.operation == 'copy-scan'
+      shell: bash
+      env:
+        SETRYA_COPY_BASE: ${{ inputs.base }}
+        SETRYA_COPY_CANDIDATE: ${{ inputs.candidate }}
+        SETRYA_COPY_REPO: ${{ inputs.copy-repo }}
+        SETRYA_COPY_MAP: ${{ inputs.copy-map }}
+        SETRYA_COPY_OUTPUT: ${{ inputs.copy-output }}
+      run: python -I "$GITHUB_ACTION_PATH/scripts/action.py" copy-scan
     - if: inputs.operation == 'comment'
       shell: bash
       env:
@@ -64,6 +95,13 @@ runs:
         SETRYA_CODE: ${{ inputs.exit-code }}
         SETRYA_REVIEW: ${{ inputs.review-status }}
       run: python -I "$GITHUB_ACTION_PATH/scripts/action.py" comment
-    - if: inputs.operation != 'run' && inputs.operation != 'conformance' && inputs.operation != 'comment'
+    - if: inputs.operation == 'copy-comment'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        SETRYA_COPY_SUMMARY: ${{ inputs.copy-summary }}
+        SETRYA_ARTIFACT: ${{ inputs.artifact-id }}
+      run: python -I "$GITHUB_ACTION_PATH/scripts/action.py" copy-comment
+    - if: inputs.operation != 'run' && inputs.operation != 'conformance' && inputs.operation != 'comment' && inputs.operation != 'copy-scan' && inputs.operation != 'copy-comment'
       shell: bash
       run: exit 2

@@ -28,6 +28,7 @@ async def exercise(port, output):
     from setrya.erasure import Subject
     from setrya.erasure.asyncio import arun_shared
     from setrya.erasure.v3 import Answer, Artifact, SharedCase, Stored
+    from setrya.provenance import capture
     from graphiti_core.errors import NodeNotFoundError
     from graphiti_core import Graphiti
     from graphiti_core.cross_encoder.client import CrossEncoderClient
@@ -53,8 +54,8 @@ async def exercise(port, output):
 
     installed = distribution("graphiti-core")
     release = installed.version
-    provenance = json.loads(installed.read_text("direct_url.json") or "{}")
-    sha = provenance.get("vcs_info", {}).get("commit_id")
+    distribution_origin = json.loads(installed.read_text("direct_url.json") or "{}")
+    sha = distribution_origin.get("vcs_info", {}).get("commit_id")
     if release not in VERSIONS or sha != VERSIONS[release]:
         raise ValueError("install the pinned Graphiti Git revision before recording evidence")
     graph = Graphiti(f"bolt://127.0.0.1:{port}", "neo4j", "", llm_client=Summarizer(None),
@@ -133,12 +134,15 @@ async def exercise(port, output):
                           (Artifact("episodes", episodes[0].uuid, "delete"),
                            Artifact("episodes", episodes[1].uuid, "preserve"), Artifact("nodes", node.uuid, "rewrite")),
                           require_lineage=True)
+        fixture = Path(__file__)
+        producer = capture(fixture, (fixture.with_name("run.sh"),))
         before = await observe()
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=endpoint), base_url="http://trial.local") as client:
             receipt = await arun_shared(subject, case=case, application=Adopter(), output=output,
-                                        mode="deletion", run_id=f"graphiti-{sha}-{node.uuid}")
+                                        mode="deletion", run_id=f"graphiti-{sha}-{node.uuid}", provenance=producer)
         return {"graphiti_version": release, "source_revision": sha, "before": before, "after": await observe(),
-                "setrya_verdict": receipt["technical_verdict"], "receipt": output.name}
+                "setrya_verdict": receipt["technical_verdict"], "receipt": output.name,
+                "receipt_sha256": sha256((output / "erasure-receipt.json").read_bytes()).hexdigest()}
     finally:
         await graph.close()
 

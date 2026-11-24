@@ -77,6 +77,8 @@ with TemporaryDirectory() as tmp:
         raise RuntimeError("The draft receipt exchange schema is missing.")
     for action in ("pack", "verify-exchange"):
         call(path, "receipt", action, "--help")
+    call(path, "assess", "--help")
+    call(path, "discovery", "copy-scan", "--help")
     call(path, "init")
     # A consumer's fixture commonly lives in tests/ or setrya-case/ and imports
     # an application package in the root of a checkout that is not pip-installed.

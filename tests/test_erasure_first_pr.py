@@ -27,7 +27,7 @@ class FirstPrInstructions(unittest.TestCase):
         self.assertLess(len(description), 125)
 
     def test_two_committed_files_match_the_release_workflow(self):
-        commands = installation_block("README.md")
+        commands = installation_block("docs/examples-archive.md")
         self.assertEqual(commands, installation_block("docs/github-action.md"))
         name = "setrya-case"
         starter = f"{name}/test_erasure.py"

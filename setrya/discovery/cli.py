@@ -91,6 +91,16 @@ def main(argv):
     check.add_argument("--approvals", type=Path, help="reviewed candidate-to-service approvals")
     check.add_argument("--baseline", type=Path, help="source-check report from a trusted earlier revision")
     check.add_argument("--receipt", type=Path, help="optional replayable discovery receipt directory")
+    copy_scan = commands.add_parser("copy-scan", help="find possible customer-data copies in Python without a fixture")
+    copy_scan.add_argument("source", type=Path, nargs="?", default=Path.cwd(), help="directory of Python source")
+    copy_check = commands.add_parser("copy-check", help="review new copy sites from the Git merge base to a candidate")
+    copy_check.add_argument("--repo", type=Path, default=Path("."))
+    copy_check.add_argument("--base", required=True)
+    copy_check.add_argument("--candidate", default="HEAD")
+    copy_check.add_argument("--map", default="setrya-copy-coverage.json", help="reviewed mapping path relative to the repository")
+    copy_check.add_argument("--receipt", type=Path, action="append", default=[], help="replayable v3.2 person evidence bundle")
+    for command in (copy_scan, copy_check):
+        command.add_argument("--output", type=Path, help="write a new JSON report")
     normalize = commands.add_parser("import", help="normalize a Macie finding without connecting to AWS")
     normalize.add_argument("--finding", required=True, type=Path)
     normalize.add_argument("--output", required=True, type=Path)
@@ -123,6 +133,14 @@ def main(argv):
             if args.output:
                 publish_new(result, args.output)
             print(summarize(result))
+            return 3 if result.get("review_required") else 0
+        if args.action in ("copy-scan", "copy-check"):
+            from . import copy_sites
+            result = (copy_sites.scan(args.source) if args.action == "copy-scan" else
+                      copy_sites.check(args.repo, args.base, args.candidate, map_path=args.map, receipts=args.receipt))
+            if args.output:
+                publish_new(result, args.output)
+            print(copy_sites.summarize(result))
             return 3 if result.get("review_required") else 0
         if args.action == "init":
             if args.example == "northline-source":

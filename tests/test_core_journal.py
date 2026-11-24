@@ -112,7 +112,7 @@ class Journal(unittest.TestCase):
         self.assertEqual(self.verify(self.path)[0], 2)
 
     def test_v3_1_groups_samples_and_preserves_v3_sampled_rules(self):
-        from setrya.core.receipt_v3 import answer_records, derive, EVIDENCE_FORMAT, FLAT_EVIDENCE_FORMAT
+        from setrya.core.receipt_v3 import answer_records, derive, EVIDENCE_FORMAT, FLAT_EVIDENCE_FORMAT, GROUPED_V31_FORMAT
         from setrya.erasure import run_shared
         from setrya.examples.workspace import CASE, open_fixture
 
@@ -126,12 +126,18 @@ class Journal(unittest.TestCase):
         self.assertTrue(all(len(slot) == 3 for slot in new["final"]["answers"]))
         self.assertEqual(new["journal_chain"]["status"], "unchained")
         old = copy.deepcopy(new)
+        del old["provenance"]
+        old["format"] = GROUPED_V31_FORMAT
+        grouped = derive(old, result["evidence"]["sha256"])
+        expected_grouped = {key: value for key, value in result.items()
+                            if key not in ("evidence_format", "provenance")}
+        self.assertEqual(grouped, expected_grouped)
         del old["journal_chain"]
         for stage in ("baseline", "immediate", "final"):
             old[stage]["answers"] = answer_records(new, stage)
         old["format"] = FLAT_EVIDENCE_FORMAT
         old_result = derive(old, result["evidence"]["sha256"])
-        expected = {key: value for key, value in result.items() if key not in ("journal_chain", "lexical_only")}
+        expected = {key: value for key, value in grouped.items() if key not in ("journal_chain", "lexical_only")}
         self.assertEqual(old_result, expected)
         new["final"]["answers"][0].pop()
         with self.assertRaisesRegex(InvalidReport, "grouped endpoint samples"):

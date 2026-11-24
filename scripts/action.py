@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import sys
 import tomllib
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 LABELS = ("PASS", "FAIL", "ERROR", "NOT TESTED")
@@ -15,6 +15,14 @@ EXPECTED = {"PASS": {"OPEN_ITEMS", "READY_FOR_REVIEW"}, "FAIL": {"RESIDUAL_FOUND
             "ERROR": {"OPEN_ITEMS", "UNAVAILABLE"}, "NOT TESTED": {"OPEN_ITEMS", "UNAVAILABLE"}}
 MARKER = "<!-- setrya:receipt -->"
 LEGACY_MARKER = "<!-- setrya:erasure-verdict:v1 -->"
+COPY_MARKER = "<!-- setrya:copy-sites -->"
+COPY_LABELS = {
+    "file": ("file write", "file-archive"), "object": ("object storage", "object-storage"),
+    "vector": ("vector store", "vector-index"), "cache": ("cache", "redis-answer-cache"),
+    "memory": ("agent memory", "agent-memory"), "model-state": ("stateful model", "provider-conversation"),
+    "trace": ("trace export", "trace-store"),
+}
+COPY_ROWS = 10
 # Only these public descriptions can cross from fixture execution into the privileged comment job.
 REASONS = {
     "answer": ("The endpoint returned the erased finding", "answers"),
@@ -111,7 +119,10 @@ def run():
         try:
             from setrya.erasure.cli import run_person_starter
             from setrya.receipts import report
-            code, receipt = run_person_starter(Path(os.environ["SETRYA_STARTER"]), os.environ["SETRYA_MODE"], folder)
+            test_files = [Path(line.strip()) for line in os.environ.get("SETRYA_TEST_FILES", "").splitlines()
+                          if line.strip()]
+            code, receipt = run_person_starter(Path(os.environ["SETRYA_STARTER"]), os.environ["SETRYA_MODE"], folder,
+                                               test_files=test_files)
             if receipt is not None:
                 report(receipt)
                 review = receipt["review_status"]
@@ -149,6 +160,71 @@ def conformance():
     append("GITHUB_STEP_SUMMARY", "### Setrya vendor conformance\n\n```text\n" + details + "\n```")
     return code
 
+def copy_signals(report):
+    pending = [row for row in report["sites"] if row["status"] == "needs-review"]
+    rows = []
+    for row in pending:
+        path = quote(row["path"], safe="/._-")
+        if len(path) <= 220 and len(rows) < COPY_ROWS:
+            rows.append([path, row["line"], row["kind"], row["site_id"]])
+    return [len(pending), rows, report["map_changed"]]
+
+def copy_details(encoded):
+    if not encoded or len(encoded) > 4096:
+        raise ValueError("invalid copy-site summary")
+    data = json.loads(encoded)
+    if (type(data) is not list or len(data) != 3 or type(data[0]) is not int or not 0 <= data[0] <= 512
+            or type(data[1]) is not list or len(data[1]) > min(data[0], COPY_ROWS) or type(data[2]) is not bool):
+        raise ValueError("invalid copy-site summary")
+    count, rows, map_changed = data
+    if not count:
+        lines = ["**Setrya copy scan · No new copy sites requiring review within scan scope**"]
+    else:
+        lines = [f"**Setrya copy scan · {count} possible copy site(s) need review**", ""]
+    for row in rows:
+        if type(row) is not list or len(row) != 4:
+            raise ValueError("invalid copy-site row")
+        path, line, kind, site_id = row
+        if (not isinstance(path, str) or not re.fullmatch(r"[A-Za-z0-9./_~%+-]{1,220}", path)
+                or any(part in ("", ".", "..") for part in path.split("/"))
+                or type(line) is not int or not 0 < line <= 524288
+                or not isinstance(kind, str) or kind not in COPY_LABELS
+                or not isinstance(site_id, str) or not re.fullmatch(r"[0-9a-f]{64}", site_id)):
+            raise ValueError("invalid copy-site row")
+        lines.append(f"- `{path}:{line}` · {COPY_LABELS[kind][0]}")
+    if count > len(rows):
+        lines += ["", f"See the JSON report for all {count} sites."]
+    if map_changed:
+        lines += ["", "This PR changes the copy mapping. Review the proposed bindings."]
+    if rows:
+        starter = {"format": "setrya.copy-site-mapping.v1", "sites": [
+            {"site_id": rows[0][3], "store": COPY_LABELS[rows[0][2]][1],
+             "key": "replace-with-disposable-test-key", "test": "setrya-case/test_erasure.py"},
+        ]}
+        lines += ["", "Starter mapping for the first site", "", "```json", json.dumps(starter, indent=2), "```"]
+    return "\n".join(lines)
+
+def copy_scan():
+    require_version()
+    from setrya.core.inputs import publish_new
+    from setrya.discovery.copy_sites import check
+
+    base, candidate = os.environ["SETRYA_COPY_BASE"], os.environ["SETRYA_COPY_CANDIDATE"]
+    if not all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in (base, candidate)):
+        raise ValueError("copy-scan requires full base and candidate commit SHAs")
+    try:
+        report = check(Path(os.environ["SETRYA_COPY_REPO"]), base, candidate, map_path=os.environ["SETRYA_COPY_MAP"])
+        publish_new(report, Path(os.environ["SETRYA_COPY_OUTPUT"]))
+    except Exception as exc:
+        print(f"Setrya copy scan error ({type(exc).__name__}).", file=sys.stderr)
+        append("GITHUB_OUTPUT", "exit-code=2")
+        return 2
+    encoded = json.dumps(copy_signals(report), separators=(",", ":"))
+    append("GITHUB_OUTPUT", f"exit-code={3 if report['review_required'] else 0}\ncopy-summary={encoded}")
+    append("GITHUB_STEP_SUMMARY", copy_details(encoded))
+    # A copy site is a review lead. The advisory check can be gated by the caller.
+    return 0
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -164,7 +240,7 @@ def api(method, path, body=None):
     with build_opener(NoRedirect()).open(req, timeout=20) as result:
         return json.load(result)
 
-def comment():
+def _pull_request():
     if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
         raise ValueError("use the comment operation only on a pull_request event")
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_bytes())
@@ -176,20 +252,40 @@ def comment():
             or not re.fullmatch(r"[0-9]+", run_id) or pr["base"]["repo"]["full_name"] != repo
             or not re.fullmatch(r"[0-9a-f]{40}", pr["head"]["sha"]) or urlsplit(server).scheme != "https"):
         raise ValueError("invalid pull request coordinates")
+    run_url = f"{server}/{repo}/actions/runs/{run_id}"
+    return repo, number, pr["head"]["sha"], run_url
+
+def _artifact_id():
+    artifact = os.environ.get("SETRYA_ARTIFACT", "")
+    if artifact and not re.fullmatch(r"[1-9][0-9]{0,20}", artifact):
+        raise ValueError("invalid artifact ID")
+    return artifact
+
+def comment():
+    repo, number, head, run_url = _pull_request()
     review = os.environ["SETRYA_REVIEW"]
     body = MARKER + "\n" + summary(os.environ["SETRYA_CODE"], review)
     details = detail_lines(os.environ.get("SETRYA_SUMMARY", ""))
     if details:
         body += "\n\n" + details
-    run_url = f"{server}/{repo}/actions/runs/{run_id}"
-    artifact = os.environ.get("SETRYA_ARTIFACT", "")
-    if artifact and not re.fullmatch(r"[1-9][0-9]{0,20}", artifact):
-        raise ValueError("invalid receipt artifact ID")
+    artifact = _artifact_id()
     body += f"\n\n[Workflow run]({run_url})"
     if review != "UNAVAILABLE":
         if artifact:
             body += f" · [Download the receipt]({run_url}/artifacts/{artifact})"
         body += "\n\nUnzip `setrya-receipt` and run `setrya replay .` inside it."
+    return _post_comment(repo, number, head, body, (MARKER, LEGACY_MARKER))
+
+def copy_comment():
+    repo, number, head, run_url = _pull_request()
+    body = COPY_MARKER + "\n" + copy_details(os.environ.get("SETRYA_COPY_SUMMARY", ""))
+    artifact = _artifact_id()
+    body += f"\n\n[Workflow run]({run_url})"
+    if artifact:
+        body += f" · [Download the copy report]({run_url}/artifacts/{artifact})"
+    return _post_comment(repo, number, head, body, (COPY_MARKER,))
+
+def _post_comment(repo, number, head, body, markers):
     prefix = f"repos/{repo}"
     path = f"{prefix}/issues/{number}/comments"
     page = 1
@@ -198,13 +294,13 @@ def comment():
         comments = api("GET", f"{path}?per_page=100&page={page}")
         for row in comments:
             if (row["user"]["login"] == "github-actions[bot]" and row["user"]["type"] == "Bot"
-                    and (row.get("body") or "").startswith((MARKER + "\n", LEGACY_MARKER + "\n"))):
+                    and (row.get("body") or "").startswith(tuple(marker + "\n" for marker in markers))):
                 comment_id = int(row["id"])
                 break
         if comment_id or len(comments) < 100:
             break
         page += 1
-    if api("GET", f"{prefix}/pulls/{number}")["head"]["sha"] != pr["head"]["sha"]:
+    if api("GET", f"{prefix}/pulls/{number}")["head"]["sha"] != head:
         print("Skipped the verdict for a superseded PR commit.")
         return 0
     if comment_id:
@@ -215,7 +311,8 @@ def comment():
 
 if __name__ == "__main__":
     try:
-        raise SystemExit({"run": run, "conformance": conformance, "comment": comment}[sys.argv[1]]())
+        raise SystemExit({"run": run, "conformance": conformance, "comment": comment,
+                          "copy-scan": copy_scan, "copy-comment": copy_comment}[sys.argv[1]]())
     except (KeyError, TypeError, OSError, ValueError) as exc:
         print(f"Setrya action error ({type(exc).__name__}).", file=sys.stderr)
         raise SystemExit(2)
