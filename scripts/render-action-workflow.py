@@ -21,11 +21,12 @@ def render(template, commit):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--template", choices=("first-pr", "copy-pr"), default="first-pr")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--output", type=Path)
     mode.add_argument("--expect", type=Path)
     args = parser.parse_args()
-    workflow = render((ROOT / "docs/examples/first-pr/setrya.yml").read_bytes(), args.commit)
+    workflow = render((ROOT / "docs" / "examples" / args.template / "setrya.yml").read_bytes(), args.commit)
     if args.expect:
         if args.expect.read_bytes() != workflow:
             parser.error("Published quickstart differs from the release commit's generated workflow.")

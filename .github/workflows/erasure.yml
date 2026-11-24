@@ -228,6 +228,64 @@ jobs:
           evidence-summary: ${{ needs.drill.outputs.evidence }}
           artifact-id: ${{ needs.drill.outputs.artifact }}
 
+  copy-scan:
+    name: Fixture-free Redis copy-site review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+      - run: python -m pip install .
+      - run: python -m unittest discover -s tests -p test_copy_sites.py
+      - name: Make a synthetic two-commit Python application
+        id: commits
+        working-directory: ${{ runner.temp }}
+        run: |
+          git init app
+          git -C app config user.name 'Copy scan fixture'
+          git -C app config user.email copy-scan@example.invalid
+          printf 'def save_answer(key, answer):\n    return answer\n' > app/answers.py
+          git -C app add answers.py
+          git -C app commit -m 'Answer without storage'
+          echo "base=$(git -C app rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          cat > app/answers.py <<'PY'
+          from redis import Redis
+          cache = Redis.from_url(cache_url)
+          def save_answer(key, answer):
+              cache.set(key, answer)
+          PY
+          git -C app add answers.py
+          git -C app commit -m 'Add a Redis copy site'
+          echo "candidate=$(git -C app rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: ./
+        id: scan
+        with:
+          operation: copy-scan
+          base: ${{ steps.commits.outputs.base }}
+          candidate: ${{ steps.commits.outputs.candidate }}
+          copy-repo: ${{ runner.temp }}/app
+          copy-output: ${{ runner.temp }}/setrya-copy-report.json
+      - name: Check the advisory result and starter mapping
+        working-directory: ${{ runner.temp }}
+        env:
+          EXIT_CODE: ${{ steps.scan.outputs.exit-code }}
+          COPY_SUMMARY: ${{ steps.scan.outputs.copy-summary }}
+        run: |
+          test "$EXIT_CODE" = 3
+          printf '%s' "$COPY_SUMMARY" | jq -e '.[0] == 1 and .[1][0][:3] == ["answers.py", 4, "cache"]'
+          jq -e '.sites[0].starter.store == "redis-answer-cache"' setrya-copy-report.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: checked-copy-site-review
+          path: ${{ runner.temp }}/setrya-copy-report.json
+          if-no-files-found: error
+
   receipt-handoff:
     name: PostgreSQL deletion receipt exchange
     runs-on: ubuntu-24.04
@@ -295,7 +353,7 @@ jobs:
           if-no-files-found: error
 
   sign:
-    needs: [drill, receipt-handoff]
+    needs: [drill, receipt-handoff, graphiti]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 8
@@ -472,6 +530,33 @@ jobs:
             ${{ runner.temp }}/receipt-exchange/open-items/erasure-evidence.json
           if-no-files-found: error
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: graphiti-comparison
+          path: ${{ runner.temp }}/graphiti
+      - name: Sign the Graphiti native trial receipts
+        run: |
+          for revision in 0.31.1 0.31.2; do
+            d="$RUNNER_TEMP/graphiti/$revision.receipt"
+            python3 -m setrya erasure sign-receipt --receipt "$d/erasure-receipt.json" --bundle "$d/receipt.sigstore.json"
+            cosign sign-blob --yes --bundle "$RUNNER_TEMP/graphiti/$revision.json.sigstore.json" "$RUNNER_TEMP/graphiti/$revision.json"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: signed-graphiti-comparison
+          path: |
+            ${{ runner.temp }}/graphiti/0.31.1.json
+            ${{ runner.temp }}/graphiti/0.31.1.json.sigstore.json
+            ${{ runner.temp }}/graphiti/0.31.1.receipt/erasure-receipt.json
+            ${{ runner.temp }}/graphiti/0.31.1.receipt/erasure-evidence.json
+            ${{ runner.temp }}/graphiti/0.31.1.receipt/receipt.sigstore.json
+            ${{ runner.temp }}/graphiti/0.31.2.json
+            ${{ runner.temp }}/graphiti/0.31.2.json.sigstore.json
+            ${{ runner.temp }}/graphiti/0.31.2.receipt/erasure-receipt.json
+            ${{ runner.temp }}/graphiti/0.31.2.receipt/erasure-evidence.json
+            ${{ runner.temp }}/graphiti/0.31.2.receipt/receipt.sigstore.json
+          if-no-files-found: error
+
   signed-replay:
     needs: sign
     runs-on: ubuntu-24.04
@@ -637,6 +722,44 @@ jobs:
           review=0
           "${offline[@]}" "$archive/open-items" "${trust[@]}" --case-review || review=$?
           test "$review" -eq 3
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: signed-graphiti-comparison
+          path: ${{ runner.temp }}/graphiti-review
+      - name: Verify and replay the pinned Graphiti trial receipts
+        env:
+          TUF_ROOT: ${{ runner.temp }}/reviewer-trust
+          SIGNER: ${{ github.server_url }}/${{ github.workflow_ref }}
+        run: |
+          root="$TUF_ROOT/tuf-repo-cdn.sigstore.dev/targets/trusted_root.json"
+          for spec in 0.31.1:1 0.31.2:0; do
+            native="$RUNNER_TEMP/graphiti-review/${spec%:*}.json"
+            d="$RUNNER_TEMP/graphiti-review/${spec%:*}.receipt"
+            python3 -m setrya verify --receipt "$d/erasure-receipt.json" --bundle "$d/receipt.sigstore.json" \
+              --identity "$SIGNER" --issuer https://token.actions.githubusercontent.com --trusted-root "$root"
+            cosign verify-blob --bundle "$native.sigstore.json" --trusted-root "$root" \
+              --certificate-identity "$SIGNER" --certificate-oidc-issuer https://token.actions.githubusercontent.com "$native"
+            python3 - "$native" "$d/erasure-receipt.json" <<'PY'
+          import hashlib
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          native = json.loads(Path(sys.argv[1]).read_bytes())
+          raw = Path(sys.argv[2]).read_bytes()
+          receipt = json.loads(raw)
+          if (native["receipt_sha256"] != hashlib.sha256(raw).hexdigest()
+              or receipt["run"] != f"graphiti-{native['source_revision']}-{receipt['case']['conversation']}"
+              or receipt["provenance"]["application"]["checkout_commit"] != os.environ["GITHUB_SHA"]
+              or not all(item["commit_bound"] for item in receipt["provenance"]["test_files"])
+              or len(receipt["provenance"]["test_files"]) != 2):
+              raise SystemExit("Graphiti native observation and committed fixture do not match the signed receipt")
+          PY
+            code=0
+            python3 -m setrya replay "$d" || code=$?
+            test "$code" -eq "${spec##*:}"
+          done
 
   graphiti:
     runs-on: ubuntu-24.04

@@ -45,7 +45,7 @@ jobs:
           docker exec "$SERVICE_ID" psql -U setrya -d setrya_fixture -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION vector'
           cosign generate-key-pair --output-key-prefix "$RUNNER_TEMP/vendor-key"
       - name: Test conformance verdicts, including retained and re-keyed copies
-        run: python -m pytest -q tests/test_vendor_conformance.py
+        run: python -m pytest -q tests/test_vendor_conformance.py tests/test_provider_readback.py
       - name: Check the Action against a disposable PostgreSQL vector index
         uses: ./
         env:

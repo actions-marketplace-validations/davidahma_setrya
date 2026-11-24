@@ -210,7 +210,7 @@ def _endpoint(service, e):
     failures, gaps, pointers = v3_receipt.Findings(), set(), []
     for stage in STAGES:
         sample = e[stage]
-        observations = v3_receipt.sample_rows(sample, e["case"], grouped=e["format"] == v3_receipt.EVIDENCE_FORMAT)
+        observations = v3_receipt.sample_rows(sample, e["case"], grouped=e["format"] in v3_receipt.GROUPED_EVIDENCE_FORMATS)
         for (caller, _, role, _), (coordinates, row) in zip(v3_receipt.answer_slots(e["case"]), observations, strict=True):
             if row is not None:
                 first, *rest = coordinates

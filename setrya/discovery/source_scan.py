@@ -289,7 +289,7 @@ class _Scanner(ast.NodeVisitor):
         return self.found
 
 
-def _parse(raw, path):
+def _parse_tree(raw, path):
     try:
         tree = ast.parse(raw, filename=path)
     except (SyntaxError, ValueError, RecursionError):
@@ -301,7 +301,11 @@ def _parse(raw, path):
         count += 1
         require(count <= _MAX_AST_NODES and depth <= _MAX_AST_DEPTH, f"Python AST exceeds the scan budget: {path}.")
         pending.extend((child, depth + 1) for child in ast.iter_child_nodes(node))
-    return _Scanner(path, tree).scan()
+    return tree
+
+
+def _parse(raw, path):
+    return _Scanner(path, _parse_tree(raw, path)).scan()
 
 
 def _fingerprint(info):
@@ -317,8 +321,7 @@ def _open_at(name, mode, parent=None):
         os.close(fd)
 
 
-def scan_pdf_writes(root: str | Path) -> tuple[PdfWriteCandidate, ...]:
-    """Inspect regular Python sources beneath a directory without executing application code."""
+def _scan_python(root, inspect):
     found = []
     entries = files = size = 0
     report_bytes = 0
@@ -356,7 +359,7 @@ def scan_pdf_writes(root: str | Path) -> tuple[PdfWriteCandidate, ...]:
                         raw = stream.read(info.st_size + 1)
                     require(len(raw) == info.st_size and _fingerprint(info) == _fingerprint(os.fstat(fd)),
                             "Source file changed during scan.")
-                sites = _parse(raw, display)
+                sites = inspect(raw, display)
                 found.extend(sites)
                 report_bytes += sum(len(json.dumps(asdict(site))) for site in sites)
                 require(len(found) <= MAX_SOURCE_CANDIDATES, "Source scan exceeded its candidate limit.")
@@ -370,3 +373,8 @@ def scan_pdf_writes(root: str | Path) -> tuple[PdfWriteCandidate, ...]:
     except OSError:
         raise InvalidReport("Could not read the declared Python source scope.") from None
     return tuple(sorted(found, key=lambda item: (item.path, item.line, item.id)))
+
+
+def scan_pdf_writes(root: str | Path) -> tuple[PdfWriteCandidate, ...]:
+    """Inspect regular Python sources beneath a directory without executing application code."""
+    return _scan_python(root, _parse)

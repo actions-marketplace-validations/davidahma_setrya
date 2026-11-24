@@ -21,7 +21,7 @@ def help_parser():
         ("run", "test erasure in a disposable application and save a receipt"),
         ("doctor", "check fixture wiring and observations before running a drill"),
         ("replay", "recompute the verdict from saved evidence"),
-        ("demo", "run the workspace, analyst, memory-files, branches, Northline or Northline source coverage example"),
+        ("demo", "run the workspace deletion drill or another bundled example"),
         ("journal", "verify journal integrity or import copy events from OTLP"),
         ("branches", "check live forks and disclosed restore windows"),
         ("conformance", "run a replayable vendor self-check"),
@@ -32,6 +32,7 @@ def help_parser():
         ("discovery", "import findings, scan Python PDF writes, and check reviewed mappings"),
         ("route-coverage", "match changed routes and jobs to candidate evidence"),
         ("coverage-drift", "find journalled systems without inspection or scanning coverage"),
+        ("assess", "sign a multi-repository deletion assessment"),
         ("observe", "check known keys for completed deletion requests with read-only credentials"),
         ("verify", "authenticate a receipt and check its evidence against a trusted signer"),
     ):
@@ -125,6 +126,9 @@ def dispatch(argv):
         if cmd == "route-coverage":
             from .route_coverage import main
             return main(args)
+        if cmd == "assess":
+            from .casework.assessment import command
+            return command(args)
         if cmd == "coverage-drift":
             from .coverage_drift import main
             return main(args)

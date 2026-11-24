@@ -11,13 +11,16 @@ from .judges import check_observation, check_policy, coverage
 from .journal_chain import check_summary as check_chain
 from .journal import identifier, validate_details
 from .model import check_callers, route_id
+from .provenance import validate as validate_provenance
 from .receipt_format import EVIDENCE, EXIT, MAX_BUNDLE_FILE_BYTES, RECEIPT, _hex, _timestamp
 from .receipt_format import FORMAT_V3 as RECEIPT_FORMAT
 from .subject import Subject, Turn
 
 LEGACY_EVIDENCE_FORMAT = "setrya.erasure.evidence.v3"
 FLAT_EVIDENCE_FORMAT = "setrya.erasure.evidence.v3.sampled"
-EVIDENCE_FORMAT = "setrya.erasure.evidence.v3.1"
+GROUPED_V31_FORMAT = "setrya.erasure.evidence.v3.1"
+EVIDENCE_FORMAT = "setrya.erasure.evidence.v3.2"
+GROUPED_EVIDENCE_FORMATS = (GROUPED_V31_FORMAT, EVIDENCE_FORMAT)
 
 
 def _fields(row, fields):
@@ -172,7 +175,7 @@ def sample_rows(stage, spec, *, grouped):
 
 def answer_records(evidence, stage):
     return [row for _, row in sample_rows(evidence[stage], evidence["case"],
-                                         grouped=evidence["format"] == EVIDENCE_FORMAT)]
+                                         grouped=evidence["format"] in GROUPED_EVIDENCE_FORMATS)]
 
 
 def check_stage(stage, spec, baseline_scans=None, *, scoped=True):
@@ -326,7 +329,7 @@ def _journal(e, declared, external, gaps):
                 gaps.add(f"Unexpected durable journal from {p}.")
             for p in unsealed - set(expected):
                 gaps.add(f"Unexpected producer {p} has observations but no durable journal.")
-    modern = e["format"] == EVIDENCE_FORMAT
+    modern = e["format"] in GROUPED_EVIDENCE_FORMATS
     events = e["journal"]
     if modern:
         chain = e["journal_chain"]
@@ -537,7 +540,7 @@ def lineage_gaps(e, external):
                 if before and before["exists"]:
                     ref = (a["store"], a["key"], before["revision"])
                     if a["action"] == "rewrite" and (ref not in affected or (
-                            e["format"] == EVIDENCE_FORMAT and ref not in derived_versions)):
+                            e["format"] in GROUPED_EVIDENCE_FORMATS and ref not in derived_versions)):
                         gaps.add(f"Missing provenance for required rewrite {ref[0]}/{ref[1]}@{ref[2]}.")
                     elif a["action"] == "delete" and not needs_derivation and ref not in affected:
                         gaps.add(f"Missing provenance for required deletion {ref[0]}/{ref[1]}@{ref[2]}.")
@@ -563,13 +566,17 @@ def post_erasure_findings(e, *, grouped=False):
 
 
 def derive(e, digest):
-    modern = isinstance(e, dict) and e.get("format") == EVIDENCE_FORMAT
+    evidence_format = e.get("format") if isinstance(e, dict) else None
+    modern = evidence_format in GROUPED_EVIDENCE_FORMATS
+    provenanced = evidence_format == EVIDENCE_FORMAT
     _fields(e, "format run scope observed_at subject mode case worker external lineage baseline erased immediate final "
                "expected_producers coverage journal errors drill_duration_ms" + (" journal_chain" if modern else "")
                + (" late_write_window" if modern and "late_write_window" in e else "")
-               + (" late_residuals" if modern and "late_write_window" in e and "late_residuals" in e else ""))
-    require(e["format"] in (EVIDENCE_FORMAT, FLAT_EVIDENCE_FORMAT, LEGACY_EVIDENCE_FORMAT) and e["scope"] == "person" and _hex(digest, 64),
+               + (" late_residuals" if modern and "late_write_window" in e and "late_residuals" in e else "")
+               + (" provenance" if provenanced else ""))
+    require(evidence_format in (*GROUPED_EVIDENCE_FORMATS, FLAT_EVIDENCE_FORMAT, LEGACY_EVIDENCE_FORMAT) and e["scope"] == "person" and _hex(digest, 64),
             "Invalid v3 evidence header.")
+    producer = validate_provenance(e["provenance"]) if provenanced else None
     identifier(e["run"], "run")
     _timestamp(e["observed_at"])
     _fields(e["subject"], "ref classification")
@@ -641,7 +648,7 @@ def derive(e, digest):
     tech = "FAIL" if failures else "ERROR" if adapter_errors else "NOT TESTED" if gaps else "PASS"
 
     review = "RESIDUAL_FOUND" if tech == "FAIL" else "OPEN_ITEMS" if open_items or tech != "PASS" else "READY_FOR_REVIEW"
-    metadata = {}
+    metadata = {"evidence_format": evidence_format, "provenance": producer} if provenanced else {}
     attribution = _write_attribution(e, race)
     if attribution:
         metadata["write_attribution"] = attribution

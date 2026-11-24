@@ -1,5 +1,6 @@
 """Run or review an erasure drill scoped to one person or a tenant."""
 import argparse
+import json
 import os
 from pathlib import Path
 import shlex
@@ -7,42 +8,71 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 
+from setrya import provenance
+from setrya.core.provenance import read_pin, verify_pins
 from setrya.drill import InputError
 from setrya.offboarding import signature
-from setrya.offboarding.inputs import InvalidReport, read_regular_bytes
+from setrya.offboarding.inputs import InvalidReport, read_regular_bytes, require
 from .receipt import RECEIPT
 from .v3 import _RUN_CONFIRMATION, _RUN_OUTPUT
 from setrya.receipts import check_scope, exit_code as receipt_exit, replay as load_directory, report, signature_command
 
 
-def replay_directory(directory, *, case_review=False, expected_scope=None):
-    receipt = load_directory(directory)
+def replay_directory(directory, *, case_review=False, expected_scope=None,
+                     expected_provenance=None, expected_app_commit=None):
+    receipt = load_directory(directory, expected_provenance=expected_provenance,
+                             expected_app_commit=expected_app_commit)
     check_scope(receipt, expected_scope)
     return report(receipt, case_review=case_review)
 
 
-def _run_starter(starter, mode, output):
+def _run_starter(starter, mode, output, producer):
     with TemporaryDirectory(prefix="setrya-live-") as tmp:
         confirmation = Path(tmp) / "evidence-sha256"
-        child_env = {**os.environ, _RUN_OUTPUT: str(output.resolve()), _RUN_CONFIRMATION: str(confirmation)}
+        child_env = {**os.environ, _RUN_OUTPUT: str(output.resolve()), _RUN_CONFIRMATION: str(confirmation),
+                     provenance.RUN_PROVENANCE: json.dumps(producer, separators=(",", ":"))}
         # Installed starters can import their own siblings and the caller's application.
         paths = [str(Path.cwd()), child_env.get("PYTHONPATH", "")]
         child_env["PYTHONPATH"] = os.pathsep.join(filter(None, paths))
         code = subprocess.run([sys.executable, str(starter.resolve()), "--mode", mode,
                                "--output", str(output.resolve())], stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL, env=child_env).returncode
+                              stderr=subprocess.DEVNULL, env=child_env, check=False).returncode
         digest = read_regular_bytes(confirmation, "live run confirmation", 64) if confirmation.exists() else None
     return code, digest
 
 
-def run_person_starter(starter, mode, output):
-    """Return replayed evidence only when it belongs to this starter invocation."""
+def run_person_starter(starter, mode, output, *, test_files=(), deployed_commit=None, fixture_source=None):
+    """Publish only replayable evidence bound to this invocation and its unchanged test inputs."""
+    from setrya.casework.profiles import new_bundle
+
     if output is None or starter is None:
         raise InputError("Supply --starter and a new --output directory.")
     if not starter.is_file() or os.path.lexists(output):
         raise InputError("Choose a trusted starter file and a fresh output directory.")
     if mode not in ("deletion", "late-write"):
         raise InputError("Choose deletion or late-write for the drill mode.")
+    test_files = tuple(test_files)
+    canonical = fixture_source or starter
+    snapshot = starter if fixture_source is not None else None
+    capture_options = {"deployed_commit": deployed_commit, "executed_copy": snapshot}
+    producer = provenance.capture(canonical, test_files, **capture_options)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix="setrya-provenance-", dir=output.parent) as temp:
+        # Preserve the caller's chosen name inside the private staging area.
+        candidate = Path(temp) / output.name
+        code, receipt = _run_person(starter, mode, candidate, producer)
+        if receipt is None:
+            return code, None
+        verify_pins(receipt, expected_provenance=producer)
+        require(producer == provenance.capture(canonical, test_files, **capture_options),
+                "The application checkout or declared test files changed during the drill.")
+        require(candidate.is_dir() and not candidate.is_symlink(), "The fixture must write a regular receipt directory.")
+        with new_bundle(output) as published:
+            candidate.replace(published)
+        return code, receipt
+
+
+def _run_person(starter, mode, output, producer):
     if starter.suffix.lower() in (".yml", ".yaml"):
         from .casefile import load_case
         from .v3 import run_shared
@@ -52,12 +82,12 @@ def run_person_starter(starter, mode, output):
             return 3, None
         with spec.open_fixture() as (subject, application, items):
             live = run_shared(subject, case=spec.case, application=application, mode=mode, output=output,
-                              external_items=items, journal=application.journal)
+                              external_items=items, journal=application.journal, provenance=producer)
         replayed = load_directory(output)
         if live != replayed:
             raise InputError("Replayed evidence differs from the live HTTP case.")
         return receipt_exit(replayed), replayed
-    code, issued_digest = _run_starter(starter, mode, output)
+    code, issued_digest = _run_starter(starter, mode, output, producer)
     if not (output / RECEIPT).is_file():
         label = "NOT TESTED" if code == 3 else "ERROR"
         print(f"{label}  The starter exited {code} before writing a receipt. "
@@ -94,11 +124,20 @@ def main(argv, *, prog="setrya erasure"):
     case_arg.add_argument("--case", type=Path, help="trusted declarative YAML file")
     run.add_argument("--mode", choices=("deletion", "late-write"))
     run.add_argument("--output", type=Path)
+    run.add_argument("--test-file", type=Path, action="append", default=[],
+                     help="additional trusted test file whose exact bytes should be bound (repeatable)")
+    run.add_argument("--deployed-commit", help="issuer-declared remote deployment Git commit")
+    run.add_argument("--fixture-source", type=Path, help=argparse.SUPPRESS)
     replay = commands.add_parser("replay", help="recompute engineering or case-review outcomes")
     replay.add_argument("--scope", choices=("person", "tenant"), help="require the selected receipt scope")
     replay.add_argument("directory", nargs="?", type=Path)
     replay.add_argument("--case-review", action="store_true")
+    replay.add_argument("--expect-provenance", type=Path, help="independent provenance JSON record")
+    replay.add_argument("--expect-app-commit", help="expected clean local application checkout Git commit")
     signature.add_commands(commands, local_keys=True, aliases=True)
+    verify = commands.choices["verify"]
+    verify.add_argument("--expect-provenance", type=Path, help="independent provenance JSON record")
+    verify.add_argument("--expect-app-commit", help="expected clean local application checkout Git commit")
 
     # Tenant commands retain the native request, policy and exhibits as inputs.
     # Delegate their argument parsing so the frozen v1 contract stays authoritative.
@@ -136,7 +175,9 @@ def main(argv, *, prog="setrya erasure"):
         if args.action == "replay":
             if args.directory is None:
                 raise InputError("Supply the directory containing the receipt and its evidence.")
-            return replay_directory(args.directory, case_review=args.case_review, expected_scope=args.scope)
+            return replay_directory(args.directory, case_review=args.case_review, expected_scope=args.scope,
+                                    expected_provenance=read_pin(args.expect_provenance),
+                                    expected_app_commit=args.expect_app_commit)
         if args.action == "run":
             if args.case_path:
                 if args.case or args.starter:
@@ -145,7 +186,9 @@ def main(argv, *, prog="setrya erasure"):
                 args.output = args.output or Path("setrya-receipt")
             if args.case and args.case.suffix.lower() not in (".yaml", ".yml"):
                 raise InputError("Use a .yaml or .yml file with --case.")
-            code, receipt = run_person_starter(args.case or args.starter, args.mode or "deletion", args.output)
+            code, receipt = run_person_starter(args.case or args.starter, args.mode or "deletion", args.output,
+                                               test_files=args.test_file, deployed_commit=args.deployed_commit,
+                                               fixture_source=args.fixture_source)
             return report(receipt) if receipt is not None else code
         if args.scope == "tenant" and (args.example or getattr(args, "mode", None)):
             raise InputError("Use person scope to select a shared investigation mode.")

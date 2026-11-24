@@ -1,17 +1,24 @@
 """Review changed retrieval routes and jobs against candidate-commit evidence."""
 import argparse
 import ast
+import json
+import sys
+import tomllib
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-import sys
-import tomllib
 
 from .checker import evaluate
 from .drill import Drill, InputError, label, mapping
 from .evidence import Report, bind_inputs
 from .git_refs import git_bytes, resolve_commit
-from .scenarios import KINDS, SCHEDULES, ScenarioEvidence, _config_digest, inspect_scenario
+from .scenarios import (
+    KINDS,
+    SCHEDULES,
+    ScenarioEvidence,
+    _config_digest,
+    inspect_scenario,
+)
 from .status import Status
 
 
@@ -210,7 +217,7 @@ def _match(binding, drill, revision, artifact):
     return verdict.status, detail
 
 
-def coverage(repo, base_ref, candidate_ref, map_path, evidence):
+def coverage(repo, base_ref, candidate_ref, map_path, evidence, *, structured=False):
     repo = Path(git_bytes(Path(repo), "rev-parse", "--show-toplevel").decode().rstrip("\n"))
     base, candidate = (resolve_commit(repo, ref) for ref in (base_ref, candidate_ref))
     ancestor = git_bytes(repo, "merge-base", base, candidate).decode("ascii").strip()
@@ -225,6 +232,7 @@ def coverage(repo, base_ref, candidate_ref, map_path, evidence):
                         ancestor, candidate, "--").split(b"\0")[:-1]
     artifacts = [inspect_scenario(p) if p.is_dir() else Report.load(p) for p in evidence]
     rows = []
+    records = []
     statuses = []
     for change, encoded in zip(changed[::2], changed[1::2], strict=True):
         path = encoded.decode("utf-8", "surrogateescape")
@@ -263,9 +271,15 @@ def coverage(repo, base_ref, candidate_ref, map_path, evidence):
                     "removed surface needs owner review" if removed else "no mapped drill"
                 )
             statuses.append(status)
+            if structured:
+                records.append({"component": comp.name, "owner": comp.owner, "path": path,
+                                "surface": surface or None, "status": status.label})
             context = f"{comp.name} · owner {comp.owner} · {ascii(path)[1:-1]}" + (f" · {surface}" if surface else "")
             rows.append(f"{status.label if matches else 'GAP'}  {context} · {detail}")
     code = next((s.exit_code for s in (Status.FAIL, Status.ERROR, Status.NOT_TESTED) if s in statuses), 0)
+    if structured:
+        return code, {"format": "setrya.route-coverage.v1", "candidate_commit": candidate,
+                      "merge_base_commit": ancestor, "map_changed": config != old_config, "surfaces": records}
     headline = "Changed-route coverage" if rows else "No changed routes or jobs found in the declared components."
     policy_note = ["The candidate changes the coverage map. Review its owners and bindings."] if config != old_config else []
     text = "\n".join([headline, f"Candidate {candidate} · merge base {ancestor}", *policy_note, *rows])
@@ -281,7 +295,10 @@ def main(argv=None):
     parser.add_argument("--map", default="setrya-coverage.toml")
     parser.add_argument("--evidence", type=Path, action="append", default=[])
     parser.add_argument("--summary", type=Path)
+    parser.add_argument("--json", action="store_true", help="emit a machine-readable assessment input")
     args = parser.parse_args(argv)
+    if args.json and args.summary:
+        parser.error("choose --json or --summary")
     from .cli import _write_summary
     summary = None
     try:
@@ -296,7 +313,9 @@ def main(argv=None):
             if any(dest == p.resolve() or (p.is_dir() and dest.is_relative_to(p.resolve())) for p in inputs):
                 raise InputError("coverage summary must be outside its input artifacts")
             summary = args.summary
-        code, text = coverage(args.repo, args.base, args.candidate, args.map, args.evidence)
+        code, text = coverage(args.repo, args.base, args.candidate, args.map, args.evidence, structured=args.json)
+        if args.json:
+            text = json.dumps(text, indent=2)
     except InputError as error:
         code, text = 2, f"ERROR  {error}"
     except (ValueError, OSError, TypeError, RecursionError):

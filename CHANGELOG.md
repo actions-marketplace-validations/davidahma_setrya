@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.0
+
+- Capture v3.2 tool, test file, Git checkout and CI provenance for deletion drills and allow independent replay pins.
+- Scan supported Python copy sites before writing a fixture. Report new PR coverage gaps with file, line and starter mapping.
+- Use a shorter first-run guide and a two-week release cadence. Setrya 2.0 is targeted for February 2, 2027.
+- Capture direct provider API baselines and readbacks, and replay the recorded results separately from unmeasured retention.
+- Sign a multi-repository assessment and verify detached-key signatures in an offline browser reviewer.
+
 ## 1.8.0
 
 - Pack a v3 person receipt and its original evidence into a signed draft v1 exchange with `setrya receipt pack`. A reviewer can authenticate the issuer, pin the completed ticket and replay the evidence offline with `setrya receipt verify-exchange`.

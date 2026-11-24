@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>Setrya offline signature verifier</title>
+<style>
+  :root { color-scheme: light dark; font: 16px/1.6 system-ui, sans-serif; }
+  body { max-width: 45rem; margin: clamp(2rem, 8vw, 6rem) auto; padding: 0 1.25rem; }
+  h1 { line-height: 1.2; letter-spacing: -.03em; }
+  form { border: 1px solid color-mix(in srgb, currentColor 30%, transparent); border-radius: .6rem; padding: 1.25rem; }
+  label, input { display: block; }
+  label { font-weight: 650; }
+  input { margin: .25rem 0 1rem; max-width: 100%; }
+  button { font: inherit; font-weight: 650; padding: .45rem .9rem; cursor: pointer; }
+  #result { margin-top: 1rem; font-weight: 680; }
+  pre { overflow-wrap: anywhere; white-space: pre-wrap; font: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Verify a Setrya signature</h1>
+  <p>Check a receipt exchange or assessment signed with a Cosign P-256 key. Files stay on this device.</p>
+  <form id="verify">
+    <label for="bundle">All files from the exchange or assessment folder</label>
+    <input id="bundle" type="file" multiple required>
+    <label for="key">Public key from your trusted issuer</label>
+    <input id="key" type="file" required>
+    <button>Verify signature</button>
+  </form>
+  <p id="result" role="status" aria-live="polite"></p>
+  <pre id="detail"></pre>
+  <p>This page verifies the signature and the companion file digests. Use Setrya's CLI to replay deletion evidence or verify a keyless Sigstore bundle.</p>
+</main>
+<script>
+"use strict";
+
+const manifestLimit = 1024 * 1024;
+const evidenceLimit = 16 * manifestLimit;
+const decoder = new TextDecoder("utf-8", {fatal: true});
+const sha256 = async bytes => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+  octet => octet.toString(16).padStart(2, "0")).join("");
+
+function demand(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function base64(text) {
+  demand(/^[A-Za-z0-9+/]+={0,2}$/.test(text), "Expected base64 signature or public key.");
+  return Uint8Array.from(atob(text), char => char.charCodeAt(0));
+}
+
+function rawEcdsa(der) {
+  // P-256 DER uses short lengths and two minimally encoded, positive integers.
+  const invalid = "Expected a Cosign P-256 signature.";
+  demand(der.length >= 8 && der.length <= 72 && der[0] === 0x30 && der[1] === der.length - 2, invalid);
+  const result = new Uint8Array(64);
+  let offset = 2;
+  for (const limb of [32, 64]) {
+    const count = der[offset + 1];
+    demand(der[offset] === 2 && count >= 1 && count <= 33 && offset + 2 + count <= der.length, invalid);
+    offset += 2;
+    const pad = der[offset] === 0 && count > 1 ? 1 : 0;
+    demand(der[offset] < 128 && count - pad <= 32 && (!pad || der[offset + 1] >= 128), invalid);
+    result.set(der.subarray(offset + pad, offset + count), limb - count + pad);
+    offset += count;
+  }
+  demand(offset === der.length, invalid);
+  return result;
+}
+
+async function read(file, limit) {
+  demand(file && file.size > 0 && file.size <= limit, "A required file is missing or exceeds the size limit.");
+  return new Uint8Array(await file.arrayBuffer());
+}
+
+async function verifyBundle(files, keyFile) {
+  demand(globalThis.crypto?.subtle, "Open this file in a browser with Web Crypto available.");
+  const selected = new Map(Array.from(files, file => [file.name, file]));
+  demand(selected.size === files.length && selected.size <= 4, "Select one complete folder's files.");
+  const assessment = selected.has("assessment.json");
+  const manifestName = assessment ? "assessment.json" : "exchange.json";
+  const signatureName = assessment ? "assessment.sig" : "exchange.sig";
+  const expectedFormat = assessment ? "setrya.assessment.v1" : "setrya.deletion-receipt-exchange.v1";
+  const raw = await read(selected.get(manifestName), manifestLimit);
+  const document = JSON.parse(decoder.decode(raw));
+  demand(document?.format === expectedFormat, "Unsupported signed report format.");
+  demand(document.signature_type === "cosign-detached", "This bundle uses Sigstore. Verify it with the CLI.");
+
+  const pem = decoder.decode(await read(keyFile, 8192)).trim();
+  const match = /^-----BEGIN PUBLIC KEY-----\s+([\s\S]+?)\s+-----END PUBLIC KEY-----$/.exec(pem);
+  demand(match, "Choose a trusted PEM public key.");
+  const publicKey = base64(match[1].replace(/\s+/g, ""));
+  const key = await crypto.subtle.importKey("spki", publicKey, {name: "ECDSA", namedCurve: "P-256"}, false, ["verify"]);
+  const signature = base64(decoder.decode(await read(selected.get(signatureName), 1024)).trim());
+  const authentic = await crypto.subtle.verify({name: "ECDSA", hash: "SHA-256"}, key, rawEcdsa(signature), raw);
+  demand(authentic, "The signature does not match this key and report.");
+
+  const companions = assessment ? ["summary.md"] : ["erasure-receipt.json",
+    document.evidence_kind === "read-only-observation" ? "observation-evidence.json" : "erasure-evidence.json"];
+  demand(document.files && Object.keys(document.files).length === companions.length &&
+    selected.size === companions.length + 2, "Unexpected companion files.");
+  let detail = "";
+  for (const name of companions) {
+    const bytes = await read(selected.get(name), assessment ? manifestLimit : evidenceLimit);
+    demand(document.files[name] === await sha256(bytes), "A companion file differs from its signed digest.");
+    if (assessment) detail = decoder.decode(bytes);
+  }
+  if (!assessment) {
+    demand(["PASS", "FAIL", "NOT TESTED", "ERROR"].includes(document.technical_verdict), "Unknown receipt verdict.");
+    demand(["READY_FOR_REVIEW", "RESIDUAL_FOUND", "OPEN_ITEMS"].includes(document.review_status), "Unknown review status.");
+    detail = `Issuer's result: ${document.technical_verdict} · ${document.review_status}`;
+    if (typeof document.ticket?.id === "string") detail += `\nTicket ${document.ticket.id}`;
+  }
+  return `Public-key fingerprint (SHA-256)\n${await sha256(publicKey)}\n\n${detail}`;
+}
+
+const form = document.getElementById("verify");
+const result = document.getElementById("result");
+const detail = document.getElementById("detail");
+const bundleInput = document.getElementById("bundle");
+const keyInput = document.getElementById("key");
+for (const input of [bundleInput, keyInput]) {
+  input.addEventListener("change", () => {
+    result.textContent = "";
+    detail.textContent = "";
+  });
+}
+form.addEventListener("submit", async event => {
+  event.preventDefault();
+  const button = form.querySelector("button");
+  button.disabled = true;
+  bundleInput.disabled = true;
+  keyInput.disabled = true;
+  result.textContent = "Checking signature…";
+  detail.textContent = "";
+  try {
+    const files = bundleInput.files;
+    const key = keyInput.files[0];
+    detail.textContent = await verifyBundle(files, key);
+    result.textContent = "Signature and file digests verified.";
+  } catch (error) {
+    result.textContent = "Verification failed.";
+    detail.textContent = error.message;
+  } finally {
+    button.disabled = false;
+    bundleInput.disabled = false;
+    keyInput.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

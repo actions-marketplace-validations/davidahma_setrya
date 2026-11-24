@@ -569,8 +569,30 @@
           "enum": [
             "pgvector",
             "langgraph-store",
-            "mem0"
+            "mem0",
+            "openai-conversations",
+            "openai-conversation-items",
+            "openai-responses",
+            "openai-vector-files",
+            "openai-files",
+            "anthropic-files",
+            "anthropic-sessions",
+            "anthropic-session-events",
+            "bedrock-sessions",
+            "bedrock-invocation-steps",
+            "letta-archival",
+            "mem0-hosted",
+            "mem0-hosted-history"
           ]
+        },
+        "readback": {
+          "type": "object",
+          "properties": {
+            "baseline_at": { "type": "string", "format": "date-time" },
+            "scope_sha256": { "$ref": "#/$defs/sha256" }
+          },
+          "required": ["baseline_at", "scope_sha256"],
+          "additionalProperties": false
         },
         "versions": {
           "type": "object",
@@ -631,6 +653,11 @@
         "checks",
         "certification"
       ],
+      "if": {
+        "properties": { "target": { "enum": ["pgvector", "langgraph-store", "mem0"] } }
+      },
+      "then": { "not": { "required": ["readback"] } },
+      "else": { "required": ["readback"] },
       "additionalProperties": false
     },
     "journalChain": {
@@ -1217,9 +1244,156 @@
       ],
       "additionalProperties": false
     },
+    "producerProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "setrya_version",
+        "application",
+        "test_files",
+        "ci"
+      ],
+      "properties": {
+        "setrya_version": {
+          "type": "string",
+          "pattern": "^[0-9][A-Za-z0-9_.+-]{0,63}(?![\\s\\S])"
+        },
+        "application": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "checkout_commit",
+            "checkout_state",
+            "asserted_deploy_commit",
+            "execution"
+          ],
+          "properties": {
+            "checkout_commit": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])"
+                }
+              ]
+            },
+            "checkout_state": {
+              "enum": [
+                "unavailable",
+                "clean",
+                "dirty"
+              ]
+            },
+            "asserted_deploy_commit": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])"
+                }
+              ]
+            },
+            "execution": {
+              "enum": [
+                "unavailable",
+                "local-starter",
+                "http-case"
+              ]
+            }
+          }
+        },
+        "test_files": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "location",
+              "path",
+              "role",
+              "sha256",
+              "commit_bound"
+            ],
+            "properties": {
+              "location": {
+                "enum": [
+                  "checkout",
+                  "external"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "role": {
+                "enum": [
+                  "entrypoint",
+                  "test"
+                ]
+              },
+              "sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "commit_bound": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "ci": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "workflow_ref",
+                "workflow_sha",
+                "run_id",
+                "run_attempt"
+              ],
+              "properties": {
+                "workflow_ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "workflow_sha": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])"
+                },
+                "run_id": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]{0,23}(?![\\s\\S])"
+                },
+                "run_attempt": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]{0,23}(?![\\s\\S])"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
     "person": {
       "type": "object",
+      "dependentRequired": {
+        "evidence_format": ["provenance"],
+        "provenance": ["evidence_format"]
+      },
       "properties": {
+        "evidence_format": {"const": "setrya.erasure.evidence.v3.2"},
+        "provenance": {"$ref": "#/$defs/producerProvenance"},
         "format": {
           "const": "setrya.erasure.receipt.v3"
         },
@@ -2344,7 +2518,13 @@
     },
     "observedDeletion": {
       "type": "object",
+      "dependentRequired": {
+        "evidence_format": ["provenance"],
+        "provenance": ["evidence_format"]
+      },
       "properties": {
+        "evidence_format": {"const": "setrya.observed-deletion.v1.1"},
+        "provenance": {"$ref": "#/$defs/producerProvenance"},
         "format": {
           "const": "setrya.erasure.receipt.v3"
         },

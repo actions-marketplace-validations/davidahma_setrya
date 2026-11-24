@@ -10,6 +10,7 @@ from uuid import uuid4
 from setrya.offboarding.inputs import publish_new, publish_new_bytes, require
 from .judges import AnswerJudges, TextAnswer, consensus
 from .journal import CopyJournal, identifier
+from setrya import provenance as source_provenance
 from setrya.core import scan_scope
 from .fs_canary import CanaryMatches
 from .model import Drain, Hold, question_digest
@@ -225,7 +226,7 @@ def observe_baseline(subject, case, application, *, external_items=(), on_gap=No
 
 def run_shared(subject, *, case, application, output, mode="late-write", external_items=(),
                journal=None, run_id=None, expected_producers=(), authorize_erase=None, authorize_hold=None,
-               cancel_hold=None, erase_action=None):
+               cancel_hold=None, erase_action=None, provenance=None):
     """Run trusted callbacks only against a disposable, authorized application fixture."""
     start = monotonic()
     require(isinstance(subject, Subject) and isinstance(case, SharedCase), "Expected a subject and shared case.")
@@ -243,6 +244,12 @@ def run_shared(subject, *, case, application, output, mode="late-write", externa
         cancel_hold = getattr(application, "cancel_and_drain", None)
     require(cancel_hold is None or callable(cancel_hold), "Expected a callable worker cancellation hook.")
     destination = Path(output)
+    if os.environ.get(_RUN_OUTPUT) == str(destination.resolve()):
+        provided = source_provenance.from_environment()
+        if provided is not None:
+            require(provenance is None, "The live caller supplies provenance for this CLI run.")
+            provenance = provided
+    producer = source_provenance.live_provenance(provenance)
     destination.mkdir(parents=True, exist_ok=False)
     errors = []
 
@@ -355,7 +362,7 @@ def run_shared(subject, *, case, application, output, mode="late-write", externa
                 "lineage": lineage, "baseline": rules.group_samples(baseline, spec), "erased": erase,
                 "immediate": rules.group_samples(immediate, spec), "final": rules.group_samples(final, spec),
                 "expected_producers": expected, "coverage": coverage, "journal": events, "journal_chain": chain,
-                "errors": errors, "drill_duration_ms": 0}
+                "errors": errors, "drill_duration_ms": 0, "provenance": producer}
     if window and window["start"] < window["stop"]:
         evidence["late_write_window"] = window
         if late_residuals:

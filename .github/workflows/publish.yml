@@ -65,6 +65,10 @@ jobs:
           if [[ -f scripts/render-action-workflow.py ]]; then
             gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern setrya-quickstart.yml --dir "$RUNNER_TEMP"
             python -I scripts/render-action-workflow.py --commit "$COMMIT" --expect "$RUNNER_TEMP/setrya-quickstart.yml"
+            if [[ -f docs/examples/copy-pr/setrya.yml ]]; then
+              gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern setrya-copy-quickstart.yml --dir "$RUNNER_TEMP"
+              python -I scripts/render-action-workflow.py --template copy-pr --commit "$COMMIT" --expect "$RUNNER_TEMP/setrya-copy-quickstart.yml"
+            fi
           fi
       - name: Build and check both distributions
         run: |

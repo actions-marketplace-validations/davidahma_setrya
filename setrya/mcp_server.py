@@ -198,7 +198,8 @@ def command(argv):
         if mode not in ("deletion", "late-write"):
             raise InputError("Choose deletion or late-write.")
         with fixture() as (entry, original):
-            result = _child(["run", "--starter", entry, "--output", output(folder), "--mode", mode], root)
+            result = _child(["run", "--starter", entry, "--fixture-source", original,
+                             "--output", output(folder), "--mode", mode], root)
         result["output"] = result["output"].replace(entry, original)
         return result
 
