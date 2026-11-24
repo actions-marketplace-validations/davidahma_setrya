@@ -64,6 +64,29 @@ def _deployment_rows(rows):
     return instances
 
 
+def _check_coverage(prior, current):
+    old = [check for check in prior if check["kind"] != "setrya.copy-scan.v1"]
+    new = [check for check in current if check["kind"] != "setrya.copy-scan.v1"]
+    missing = Counter(check["kind"] for check in old) - Counter(check["kind"] for check in new)
+    lost, unbound = {}, {}
+    for kind in sorted({check["kind"] for check in old + new}):
+        baseline = [check for check in old if check["kind"] == kind]
+        candidate = [check for check in new if check["kind"] == kind]
+        former = {identity for check in baseline for identity in check["scope_ids"]}
+        remaining = {identity for check in candidate for identity in check["scope_ids"]}
+        difference = sum(check["entries"] for check in baseline) - sum(check["entries"] for check in candidate)
+        lost[kind] = max(len(former - remaining), difference)
+        unbound[kind] = sum(check["entries"] - len(check["scope_ids"]) for check in baseline + candidate)
+    lines = [f"- {check['kind']} · {check['gaps']} of {check['entries']} need review." for check in new]
+    lines.extend(f"- {kind} · {count} missing from the candidate assessment."
+                 for kind, count in sorted(missing.items()))
+    lines.extend(f"- {kind} · {count} checked entries lost." for kind, count in lost.items() if count > 0)
+    lines.extend(f"- {kind} · {count} entries lacked stable scope identifiers."
+                 for kind, count in unbound.items() if count)
+    ready = not (missing or any(lost.values()) or any(unbound.values()) or any(check["gaps"] for check in new))
+    return lines, ready
+
+
 def _outputs(result):
     client = result["client"]
     old = {r["name"]: r for r in result["previous"]["assessment"]["repositories"]}
@@ -81,18 +104,16 @@ def _outputs(result):
         for increased, label in _coverage_changes(old_surfaces, new_surfaces):
             (gained if increased else lost).append(label)
         issues = [item for row in current for item in row["details"]["open_items"]]
-        checks = [check for check in after.get("checks", []) if check["kind"] != "setrya.copy-scan.v1"]
-        old_kinds = Counter(check["kind"] for check in before.get("checks", []) if check["kind"] != "setrya.copy-scan.v1")
-        missing_checks = old_kinds - Counter(check["kind"] for check in checks)
+        coverage_lines, coverage_ready = _check_coverage(before.get("checks", []), after.get("checks", []))
         before_deployments, after_deployments = _deployment_rows(prior), _deployment_rows(current)
         changed_scope = {row[:2] for row in before_deployments} != {row[:2] for row in after_deployments}
         old_commit, new_commit = before.get("commit", "unavailable"), after.get("commit", "unavailable")
         changed_deployment = bool(after_deployments) and before_deployments != after_deployments
         changed_checkout = old_commit != new_commit and any(row["commit_binding"] == "unbound" for row in current)
         unbound = not result.get("deployment_pinned") and (changed_checkout or changed_deployment)
-        ready = ready and bool(new_surfaces) and not (lost or issues or missing_checks or changed_scope or unbound) and all(
+        ready = ready and coverage_ready and bool(new_surfaces) and not (lost or issues or changed_scope or unbound) and all(
             row["verdict"] == "PASS" and row["review"] == "READY_FOR_REVIEW" for row in current
-        ) and not any(check["gaps"] for check in checks)
+        )
         engineering.extend((f"## {name}", "", f"Commit `{old_commit}` → `{new_commit}`", ""))
         for label, rows in (("New observed coverage", gained), ("Lost observed coverage", lost)):
             engineering.append(f"### {label}")
@@ -112,12 +133,9 @@ def _outputs(result):
             engineering.append("")
         if unbound:
             engineering.extend(("Candidate evidence lacks an independent binding to the changed release.", ""))
-        if checks or missing_checks:
+        if coverage_lines:
             engineering.extend(("### Coverage checks", ""))
-            engineering.extend(f"- {check['kind']} · {check['gaps']} of {check['entries']} need review."
-                               for check in checks)
-            engineering.extend(f"- {kind} · {count} missing from the candidate assessment."
-                               for kind, count in sorted(missing_checks.items()))
+            engineering.extend(coverage_lines)
             engineering.append("")
         engineering.extend(("### Candidate verdicts and follow-ups", ""))
         if not current:

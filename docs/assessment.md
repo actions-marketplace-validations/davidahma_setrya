@@ -49,7 +49,7 @@ setrya assess verify-comparison approval --key trusted-comparison.pub
 
 Attach `approval.md` and `customer.md` to the existing approval ticket. Keep `comparison.json` and `comparison.sig` with the attachments so reviewers can authenticate both files. The comparison records gains and losses among observed copies, queries and their sample counts, scans, and delayed-worker checks. It also lists residual findings, each candidate follow-up with its owner and due date, and deployment or build changes.
 
-The comparison sends a candidate back for review when it loses coverage, reports a coverage gap or an open item, finds a residual, or changes the observed environment or origin. A changed Git release needs a clean checkout binding or the independently supplied deployment pin. A changed deployed build or certificate needs the deployment pin. The release approver still owns the decision.
+The comparison sends a candidate back for review when it loses coverage, reports a coverage gap or an open item, finds a residual, or changes the observed environment or origin. It uses stable scope identifiers to detect individual route, copy-review and journal entries that disappear from retained reports. A changed Git release needs a clean checkout binding or the independently supplied deployment pin. A changed deployed build or certificate needs the deployment pin. The release approver still owns the decision.
 
 The command accepts the existing Cosign public-key or keyless trust options. The two input assessments must use the same independently supplied verification policy. Older assessment bundles remain verifiable. Use client assessments for exact comparisons.
 

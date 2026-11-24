@@ -167,3 +167,35 @@ class AssessmentTests(unittest.TestCase):
         self.assertIn("Delayed worker on /workspaces/", review)
         self.assertIn("setrya.route-coverage.v1 · 1 of 1 need review", review)
         self.assertIn("setrya.route-coverage.v1 · 1 missing from the candidate assessment", review)
+
+    def test_compare_detects_removed_route_rows_in_a_retained_report(self):
+        self.source["client"] = "northline"
+        self.source["repositories"] = self.source["repositories"][:1]
+        self.source["repositories"][0]["receipts"] = ["observed"]
+        with open_fixture(shared=True) as (subject, app, _):
+            run_shared(subject, case=CASE, application=app, mode="deletion", output=self.root / "observed")
+        self.plan.write_text(json.dumps(self.source))
+        route_review = {"format": "setrya.route-coverage.v1", "candidate_commit": self.revision, "surfaces": []}
+
+        def write_report(name, paths):
+            rows = [{"component": "support", "path": path, "surface": "/answer", "status": "PASS"} for path in paths]
+            self.check.write_text(json.dumps({**route_review, "surfaces": rows}))
+            assessment.build(self.plan, self.root / name, key=self.key)
+
+        write_report("approved", ["a.py", "b.py"])
+        approved = self.root / "approved"
+        digest = sha256((approved / assessment.REPORT).read_bytes()).hexdigest()
+        for lane, paths, lost in (("empty", [], 2), ("replacement", ["a.py", "c.py"], 1),
+                                  ("same", ["b.py", "a.py"], 0)):
+            with self.subTest(lane=lane):
+                candidate = self.root / lane
+                write_report(lane, paths)
+                review = assessment_comparison.compare(
+                    approved, candidate, client="northline", approved_sha256=digest, output=self.root / f"review-{lane}",
+                    trust={"key": self.key}, key=self.key,
+                )
+                if lost:
+                    self.assertIn("SEND BACK FOR REVIEW", review)
+                    self.assertIn(f"setrya.route-coverage.v1 · {lost} checked entries lost", review)
+                else:
+                    self.assertIn("READY FOR APPROVAL", review)

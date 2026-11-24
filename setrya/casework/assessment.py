@@ -61,7 +61,7 @@ def _source(directory, value):
     return directory / value
 
 
-def _check(path, commit):
+def _check(path, commit, *, detailed=False):
     raw = snapshot(path, MAX_JSON_BYTES)
     data = decode(raw)
     require(isinstance(data, dict), "Expected a coverage or scan object.")
@@ -89,9 +89,28 @@ def _check(path, commit):
     else:
         gap_count = len(rows)
     canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-    return {"kind": kind, "input_sha256": _digest(raw), "report_sha256": _digest(canonical),
-            "entries": len(rows), "gaps": gap_count,
-            "commit_binding": "reported" if commit_field else "unbound"}
+    result = {"kind": kind, "input_sha256": _digest(raw), "report_sha256": _digest(canonical),
+              "entries": len(rows), "gaps": gap_count,
+              "commit_binding": "reported" if commit_field else "unbound"}
+    if detailed:
+        result["scope_ids"] = sorted({identity for row in rows if (identity := _check_scope(kind, row)) is not None})
+    return result
+
+
+def _check_scope(kind, row):
+    if kind == "setrya.copy-review.v1":
+        site = row.get("site_id")
+        return site if isinstance(site, str) and _SHA256.fullmatch(site) else None
+    if kind == "setrya.route-coverage.v1" and "surface" in row:
+        identity = [row.get("component"), row.get("path"), row["surface"]]
+        if all(isinstance(value, str) and value for value in identity[:2]) and (
+                identity[2] is None or isinstance(identity[2], str)):
+            return _digest(json.dumps(identity, ensure_ascii=True, separators=(",", ":")).encode())
+    if kind == "journal-coverage":
+        identity = [row.get(field) for field in ("store", "kind", "name")]
+        if all(isinstance(value, str) and value for value in identity):
+            return _digest(json.dumps(identity, ensure_ascii=True, separators=(",", ":")).encode())
+    return None
 
 
 def _receipt(path, commit, *, detailed=False, expected_deployment=None):
@@ -161,12 +180,17 @@ def _validate(result):
         git_revision(repo["commit"])
         check_digests = set()
         for row in _listed(repo["checks"], 8, "checks per repository"):
-            fields(row, "kind input_sha256 report_sha256 entries gaps commit_binding")
+            fields(row, "kind input_sha256 report_sha256 entries gaps commit_binding" + (" scope_ids" if detailed else ""))
             require(row["kind"] in _CHECKS and row["commit_binding"] in ("reported", "unbound")
                     and type(row["entries"]) is int and type(row["gaps"]) is int
                     and 0 <= row["gaps"] <= row["entries"] <= 4096, "Invalid assessment coverage record.")
             _hash(row["input_sha256"])
             _hash(row["report_sha256"])
+            if detailed:
+                scope = _listed(row["scope_ids"], row["entries"], "coverage scope identifiers")
+                for identity in scope:
+                    _hash(identity)
+                require(scope == sorted(set(scope)), "Coverage scope identifiers must be distinct and ordered.")
             require(row["report_sha256"] not in check_digests, "Duplicate coverage report digest.")
             check_digests.add(row["report_sha256"])
         receipt_digests = set()
@@ -246,7 +270,7 @@ def build(plan, output, *, key=None, expected_deployment=None):
         checks = _listed(item["checks"], 8, "checks per repository")
         receipts = _listed(item["receipts"], 24, "receipts per repository")
         repos.append({"name": name, "commit": commit,
-                      "checks": [_check(_source(plan.parent, path), commit) for path in checks],
+                      "checks": [_check(_source(plan.parent, path), commit, detailed=client is not None) for path in checks],
                       "receipts": [_receipt(_source(plan.parent, path), commit, detailed=client is not None,
                                             expected_deployment=expected_deployment) for path in receipts]})
     require(repos, "Supply at least one repository.")
