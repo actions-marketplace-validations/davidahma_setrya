@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -74,6 +75,61 @@ journal.seal(subject, root/(producer+".json"))
         worker = WorkerJournal(self.root / "web.db", run_id=self.run, producer="web")
         with self.assertRaisesRegex(sqlite3.IntegrityError, "sealed"):
             worker.record(self.subject, store="web", key="late", source="doc-7", action="stored")
+
+    def test_retry_exports_the_first_subject_seal_after_another_subject_writes(self):
+        path = self.root / "worker.db"
+        worker = WorkerJournal(path, run_id=self.run, producer="worker")
+        worker.record(self.subject, store="web", key="chart-7", source="doc-7", action="stored")
+        first = self.root / "first.json"
+        digest = worker.seal(self.subject, first)
+        self.collector.ingest(first, producer="worker", expected_sha256=digest)
+
+        worker = WorkerJournal(path, run_id=self.run, producer="worker")
+        another = Subject("2" * 64, "restricted")
+        worker.record(another, store="web", key="chart-8", source="doc-8", action="stored")
+        other = self.root / "other.json"
+        worker.seal(another, other)
+        self.collector.ingest(other, producer="worker")
+        self.assertEqual(json.loads(other.read_bytes())["chain"]["last_event"], 2)
+
+        retry = self.root / "retry.json"
+        self.assertEqual(worker.seal(self.subject, retry), digest)
+        self.assertEqual(first.read_bytes(), retry.read_bytes())
+        self.collector.ingest(retry, producer="worker", expected_sha256=digest)
+
+    def test_upgraded_worker_reproduces_a_legacy_seal(self):
+        path = self.root / "legacy.db"
+        with closing(sqlite3.connect(path)) as db, db:
+            db.executescript("""
+                CREATE TABLE copy_events (
+                    event INTEGER PRIMARY KEY, subject TEXT NOT NULL, store TEXT NOT NULL,
+                    copy_key TEXT NOT NULL, source TEXT NOT NULL, action TEXT NOT NULL,
+                    classification TEXT NOT NULL, observed_at TEXT NOT NULL, details TEXT NOT NULL
+                );
+                CREATE TABLE journal_binding (
+                    id INTEGER PRIMARY KEY CHECK(id=1), role TEXT, run_id TEXT, producer TEXT
+                );
+                CREATE TABLE sealed_subjects (subject TEXT PRIMARY KEY);
+            """)
+            db.execute("INSERT INTO journal_binding VALUES (1,'producer',?,'worker')", (self.run,))
+            db.execute("INSERT INTO sealed_subjects VALUES (?)", (self.subject.ref,))
+            db.execute("INSERT INTO copy_events VALUES (1,?,'web','chart-7','doc-7','stored',"
+                       "'restricted','2026-11-01T00:00:00+00:00','{}')", (self.subject.ref,))
+        original = self.root / "legacy.json"
+        packet = {"format": "setrya.copy-journal.v1", "run_id": self.run, "producer": "worker",
+                  "subject_ref": self.subject.ref, "events": [
+                      {"sequence": 1, "store": "web", "key": "chart-7", "source": "doc-7",
+                       "action": "stored", "classification": "restricted",
+                       "observed_at": "2026-11-01T00:00:00+00:00", "details": {}},
+                  ]}
+        original.write_text(json.dumps(packet, indent=2) + "\n", encoding="utf-8")
+        self.collector.ingest(original, producer="worker")
+        worker = WorkerJournal(path, run_id=self.run, producer="worker")
+        worker.record(Subject("2" * 64, "restricted"), store="web", key="chart-8", source="doc-8", action="stored")
+        retry = self.root / "legacy-retry.json"
+        worker.seal(self.subject, retry)
+        self.assertEqual(original.read_bytes(), retry.read_bytes())
+        self.collector.ingest(retry, producer="worker")
 
     def test_concurrent_packet_cannot_split_roster_and_events_across_snapshots(self):
         from contextlib import closing

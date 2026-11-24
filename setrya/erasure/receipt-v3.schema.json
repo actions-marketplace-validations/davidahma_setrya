@@ -11,9 +11,639 @@
     },
     {
       "$ref": "#/$defs/discovery"
-    }
+    },
+    {
+      "$ref": "#/$defs/observedDeletion"
+    },
+    {
+      "$ref": "#/$defs/followup"
+    },
+    { "$ref": "#/$defs/branchLineage" },
+    { "$ref": "#/$defs/cryptoErasure" },
+    { "$ref": "#/$defs/vendorConformance" }
   ],
   "$defs": {
+    "branchLineage": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "setrya.erasure.receipt.v3"
+        },
+        "version": {
+          "const": 3
+        },
+        "scope": {
+          "const": "person"
+        },
+        "profile": {
+          "const": "branch-lineage"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "technical_verdict": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT TESTED",
+            "ERROR"
+          ]
+        },
+        "review_status": {
+          "enum": [
+            "READY_FOR_REVIEW",
+            "RESIDUAL_FOUND",
+            "OPEN_ITEMS"
+          ]
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "open_items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "store": {
+                "$ref": "#/$defs/id"
+              },
+              "kind": {
+                "enum": [
+                  "restore-window",
+                  "configuration"
+                ]
+              },
+              "owner": {
+                "$ref": "#/$defs/id"
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "follow_up": {
+                "type": "string",
+                "format": "date"
+              }
+            },
+            "required": [
+              "store",
+              "kind",
+              "owner",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/observedDeletion/properties/evidence"
+        },
+        "case_id": {
+          "$ref": "#/$defs/id"
+        },
+        "journal_head": {
+          "$ref": "#/$defs/sha256"
+        },
+        "erased_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "branches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "parent": {
+                "$ref": "#/$defs/id"
+              },
+              "child": {
+                "$ref": "#/$defs/id"
+              },
+              "as_of": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "enum": [
+                  "RESIDUAL",
+                  "GONE",
+                  "POST_ERASURE",
+                  "UNKNOWN"
+                ]
+              },
+              "observer": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/id"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "turn": {
+                "type": "object",
+                "properties": {
+                  "turn": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "initiator": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "agent": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "on_behalf_of": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "parent_turn": {
+                    "$ref": "#/$defs/id"
+                  }
+                },
+                "required": [
+                  "turn",
+                  "initiator",
+                  "agent"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "parent",
+              "child",
+              "as_of",
+              "status",
+              "observer"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "scanners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "kind": {
+                "enum": [
+                  "sqlite",
+                  "git-clones",
+                  "git-worktrees",
+                  "neon"
+                ]
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "remote": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "complete",
+              "remote"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 64
+        },
+        "restore_windows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "owner": {
+                "$ref": "#/$defs/id"
+              },
+              "store": {
+                "$ref": "#/$defs/id"
+              },
+              "seconds": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "elapsed": {
+                "type": "boolean"
+              },
+              "postgres_archiving": {
+                "enum": ["unavailable", "off", "on", "always"]
+              }
+            },
+            "required": [
+              "id",
+              "owner",
+              "store",
+              "seconds",
+              "expires_at",
+              "elapsed"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "format",
+        "version",
+        "scope",
+        "profile",
+        "observed_at",
+        "technical_verdict",
+        "review_status",
+        "failures",
+        "gaps",
+        "open_items",
+        "evidence",
+        "case_id",
+        "journal_head",
+        "erased_at",
+        "branches",
+        "scanners",
+        "restore_windows"
+      ],
+      "additionalProperties": false
+    },
+    "cryptoErasure": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "setrya.erasure.receipt.v3"
+        },
+        "version": {
+          "const": 3
+        },
+        "scope": {
+          "const": "person"
+        },
+        "profile": {
+          "const": "crypto-erasure"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "technical_verdict": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT TESTED",
+            "ERROR"
+          ]
+        },
+        "review_status": {
+          "enum": [
+            "READY_FOR_REVIEW",
+            "RESIDUAL_FOUND",
+            "OPEN_ITEMS"
+          ]
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "open_items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "store": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "owner": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "kind": {
+                "enum": [
+                  "verification",
+                  "coverage"
+                ]
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1
+              },
+              "key_sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            },
+            "required": [
+              "store",
+              "owner",
+              "kind",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/observedDeletion/properties/evidence"
+        },
+        "subject": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "ref"
+          ],
+          "additionalProperties": false
+        },
+        "capture_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "inventory_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "key_arn": {
+          "type": "string",
+          "minLength": 1
+        },
+        "key_status": {
+          "enum": [
+            "deleted",
+            "available",
+            "unproven"
+          ]
+        },
+        "key_event": {
+          "type": "object",
+          "properties": {
+            "event_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "occurred_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "event_id",
+            "occurred_at"
+          ],
+          "additionalProperties": false
+        },
+        "copies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "store": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "key_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "ciphertext_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "status": {
+                "enum": [
+                  "crypto-erased",
+                  "absent",
+                  "recoverable",
+                  "unknown"
+                ]
+              }
+            },
+            "required": [
+              "store",
+              "key_sha256",
+              "ciphertext_sha256",
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 1024,
+          "minItems": 1
+        }
+      },
+      "required": [
+        "format",
+        "version",
+        "scope",
+        "profile",
+        "observed_at",
+        "technical_verdict",
+        "review_status",
+        "failures",
+        "gaps",
+        "open_items",
+        "evidence",
+        "subject",
+        "capture_manifest_sha256",
+        "inventory_sha256",
+        "key_arn",
+        "key_status",
+        "copies"
+      ],
+      "additionalProperties": false
+    },
+    "vendorConformance": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "setrya.erasure.receipt.v3"
+        },
+        "version": {
+          "const": 3
+        },
+        "scope": {
+          "const": "vendor"
+        },
+        "profile": {
+          "const": "vendor-conformance"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "technical_verdict": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT TESTED",
+            "ERROR"
+          ]
+        },
+        "review_status": {
+          "enum": [
+            "READY_FOR_REVIEW",
+            "RESIDUAL_FOUND",
+            "OPEN_ITEMS"
+          ]
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "open_items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "store": {
+                "$ref": "#/$defs/id"
+              },
+              "kind": {
+                "const": "coverage"
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "store",
+              "kind",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/observedDeletion/properties/evidence"
+        },
+        "target": {
+          "enum": [
+            "pgvector",
+            "langgraph-store",
+            "mem0"
+          ]
+        },
+        "versions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1
+          }
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "surface": {
+                "$ref": "#/$defs/id"
+              },
+              "status": {
+                "enum": [
+                  "PASS",
+                  "FAIL",
+                  "NOT TESTED"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "surface",
+              "status",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 7,
+          "minItems": 6
+        },
+        "certification": {
+          "const": "UNQUALIFIED"
+        }
+      },
+      "required": [
+        "format",
+        "version",
+        "scope",
+        "profile",
+        "observed_at",
+        "technical_verdict",
+        "review_status",
+        "failures",
+        "gaps",
+        "open_items",
+        "evidence",
+        "target",
+        "versions",
+        "checks",
+        "certification"
+      ],
+      "additionalProperties": false
+    },
+    "journalChain": {
+      "type": "object",
+      "properties": {
+        "status": { "enum": [ "unchained", "partial", "verified" ] },
+        "first_event": { "type": "integer", "minimum": 1 },
+        "last_event": { "type": "integer", "minimum": 0 },
+        "head": { "oneOf": [ { "type": "null" }, { "$ref": "#/$defs/sha256" } ] }
+      },
+      "required": [ "status", "first_event", "last_event", "head" ],
+      "additionalProperties": false
+    },
     "id": {
       "type": "string",
       "maxLength": 1024,
@@ -128,7 +758,7 @@
             "$ref": "#/$defs/sha256"
           },
           "minItems": 2,
-          "maxItems": 2,
+          "maxItems": 16,
           "uniqueItems": true
         },
         "artifacts": {
@@ -150,28 +780,42 @@
         "require_lineage": {
           "type": "boolean"
         },
-        "judges": {
+        "judges": {},
+        "sampling": {
           "type": "object",
           "properties": {
-            "capture": {
+            "samples": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
+            },
+            "question_roles": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "target",
+                  "control"
+                ]
+              },
+              "minItems": 2,
+              "maxItems": 16
+            },
+            "source": {
               "enum": [
-                "digest",
-                "excerpt"
+                "application-signals",
+                "answer-text"
               ]
-            },
-            "target": {
-              "$ref": "#/$defs/answerJudge"
-            },
-            "control": {
-              "$ref": "#/$defs/answerJudge"
             }
           },
           "required": [
-            "target",
-            "control",
-            "capture"
+            "samples",
+            "question_roles",
+            "source"
           ],
           "additionalProperties": false
+        },
+        "controls": {
+          "$ref": "#/$defs/controls"
         }
       },
       "required": [
@@ -183,7 +827,81 @@
         "scan_stores",
         "require_lineage"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "if": {
+        "required": [
+          "sampling"
+        ]
+      },
+      "then": {
+        "properties": {
+          "judges": {
+            "type": "object",
+            "properties": {
+              "capture": {
+                "enum": [
+                  "digest",
+                  "excerpt"
+                ]
+              },
+              "target": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/sampledJudge"
+                },
+                "minItems": 1,
+                "maxItems": 8,
+                "uniqueItems": true
+              },
+              "control": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/sampledJudge"
+                },
+                "minItems": 1,
+                "maxItems": 8,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "capture",
+              "target",
+              "control"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "questions": {
+            "maxItems": 2
+          },
+          "judges": {
+            "type": "object",
+            "properties": {
+              "capture": {
+                "enum": [
+                  "digest",
+                  "excerpt"
+                ]
+              },
+              "target": {
+                "$ref": "#/$defs/answerJudge"
+              },
+              "control": {
+                "$ref": "#/$defs/answerJudge"
+              }
+            },
+            "required": [
+              "target",
+              "control",
+              "capture"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
     },
     "openItem": {
       "type": "object",
@@ -463,6 +1181,42 @@
         }
       }
     },
+    "scanScope": {
+      "type": "object",
+      "properties": {
+        "kind": {"enum": ["filesystem", "git"]},
+        "scope": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "patterns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {"type": "string", "minLength": 1, "maxLength": 256}
+        },
+        "skipped": {
+          "type": "object",
+          "propertyNames": {"enum": [".json", ".txt", ".yaml", ".yml", ".sqlite", ".sqlite3", ".db"]},
+          "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 1000000}
+        },
+        "objects": {"const": "all-local-blobs"},
+        "remote_configured": {"type": "boolean"},
+        "remote_owner": {"$ref": "#/$defs/id"},
+        "locations_incomplete": {"const": true}
+      },
+      "required": ["kind", "scope"],
+      "oneOf": [
+        {
+          "properties": {"kind": {"const": "filesystem"}},
+          "required": ["patterns", "skipped"],
+          "not": {"anyOf": [{"required": ["objects"]}, {"required": ["remote_configured"]}, {"required": ["remote_owner"]}, {"required": ["locations_incomplete"]}]}
+        },
+        {
+          "properties": {"kind": {"const": "git"}},
+          "required": ["objects", "remote_configured", "remote_owner"],
+          "not": {"anyOf": [{"required": ["patterns"]}, {"required": ["skipped"]}]}
+        }
+      ],
+      "additionalProperties": false
+    },
     "person": {
       "type": "object",
       "properties": {
@@ -521,7 +1275,13 @@
           "items": {
             "$ref": "#/$defs/openItem"
           },
-          "maxItems": 512
+          "maxItems": 640
+        },
+        "scan_coverage": {
+          "type": "object",
+          "maxProperties": 128,
+          "propertyNames": {"$ref": "#/$defs/id"},
+          "additionalProperties": {"$ref": "#/$defs/scanScope"}
         },
         "artifact_checks": {
           "type": "array",
@@ -581,6 +1341,97 @@
             "sha256"
           ],
           "additionalProperties": false
+        },
+        "write_attribution": {
+          "type": "array",
+          "maxItems": 1536,
+          "items": {
+            "type": "object",
+            "properties": {
+              "store": { "$ref": "#/$defs/id" },
+              "key": { "$ref": "#/$defs/id" },
+              "revision": { "$ref": "#/$defs/id" },
+              "turn": { "$ref": "#/$defs/id" },
+              "agent": { "$ref": "#/$defs/id" },
+              "initiator": { "$ref": "#/$defs/id" },
+              "journal_entry": { "type": "integer", "minimum": 0 }
+            },
+            "required": ["store", "key", "revision", "turn", "agent", "initiator", "journal_entry"],
+            "additionalProperties": false
+          }
+        },
+        "lexical_only": { "type": "boolean" },
+        "journal_chain": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/journalChain" },
+            {
+              "type": "object",
+              "maxProperties": 256,
+              "propertyNames": { "$ref": "#/$defs/id" },
+              "additionalProperties": {
+                "oneOf": [ { "type": "null" }, { "$ref": "#/$defs/journalChain" } ]
+              }
+            }
+          ]
+        },
+        "answer_sampling": {
+          "type": "object",
+          "properties": {
+            "samples_per_question": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
+            },
+            "target_coverage": {
+              "enum": [
+                "application-signals",
+                "lexical-only",
+                "paraphrase-aware",
+                "reviewed-answers",
+                "unconfirmed"
+              ]
+            },
+            "control_coverage": {
+              "enum": [
+                "application-signals",
+                "lexical-only",
+                "paraphrase-aware",
+                "reviewed-answers",
+                "unconfirmed"
+              ]
+            },
+            "stages": {
+              "type": "object",
+              "properties": {
+                "baseline": {
+                  "$ref": "#/$defs/answerStageCounts"
+                },
+                "immediate": {
+                  "$ref": "#/$defs/answerStageCounts"
+                },
+                "final": {
+                  "$ref": "#/$defs/answerStageCounts"
+                }
+              },
+              "required": [
+                "baseline",
+                "immediate",
+                "final"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "samples_per_question",
+            "target_coverage",
+            "control_coverage",
+            "stages"
+          ],
+          "additionalProperties": false
+        },
+        "controls": {
+          "$ref": "#/$defs/controls"
         }
       },
       "required": [
@@ -603,7 +1454,28 @@
         "drill_duration_ms",
         "evidence"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "case": {
+            "required": [
+              "sampling"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "answer_sampling"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "answer_sampling"
+          ]
+        }
+      }
     },
     "tenant": {
       "type": "object",
@@ -695,6 +1567,9 @@
         },
         "scope": {
           "const": "tenant"
+        },
+        "controls": {
+          "$ref": "#/$defs/controls"
         },
         "run": {
           "$ref": "#/$defs/token"
@@ -918,7 +1793,7 @@
             "$ref": "#/$defs/sha256"
           },
           "minItems": 2,
-          "maxItems": 2,
+          "maxItems": 16,
           "uniqueItems": true
         },
         "evidence": {
@@ -1262,6 +2137,20 @@
             ],
             "additionalProperties": false
           }
+        },
+        "question_roles": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "target",
+              "control"
+            ]
+          },
+          "minItems": 2,
+          "maxItems": 16
+        },
+        "controls": {
+          "$ref": "#/$defs/controls"
         }
       },
       "required": [
@@ -1300,6 +2189,481 @@
         "failures",
         "gaps",
         "errors"
+      ],
+      "additionalProperties": false
+    },
+    "sampledJudge": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "marker",
+                "regex",
+                "entity"
+              ]
+            },
+            "rule_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "kind",
+            "rule_sha256"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "model"
+            },
+            "rule_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "model_rule": {
+              "$ref": "#/$defs/id"
+            },
+            "paraphrase_aware": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "rule_sha256",
+            "model_rule",
+            "paraphrase_aware"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "reviewed"
+            },
+            "present_sha256": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/sha256"
+              },
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true
+            },
+            "absent_sha256": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/sha256"
+              },
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "present_sha256",
+            "absent_sha256"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "answerStageCounts": {
+      "type": "object",
+      "properties": {
+        "planned": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "observed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "target_positive": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "control_positive": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "target_uncertain": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "control_uncertain": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        }
+      },
+      "required": [
+        "planned",
+        "observed",
+        "target_positive",
+        "control_positive",
+        "target_uncertain",
+        "control_uncertain"
+      ],
+      "additionalProperties": false
+    },
+    "controls": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": [
+          "framework",
+          "reference"
+        ],
+        "properties": {
+          "framework": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9 .:/()_-]{0,94}[A-Za-z0-9)])?$",
+            "maxLength": 96
+          },
+          "reference": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9 .:/()_-]{0,94}[A-Za-z0-9)])?$",
+            "maxLength": 96
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "observedDeletion": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "setrya.erasure.receipt.v3"
+        },
+        "version": {
+          "const": 3
+        },
+        "scope": {
+          "const": "person"
+        },
+        "profile": {
+          "const": "observed-deletion"
+        },
+        "subject": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "ref"
+          ],
+          "additionalProperties": false
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "technical_verdict": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT TESTED",
+            "ERROR"
+          ]
+        },
+        "review_status": {
+          "enum": [
+            "READY_FOR_REVIEW",
+            "OPEN_ITEMS",
+            "RESIDUAL_FOUND"
+          ]
+        },
+        "evidence": {
+          "type": "object",
+          "properties": {
+            "file": {
+              "const": "observation-evidence.json"
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "file",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        "controls": {
+          "$ref": "#/$defs/controls"
+        },
+        "request_id": {
+          "$ref": "#/$defs/id"
+        },
+        "frame_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "checks": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "type": "object",
+            "properties": {
+              "store": {
+                "$ref": "#/$defs/id"
+              },
+              "key_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "status": {
+                "enum": [
+                  "ABSENT",
+                  "PRESENT",
+                  "UNKNOWN"
+                ]
+              },
+              "find": {
+                "enum": [
+                  "ABSENT",
+                  "PRESENT",
+                  "UNKNOWN"
+                ]
+              },
+              "verify_absent": {
+                "enum": [
+                  "ABSENT",
+                  "PRESENT",
+                  "UNKNOWN"
+                ]
+              },
+              "collector_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "journal_event": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "lineage_version": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "store",
+              "key_sha256",
+              "status",
+              "find",
+              "verify_absent"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "open_items": {
+          "type": "array",
+          "maxItems": 1088,
+          "items": {
+            "type": "object",
+            "properties": {
+              "store": {
+                "$ref": "#/$defs/id"
+              },
+              "key_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "kind": {
+                "enum": [
+                  "verification",
+                  "coverage"
+                ]
+              },
+              "evidence": {
+                "type": "string"
+              },
+              "owner": {
+                "$ref": "#/$defs/id"
+              },
+              "follow_up": {
+                "type": "string",
+                "format": "date"
+              }
+            },
+            "required": [
+              "store",
+              "kind",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "gaps": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "format",
+        "version",
+        "scope",
+        "profile",
+        "subject",
+        "observed_at",
+        "technical_verdict",
+        "review_status",
+        "evidence",
+        "request_id",
+        "frame_sha256",
+        "checks",
+        "open_items",
+        "gaps"
+      ],
+      "additionalProperties": false
+    },
+    "followup": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "setrya.erasure.receipt.v3"
+        },
+        "version": {
+          "const": 3
+        },
+        "scope": {
+          "enum": [
+            "person",
+            "tenant"
+          ]
+        },
+        "profile": {
+          "const": "follow-up"
+        },
+        "subject": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "ref"
+          ],
+          "additionalProperties": false
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "technical_verdict": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT TESTED",
+            "ERROR"
+          ]
+        },
+        "review_status": {
+          "enum": [
+            "READY_FOR_REVIEW",
+            "OPEN_ITEMS",
+            "RESIDUAL_FOUND"
+          ]
+        },
+        "evidence": {
+          "type": "object",
+          "properties": {
+            "file": {
+              "const": "observation-evidence.json"
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "file",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        "controls": {
+          "$ref": "#/$defs/controls"
+        },
+        "original_verdict": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT TESTED",
+            "ERROR"
+          ]
+        },
+        "case_id": {
+          "$ref": "#/$defs/id"
+        },
+        "request_id": {
+          "$ref": "#/$defs/id"
+        },
+        "parent_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 1088,
+          "items": {
+            "type": "object",
+            "required": [
+              "status",
+              "reason",
+              "recheck_evidence"
+            ],
+            "properties": {
+              "status": {
+                "enum": [
+                  "verified",
+                  "still open"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              },
+              "recheck_evidence": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "open_items": {
+          "type": "array",
+          "maxItems": 1088,
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "format",
+        "version",
+        "scope",
+        "profile",
+        "observed_at",
+        "technical_verdict",
+        "review_status",
+        "evidence",
+        "original_verdict",
+        "parent_sha256",
+        "items",
+        "open_items"
       ],
       "additionalProperties": false
     }

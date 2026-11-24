@@ -31,6 +31,61 @@ class HarnessTests(unittest.TestCase):
         self.journal = CopyJournal(self.root / "journal.sqlite")
         self.hooks = CopyHooks(self.journal, self.subject)
 
+    def test_langfuse_stringified_payload_keeps_each_field_with_a_repeated_name(self):
+        from types import SimpleNamespace
+        scope = "case-704"
+        target = SimpleNamespace(input=r'{"tool":{"note":"synthetic\u002dtoken","note":"public"}}', output=None,
+                                 trace_id="trace-t", id="observation-t", project_id="demo", session_id=scope,
+                                 model_fields_set={"input", "output"})
+        control = SimpleNamespace(input='{"note":"blue","note":"green"}', output="retained",
+                                  trace_id="trace-c", id="observation-c", project_id="demo", session_id=scope,
+                                  model_fields_set={"input", "output"})
+        page = SimpleNamespace(data=[target, control], meta=SimpleNamespace(cursor=None))
+        client = SimpleNamespace(api=SimpleNamespace(observations=SimpleNamespace(get_many=lambda **_: page)))
+        reader = LangfuseCanaryScanner(client, project_id="demo", control="trace-c/observation-c")
+        self.assertEqual(reader.find(scope=scope, marker="synthetic-token"), {"trace-t/observation-t"})
+        target.input, target.output = control.input, "synthetic-token"
+        self.assertEqual(reader.find(scope=scope, marker="synthetic-token"), {"trace-t/observation-t"})
+        self.assertEqual(reader.find(scope=scope, marker="another-token"), set())
+
+    def test_transcript_rotation_cannot_confirm_stale_absence(self):
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        scope = str(uuid4())
+        path = self.root / (scope + ".jsonl")
+        path.write_text('{"content":"before rotation"}\n')
+        replacement = self.root / "next-transcript"
+        replacement.write_text(json.dumps({"content": MARKER}) + "\n")
+        native = os.fdopen
+
+        @contextmanager
+        def rotate_on_read(fd, mode):
+            with native(fd, mode) as stream:
+                class RotatingFile:
+                    def read(self, size):
+                        previous = stream.read(size)
+                        replacement.replace(path)
+                        return previous
+
+                    def fileno(self):
+                        return stream.fileno()
+
+                yield RotatingFile()
+
+        scanner = ClaudeTranscriptCanaryScanner(self.root)
+        with patch("setrya.integrations.agent_harnesses.os.fdopen", rotate_on_read):
+            with self.assertRaisesRegex(InputError, "transcript changed"):
+                scanner.find(scope=scope, marker=MARKER)
+        self.assertEqual(scanner.find(scope=scope, marker=MARKER), {scope})
+
+    def test_transcript_with_ambiguous_object_keys_cannot_establish_absence(self):
+        from setrya.offboarding.inputs import InvalidReport
+        scope = str(uuid4())
+        (self.root / (scope + ".jsonl")).write_text('{"tool":{"result":"fixture:lost-source-6732","result":"clean"}}\n')
+        with self.assertRaisesRegex(InvalidReport, "Duplicate JSON field"):
+            ClaudeTranscriptCanaryScanner(self.root).find(scope=scope, marker=MARKER)
+
     @unittest.skipUnless(importlib.util.find_spec("agents"), "install agent-openai")
     def test_native_runner_local_session_and_responses_request(self):
         import httpx
@@ -54,6 +109,13 @@ class HarnessTests(unittest.TestCase):
                                                session=session, store="chat", source="ticket",
                                                run_config=RunConfig(tracing_disabled=True)))
         self.assertEqual(result.final_output, MARKER)
+        from setrya.erasure import Turn
+
+        native_turn = {row.turn for row in self.journal.history(self.subject)}
+        self.assertEqual(len(native_turn), 1)
+        self.assertTrue(all(row.agent == "openai-agents" and row.initiator == "application"
+                            for row in self.journal.history(self.subject)))
+        self.assertIsNone(Turn.current())
         db = sqlite3.connect(path)
         self.addCleanup(db.close)
         scan = OpenAISessionCanaryScanner(db)
@@ -148,6 +210,12 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual({row.key for row in self.journal.copies(self.subject)},
                          {session + "/tool-1/input", session + "/tool-1/result"})
         self.assertNotIn(MARKER, repr(self.journal.copies(self.subject)))
+        from setrya.erasure import Turn
+
+        rows = self.journal.history(self.subject)
+        self.assertEqual({row.agent for row in rows}, {"claude-agent-sdk"})
+        self.assertEqual(len({row.turn for row in rows}), 1)
+        self.assertIsNone(Turn.current())
         transcript = self.root / (session + ".jsonl")
         transcript.write_text(json.dumps({"type": "assistant", "sessionId": session, "message": {"content": MARKER}}))
         scanner = ClaudeTranscriptCanaryScanner(self.root)

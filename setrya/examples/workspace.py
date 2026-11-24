@@ -10,7 +10,7 @@ import sqlite3
 from threading import RLock, Thread
 from uuid import uuid4
 
-from setrya.erasure.judges import AnswerJudges, Marker, TextAnswer
+from setrya.erasure import AnswerJudges, Marker, ReviewedAnswers, TextAnswer
 from setrya.erasure.subject import Subject
 from setrya.erasure.v3 import Artifact, ExternalItem, SharedCase, Stored, run_shared
 from setrya.erasure.worker_fixture import WorkerFixture
@@ -21,7 +21,12 @@ CALLERS = ("support-lead", "account-manager")
 PRIVATE, RETAINED = "cobalt-bridge.example", "October 18"
 QUESTIONS = ("Which hostname did the customer use?", "When is the team's next launch?")
 SOURCES = (("customer-note", PRIVATE), ("team-calendar", RETAINED))
-JUDGES = AnswerJudges(Marker(PRIVATE), Marker(RETAINED), capture="excerpt")
+NO_NOTE = "No matching note."
+JUDGES = AnswerJudges(
+    (Marker(PRIVATE), ReviewedAnswers((PRIVATE, "cobalt bridge dot example"), (NO_NOTE, RETAINED))),
+    (Marker(RETAINED), ReviewedAnswers((RETAINED,), (NO_NOTE, PRIVATE, "cobalt bridge dot example"))),
+    capture="excerpt",
+)
 CASE = SharedCase(WORKSPACE, ROUTE, CALLERS, *QUESTIONS,
                   (Artifact("notes", "customer-note", "delete"), Artifact("notes", "team-calendar", "preserve"),
                    Artifact("handoffs", WORKSPACE, "rewrite")), judges=JUDGES)
@@ -95,7 +100,7 @@ class Workspace:
             else:
                 values = {key: body for key, _, body in self._sources()}
         key = dict(zip(QUESTIONS, ("customer-note", "team-calendar"))).get(question)
-        return values.get(key, "No matching note.")
+        return values.get(key, NO_NOTE)
 
     def read(self, subject, caller, conversation, question):
         self._check(subject)
@@ -183,9 +188,11 @@ def demo(output, mode):
             receipt = run_shared(subject, case=CASE, application=app, external_items=items, output=directory,
                                  mode=mode, cancel_hold=app.cancel_and_drain)
         print(f"{receipt['technical_verdict']}  {lane} · {receipt['review_status']}")
-        observations = json.loads((directory / "erasure-evidence.json").read_text())["final"]["answers"]
+        from setrya.core.receipt_v3 import answer_records
+        evidence = json.loads((directory / "erasure-evidence.json").read_text())
+        observations = answer_records(evidence, "final")
         for target, control in zip(observations[::2], observations[1::2]):
-            if target and control:
+            if target and control and target["sample"] == 1:
                 words = {True: "returned", False: "absent", None: "unknown"}
                 print(f"  {target['caller']} · customer hostname {words[target['target_present']]} · "
                       f"team launch date {words[control['control_present']]}")

@@ -60,7 +60,7 @@ class EndpointOnboardingTests(unittest.TestCase):
                 for subcommand in ("replay", "diagnose"):
                     review = command("setrya", subcommand, mode, cwd=handoff)
                     self.assertEqual(review.returncode, exit_code, review.stdout)
-                    self.assertTrue(review.stdout.startswith(status), review.stdout)
+                    self.assertTrue(any(line.startswith(status) for line in review.stdout.splitlines()), review.stdout)
                     if mode == "broken":
                         self.assertIn("job-73", review.stdout)
                     if mode == "guarded":

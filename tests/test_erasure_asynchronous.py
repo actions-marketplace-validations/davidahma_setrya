@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 from typing import TypedDict
 import unittest
 
+from setrya.drill import InputError
 from setrya.erasure import Drain, Hold, Subject
 from setrya.erasure.adapters import checkpoint_thread, memory_namespace
 from setrya.erasure.asyncio import AsyncPostgresCheckpointAdapter, AsyncPostgresMemoryAdapter, arun_shared
@@ -255,3 +256,8 @@ class AsyncPostgresTrial(unittest.IsolatedAsyncioTestCase):
         await adapter.delete(self.a)
         self.assertEqual(await adapter.verify_absent(self.a), set())
         self.assertEqual(await adapter.verify_absent(self.b), {checkpoint_thread(self.b,"exclusive")})
+        await self.db.execute("ALTER TABLE checkpoint_writes ENABLE ROW LEVEL SECURITY")
+        await self.db.execute("ALTER TABLE store ENABLE ROW LEVEL SECURITY")
+        for reader in (adapter, self.app.src):
+            with self.assertRaisesRegex(InputError, "primary base table"):
+                await reader.verify_absent(self.a)

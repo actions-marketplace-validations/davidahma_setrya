@@ -15,6 +15,12 @@ For diagnostics, include the exact commit, Setrya and Python versions, platform,
 
 Tenant offboarding development, including the portable tool and OpenDesk trial, takes place in this repository. To reproduce their release checks, use the [portable build workflow](.github/workflows/offboarding-portable.yml) and [OpenDesk trial guide](setrya/examples/opendesk/README.md).
 
+## Contribute an adapter or scanner
+
+Start with a synthetic fixture whose target and retained copies you can read independently. The conformance kit checks scope, repeated deletion and the retained subject. [Run the adapter conformance example](docs/erasure-conformance.md) · [Request an adapter](https://github.com/davidahma/setrya/issues/new?template=adapter.yml) · [Request a scanner](https://github.com/davidahma/setrya/issues/new?template=scanner.yml) · [Good first issues](https://github.com/davidahma/setrya/labels/good%20first%20issue)
+
+Every week CI installs the latest public releases of LangGraph, OpenAI Agents, Claude Agent SDK and Langfuse, checks the actual installed versions, and exercises native checkpoints, sessions, hooks and trace reads. A failing scheduled check opens a tracking issue. [Compatibility workflow](.github/workflows/agent-harnesses.yml)
+
 ## Publish a Python release
 
 When a GitHub release is published, the PyPI workflow builds the wheel and source distribution from its tag, checks both installs, and publishes the same files using the `pypi` GitHub environment. A final job installs the public release, checks the two-user workspace demo and starter, and replays the released evidence. The tag must match the package version, for example `v1.0.1` for version `1.0.1`.

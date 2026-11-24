@@ -79,6 +79,8 @@ class OffboardingReceiptCLITests(unittest.TestCase):
         result = receipts.replay(folder / RECEIPT, expected_request=original)
         self.assertEqual((receipts.exit_code(result), receipts.exit_code(result, case_review=True)), (0, 3))
         self.assertEqual([item["id"] for item in result["open_items"]], ["archive"])
+        self.assertNotIn("controls", result)
+        self.assertEqual(json.loads((folder / "tenant-input.json").read_bytes())["version"], 1)
         for pin in ({"expected_request": "0" * 64}, {"expected_job": "different"}):
             with self.assertRaises(InvalidReport):
                 receipts.replay(folder, **pin)
@@ -87,6 +89,58 @@ class OffboardingReceiptCLITests(unittest.TestCase):
         (folder / "record-1.bin").write_bytes(b"replacement exhibit")
         with self.assertRaisesRegex(InvalidReport, "digest"):
             receipts.replay(folder)
+
+    def test_tenant_controls_bound_to_manifest_and_followup(self):
+        from setrya.casework.receipt_summary import receipt_summary
+        from setrya.casework.recheck import recheck
+        from setrya.offboarding import tenant_v3
+        from setrya.receipts import replay
+
+        controls = [{"framework": "DPA", "reference": "clause 4.2"}, {"framework": "SOC 2", "reference": "C1.2"}]
+        folder = self.root / "controlled"
+        arguments = ["run", "--scope", "tenant", *map(str, self.inputs), "--controls",
+                     str(self.store("controls.json", controls)), "--output", str(folder)]
+        with redirect_stdout(StringIO()):
+            self.assertEqual(main(arguments), 0)
+        receipt = replay(folder, expected_request=self.data["request_hash"])
+        self.assertEqual(receipt["controls"], controls)
+        self.assertEqual((receipt["technical_verdict"], receipt["review_status"]), ("PASS", "OPEN_ITEMS"))
+        manifest = folder / tenant_v3.MANIFEST
+        raw = manifest.read_bytes()
+        data = json.loads(raw)
+        self.assertEqual((data["version"], data["controls"]), (2, controls))
+        self.assertEqual(receipt["evidence"]["sha256"], hashlib.sha256(raw).hexdigest())
+        for audience in ("customer", "reviewer", "engineer"):
+            self.assertIn("clause 4.2", receipt_summary(folder, audience=audience))
+        followup = self.root / "followup"
+        recheck(folder, output=followup)
+        self.assertEqual(replay(followup)["controls"], controls)
+        manifest.write_text(json.dumps({**data, "controls": list(reversed(controls))}))
+        with self.assertRaises(InvalidReport):
+            replay(folder)
+        manifest.write_bytes(raw)
+        (folder / tenant_v3.RECEIPT).write_text(json.dumps({**receipt, "controls": list(reversed(controls))}))
+        with self.assertRaises(InvalidReport):
+            replay(folder)
+
+    def test_explicit_null_control_file_fails_before_issuing(self):
+        folder = self.root / "invalid"
+        self.invoke(2, "receipt", *self.inputs, "--controls", self.store("controls.json", None), "--output", folder)
+        self.assertFalse(folder.exists())
+
+    def test_schema_accepts_tenant_receipt_with_references(self):
+        try:
+            from jsonschema import validate
+        except ImportError:
+            self.skipTest("requires jsonschema")
+        from importlib.resources import files
+        from setrya.receipts import replay
+
+        folder = self.root / "schema"
+        controls = self.store("controls.json", [{"framework": "ISO 42001", "reference": "A.7.5"}])
+        self.invoke(0, "receipt", *self.inputs, "--controls", controls, "--output", folder)
+        schema = json.loads(files("setrya.erasure").joinpath("receipt-v3.schema.json").read_text())
+        validate(replay(folder), schema)
 
     def test_v1_reviewer_requires_independent_ticket_pin_and_preserves_exit_contract(self):
         from setrya import receipts

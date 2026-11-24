@@ -7,14 +7,14 @@ import json
 import re
 import sqlite3
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from typing import Literal, Protocol
 
 from setrya.drill import InputError
 
 from .elastic import ElasticsearchAdapter as ElasticsearchAdapter
 from .journal import identifier
-from .subject import Subject
+from .subject import Subject, checkpoint_thread as checkpoint_thread
 
 
 class ErasureAdapter(Protocol):
@@ -31,10 +31,6 @@ def _ref(subject):
     if not isinstance(subject, Subject):
         raise InputError("expected a tenant-scoped Subject")
     return subject.ref
-
-
-def checkpoint_thread(subject: Subject, thread: str) -> str:
-    return identifier(f"setrya:{_ref(subject)}:{identifier(thread, 'thread')}", "checkpoint thread")
 
 
 def memory_namespace(subject: Subject) -> tuple[str, str]:
@@ -71,6 +67,31 @@ class _Direct:
         return self.find(subject)
 
 
+def _require_sqlite_base_table(db, quoted_table):
+    cursor = db.cursor()
+    cursor.row_factory = None
+    with closing(cursor):
+        # PRAGMA cannot be shadowed by an application table of the same name.
+        rows = cursor.execute(f"PRAGMA main.table_list({quoted_table})").fetchall()
+    if len(rows) != 1 or rows[0][0] != "main" or rows[0][2] != "table":
+        raise InputError("direct SQLite observation requires a base table in main")
+
+
+@contextmanager
+def _sqlite_snapshot(db, tables, *, write=False):
+    if db.in_transaction:
+        raise InputError("use a SQLite connection with committed application writes")
+    db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+    try:
+        for table in tables:
+            _require_sqlite_base_table(db, table)
+        yield db
+        db.execute("COMMIT" if write else "ROLLBACK")
+    finally:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+
+
 class SQLiteAdapter(_Direct):
     """Rows in an application-owned table with an exact subject column."""
 
@@ -80,21 +101,17 @@ class SQLiteAdapter(_Direct):
         self.key = _sql_name(key_column)
         self.scope = _sql_name(subject_column)
 
-    def _check_connection(self):
-        if self.db.in_transaction:
-            raise ValueError("give the SQLite adapter a connection with committed application writes")
-
     def find(self, subject):
-        self._check_connection()
-        with self.db:
-            return _keys(self.db.execute(
-                f"SELECT s.{self.key} AS copy_key FROM {self.table} AS s WHERE s.{self.scope} COLLATE BINARY = ?", (_ref(subject),)
+        with _sqlite_snapshot(self.db, (self.table,)) as db:
+            return _keys(db.execute(
+                f"SELECT s.{self.key} AS copy_key FROM main.{self.table} AS s WHERE s.{self.scope} COLLATE BINARY = ?",
+                (_ref(subject),),
             ))
 
     def delete(self, subject):
-        self._check_connection()
-        with self.db:
-            self.db.execute(f"DELETE FROM {self.table} WHERE {self.table}.{self.scope} COLLATE BINARY = ?", (_ref(subject),))
+        with _sqlite_snapshot(self.db, (self.table,), write=True) as db:
+            db.execute(f"DELETE FROM main.{self.table} WHERE {self.table}.{self.scope} COLLATE BINARY = ?",
+                       (_ref(subject),))
 
 
 @contextmanager
@@ -110,6 +127,25 @@ def _pg_connection(client):
             # PostgreSQL raises if row-level security would hide evidence for this role.
             conn.execute("SET LOCAL row_security = off")
             yield conn
+
+
+_PG_PHYSICAL_TABLE = """
+    SELECT NOT pg_catalog.pg_is_in_recovery() AND c.relkind = 'r'
+           AND c.relpersistence <> 't' AND NOT c.relrowsecurity AND NOT c.relispartition
+           AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits WHERE inhparent = c.oid OR inhrelid = c.oid) AS visible
+    FROM pg_catalog.pg_class c WHERE c.oid = pg_catalog.to_regclass(%s)
+"""
+
+
+def _check_pg_visibility(row):
+    if row is None or (row["visible"] if isinstance(row, Mapping) else row[0]) is not True:
+        raise InputError("direct observation requires an unfiltered PostgreSQL primary base table")
+
+
+def _require_pg_base_table(conn, table):
+    # The lock binds the catalog check and subsequent data reads to the same relation.
+    conn.execute(f"SELECT 1 FROM ONLY {table} LIMIT 0")
+    _check_pg_visibility(conn.execute(_PG_PHYSICAL_TABLE, (table,)).fetchone())
 
 
 class PgvectorAdapter(_Direct):
@@ -134,6 +170,8 @@ class PgvectorAdapter(_Direct):
 
     def find(self, subject):
         with _pg_connection(self.db) as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            _require_pg_base_table(conn, self.table)
             self._require_single_owner(conn, subject)
             return _keys(conn.execute(
                 f"SELECT {self.key}::text AS copy_key FROM {self.table} WHERE {self.scope}::text COLLATE \"C\" = %s", (_ref(subject),)
@@ -141,6 +179,7 @@ class PgvectorAdapter(_Direct):
 
     def delete(self, subject):
         with _pg_connection(self.db) as conn:
+            _require_pg_base_table(conn, self.table)
             self._require_single_owner(conn, subject)
             conn.execute(f"DELETE FROM {self.table} WHERE {self.scope}::text COLLATE \"C\" = %s", (_ref(subject),))
 
@@ -184,25 +223,77 @@ class LangGraphSQLiteCheckpointAdapter(_Direct):
         prefix = f"setrya:{_ref(subject)}:"
         tables = ("checkpoints", "writes")
         query = " UNION ".join(
-            f"SELECT thread_id AS copy_key FROM {table} WHERE substr(thread_id, 1, ?) = ? COLLATE BINARY" for table in tables
+            f"SELECT thread_id AS copy_key FROM main.{table} WHERE substr(thread_id, 1, ?) = ? COLLATE BINARY" for table in tables
         )
-        with self.saver.lock:
-            if self.saver.conn.in_transaction:
-                raise ValueError("commit application writes before an erasure drill")
-            return _keys(self.saver.conn.execute(query, (len(prefix), prefix) * len(tables)))
+        with self.saver.lock, _sqlite_snapshot(self.saver.conn, tables) as db:
+            return _keys(db.execute(query, (len(prefix), prefix) * len(tables)))
 
     def delete(self, subject):
         for thread in self.find(subject):
             self.saver.delete_thread(thread)
 
 
+_PG_CHECKPOINT_TABLES = ("checkpoints", "checkpoint_blobs", "checkpoint_writes")
+
+
 def _checkpoint_rows(subject):
     prefix = f"setrya:{_ref(subject)}:"
-    tables = ("checkpoints", "checkpoint_blobs", "checkpoint_writes")
     query = " UNION ".join(
-        f"SELECT thread_id AS copy_key FROM {table} WHERE starts_with(thread_id, %s)" for table in tables
+        f"SELECT thread_id AS copy_key FROM {table} WHERE starts_with(thread_id, %s)" for table in _PG_CHECKPOINT_TABLES
     )
-    return query, (prefix,) * len(tables)
+    return query, (prefix,) * len(_PG_CHECKPOINT_TABLES)
+
+
+_CHECKPOINT_BUDGET = 1 << 20
+_CHECKPOINT_ROWS = 4096
+
+
+def _checkpoint_record(kind, payload, metadata):
+    # Keep the reversible, JSON-compatible form used for direct-read digests.
+    display = payload.decode("latin-1") if isinstance(payload, bytes) else payload
+    return [kind, display, metadata]
+
+
+def _pg_checkpoint_payloads(connection, thread):
+    """Read exact thread bytes, including orphan blobs and pending writes."""
+    identifier(thread, "checkpoint thread")
+    with _pg_connection(connection) as conn:
+        conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        for table in _PG_CHECKPOINT_TABLES:
+            _require_pg_base_table(conn, table)
+        with conn.cursor("setrya_checkpoint_read") as rows:
+            rows.itersize = 8
+            rows.execute("""
+                SELECT 'json' AS kind, NULL::bytea AS payload,
+                       CASE WHEN octet_length(checkpoint::text) + octet_length(metadata::text) <= %s
+                            THEN jsonb_build_array(checkpoint, metadata) END AS metadata
+                  FROM checkpoints WHERE thread_id COLLATE "C" = %s
+                UNION ALL
+                SELECT CASE WHEN octet_length(blob) > %s THEN NULL ELSE type END,
+                       CASE WHEN octet_length(blob) <= %s THEN blob END, NULL
+                  FROM checkpoint_blobs WHERE thread_id COLLATE "C" = %s
+                UNION ALL
+                SELECT CASE WHEN octet_length(blob) > %s THEN NULL ELSE type END,
+                       CASE WHEN octet_length(blob) <= %s THEN blob END, NULL
+                  FROM checkpoint_writes WHERE thread_id COLLATE "C" = %s
+                LIMIT 4097
+            """, (_CHECKPOINT_BUDGET, thread) + (_CHECKPOINT_BUDGET, _CHECKPOINT_BUDGET, thread) * 2)
+            records = []
+            size = 0
+            for row in rows:
+                kind, payload, metadata = row.values() if isinstance(row, Mapping) else row
+                if (len(records) >= _CHECKPOINT_ROWS or kind not in {"bytes", "msgpack", "json", "null", "empty"}
+                        or (payload is None and metadata is None and kind not in {"null", "empty"})):
+                    raise InputError("oversized checkpoint read or unsupported checkpoint encoding")
+                if kind == "json" and isinstance(payload, bytes):
+                    payload = json.loads(payload)
+                if isinstance(metadata, bytes):
+                    metadata = json.loads(metadata)
+                size += len(json.dumps(_checkpoint_record(kind, payload, metadata)))
+                if size > _CHECKPOINT_BUDGET:
+                    raise InputError("checkpoint read exceeds the observation budget")
+                records.append((kind, payload, metadata))
+        return records
 
 
 class LangGraphPostgresCheckpointAdapter(_Direct):
@@ -216,7 +307,14 @@ class LangGraphPostgresCheckpointAdapter(_Direct):
 
     def find(self, subject):
         with self.saver.lock, _pg_connection(self.saver.conn) as conn:
+            for table in _PG_CHECKPOINT_TABLES:
+                _require_pg_base_table(conn, table)
             return _keys(conn.execute(*_checkpoint_rows(subject)))
+
+    def read_thread(self, thread):
+        """Read the entire declared thread without interpreting serialized objects."""
+        with self.saver.lock:
+            return [_checkpoint_record(*row) for row in _pg_checkpoint_payloads(self.saver.conn, thread)]
 
     def delete(self, subject):
         for thread in self.find(subject):
@@ -319,7 +417,10 @@ class LangGraphPostgresMemoryAdapter(_Direct):
     def _tables(self, conn):
         table, vectors = _memory_relations(conn.execute(_MEMORY_SCHEMA).fetchone())
         row = conn.execute("SELECT to_regclass(%s) IS NOT NULL AS present", (vectors,)).fetchone()
-        return _memory_tables(table, vectors, row, self.store.index_config)
+        tables = _memory_tables(table, vectors, row, self.store.index_config)
+        for relation in tables:
+            _require_pg_base_table(conn, relation)
+        return tables
 
     def find(self, subject):
         with _pg_connection(self.store.conn) as conn:

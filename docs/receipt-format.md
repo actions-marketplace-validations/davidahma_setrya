@@ -1,6 +1,8 @@
 # Review an erasure receipt
 
-A v3 receipt identifies its scope (`person` or `tenant`), run, technical verdict, case review status, evidence and open items. The [published JSON Schema](../setrya/erasure/receipt-v3.schema.json) specifies the fields for each scope. Experimental discovery adds `profile: "discovery"` and records which approved services were inspected. A discovery gap can hold a case at `NOT TESTED` even when the nested application drill passed.
+A v3 receipt identifies its scope (`person`, `tenant` or `vendor`), run, technical verdict, case review status, evidence and open items. The [published JSON Schema](../setrya/erasure/receipt-v3.schema.json) specifies the fields for each scope. Experimental discovery adds `profile: "discovery"` and records which approved services were inspected. A discovery gap can hold a case at `NOT TESTED` even when the nested application drill passed.
+
+The `branch-lineage` profile checks store derivations and disclosed restore windows. The `crypto-erasure` profile binds KMS destruction evidence to captured ciphertext. The `vendor-conformance` profile checks synthetic fixtures and records which certification surfaces were exercised. [Branch lineage](branch-lineage.md) · [Crypto-erasure](crypto-erasure.md) · [Vendor conformance](vendor-conformance.md)
 
 Keep the whole directory. Run `setrya replay DIRECTORY` to recompute the decision offline or add `--case-review` to require closure of open items. The public Python reviewer accepts the same evidence.
 
@@ -13,6 +15,8 @@ code = exit_code(receipt, case_review=True)
 ```
 
 Replay establishes what the captured reads and exhibits support. Authenticate those bytes with `setrya verify --receipt FILE --bundle SIGNATURE --key independently-trusted.pub` for a local Cosign signature, or supply a trusted Sigstore root, exact identity and issuer for a keyless bundle. A signed receipt still depends on the app's observer and the scope it tested.
+
+The draft exchange wraps an original person receipt so another team can authenticate the issuer and replay the evidence offline. It supports synthetic drills and observed-deletion receipts. [Draft v1 exchange](receipt-exchange.md)
 
 ## Historical v1 tenant receipts
 

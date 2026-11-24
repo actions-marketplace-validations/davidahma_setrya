@@ -1,4 +1,42 @@
-# Which changed read paths have evidence?
+# Storage and route coverage
+
+## Find observed stores without a mapping
+
+Run the application fixture with a Setrya copy journal. In CI, compare the resulting observations with the owners, adapters and scanners declared in the application's inventory.
+
+```sh
+setrya coverage-drift --journal copies.sqlite --inventory inventory.toml
+```
+
+Each journal is read in a single read-only transaction. A broken copy chain or imported packet seal stops the coverage check. Older unchained records and trace-only events remain readable. Repeat `--journal` to include multiple producers, or point it at the combined SQLite journal after importing worker packets and trace events. Stack fixtures record the namespace of each successful inspection or scan, including a scan with zero matches. These coverage records carry no copy keys. Supply the original fixture journals to include those reads alongside imported copy packets. Existing rollback-mode SQLite journals are supported. Use `--json` for a list of observed boundaries with their owners and matching bindings.
+
+This inventory maps a trace store and one named Langfuse sink. Add one entry for each distinct trace sink or storage namespace seen in your fixture. Set the optional `sink=` argument on `langfuse_observation` when several projects share a logical store name. Its default is the journalled store name.
+
+```toml
+version = 1
+
+[[systems]]
+name = "traces"
+owner = "observability"
+role = "trace"
+approved_labels = ["synthetic"]
+retention_days = 7
+adapter = "trace-deletion"
+
+[[coverage]]
+store = "traces"
+kind = "trace"
+name = "support-sandbox"
+scanner = "langfuse-observations"
+```
+
+A system's deletion adapter covers the store-level entry. To map a store with a scanner alone, declare `adapter = "none"` on the system and add a coverage entry with `kind = "store"` and its name in both `store` and `name`. Namespaces and sinks require their own exact mapping. For a namespace, use `kind = "namespace"` and the complete recorded name. Custom copy hooks can record `details={"boundary_kind": "namespace", "boundary": "support/investigations"}`. For the built-in LangGraph memory hook, `name = "setrya/{subject}"` matches the namespace only when its suffix equals the subject reference on that event. A fresh test subject can reuse the mapping. A version-lineage journal contributes the physical stores named in its graph.
+
+Exit 0 means every observed boundary has a named adapter or scanner. An unmapped boundary or an empty journal exits 3. The command names the owner when the store appears in the inventory. Invalid inputs exit 2. A mapping establishes coverage of the observed names. Run the deletion drill to test the adapter itself. Writes outside the supplied journals remain outside this comparison.
+
+## Find changed routes without matching tests
+
+The `route-coverage` command inspects a Git diff. Its earlier `coverage` spelling remains available.
 
 A team adds an agent-summary endpoint to the module that already serves support search. The existing refund regression passes on both commits. The new endpoint has a different caller, and nobody has tested it. Use a coverage map to put its name and owner in the PR.
 
@@ -36,7 +74,7 @@ For a recorder binding, use the exact test ID supplied to the recorder. For an a
 Run this after collecting candidate evidence. Both Git refs must be available locally, with sufficient history to find their common ancestor. Give the command each search report or scenario directory with a separate `--evidence`.
 
 ```sh
-setrya coverage --repo . --base origin/main --candidate HEAD \
+setrya route-coverage --repo . --base origin/main --candidate HEAD \
   --evidence refund-review/candidate.json --summary coverage.md
 ```
 
@@ -59,8 +97,10 @@ Unpack the [coverage review bundle](https://github.com/davidahma/setrya/releases
 
 ```sh
 git clone -b main application.bundle fixture
-setrya coverage --repo fixture --base base --candidate candidate \
+setrya route-coverage --repo fixture --base base --candidate candidate \
   --evidence handoff/candidate.json --summary reproduced.md
 ```
 
 Both native test runs pass. Coverage exits 3 and names `router.get /agent/summary` and `@search-platform`. An independent coding-agent reviewer also spotted the omission from the diff and ordinary test handoff, without seeing the map or coverage result. The check makes that finding repeatable and assigns an owner. This trial did not show a reviewer-time advantage. No human reviewer participated.
+
+Use `setrya coverage-drift` to compare observed storage boundaries with the inventory. The 1.x `setrya coverage` alias accepts the existing route-mapping arguments.

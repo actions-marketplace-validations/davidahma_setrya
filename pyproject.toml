@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=84.1.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
 
 [project]
 name = "setrya"
-version = "1.0.3"
+version = "1.8.0"
 description = "Test whether your AI assistant can still reveal a customer's deleted information."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,30 +18,31 @@ Documentation = "https://github.com/davidahma/setrya#readme"
 Issues = "https://github.com/davidahma/setrya/issues"
 
 [project.optional-dependencies]
-erasure = ["langgraph>=1.2.24,<2", "langgraph-checkpoint-sqlite>=3.1.3,<4", "pytest>=8", "opentelemetry-api>=1,<2"]
+mcp = ["mcp>=1.30,<2"]
+crypto-aws = ["boto3>=1.35,<2"]
+case-yaml = ["PyYAML>=6.0.3,<7"]
+erasure = ["langgraph>=1.2.24", "langgraph-checkpoint-sqlite>=3.1.3,<4", "pytest>=8", "opentelemetry-api>=1,<2"]
 erasure-postgres = ["langgraph-checkpoint-postgres>=3.2.1,<4", "psycopg[binary]>=3.3,<4"]
+agentfs = ["agentfs-sdk>=0.6.4,<0.7"]
 agent-openai = ["openai-agents>=0.25,<0.26"]
 agent-claude = ["claude-agent-sdk>=0.2.187,<0.3"]
-traces-langfuse = ["langfuse>=5.2,<6"]
+traces-langfuse = ["langfuse>=5.2,<5.3"]
 erasure-elasticsearch = ["elasticsearch>=8.19.3,<9"]
 redis = ["redis>=5,<9"]
 celery-langchain = ["pytest>=8", "celery[redis]>=5.7,<6", "langchain-core>=1.8.3,<2", "redis>=5,<9"]
 pytest = ["pytest>=8"]
 answer-cache = ["celery>=5.7,<6", "langchain-core>=1.8.3,<2", "psycopg[binary]>=3.3,<4"]
 pgvector = ["psycopg[binary]>=3.3,<4"]
+conformance-mem0 = ["mem0ai>=2.2.1,<2.3"]
 
 [project.scripts]
 setrya = "setrya.cli:console_main"
 
-[tool.setuptools.packages.find]
-include = ["setrya*"]
+[tool.hatch.build.targets.wheel]
+packages = ["setrya"]
 
-[tool.setuptools.package-data]
-"setrya" = ["py.typed"]
-"setrya.discovery" = ["*-example.json"]
-"setrya.erasure" = ["receipt-v2.schema.json", "receipt-v3.schema.json"]
-"setrya.offboarding" = ["receipt-v1.schema.json"]
-"setrya.examples" = ["access-v0140/*/*.json", "recorded-search/*.toml", "support-search/*.toml", "pgvector-search/*.toml", "pgvector-search/compose.yml", "offboarding/sqlite/policy.json", "opendesk/*.json", "opendesk/compose.yaml", "opendesk/Dockerfile.trial"]
+[tool.hatch.build.targets.sdist]
+include = ["/setrya", "/tests", "/docs", "/scripts", "/trials", "/action.yml", "/.github/workflows", "/SECURITY.md", "/CHANGELOG.md", "/README.md", "/LICENSE", "/pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -182,6 +182,24 @@ class SharedReceiptTests(unittest.TestCase):
         self.assertEqual(r["technical_verdict"], "NOT TESTED")
         self.assertIn("Unexpected producer archiver has observations but no durable journal.", r["gaps"])
 
+    def test_distributed_receipt_schema_accepts_scoped_producer_names(self):
+        try:
+            from jsonschema import Draft202012Validator
+        except ImportError:
+            self.skipTest("install jsonschema to check the published schema")
+        name = "worker/shard-1"
+        run = "distributed"
+        collector = CollectedJournal(self.out / "collector.db", run_id=run)
+        worker = WorkerJournal(self.out / "worker.db", run_id=run, producer=name)
+        worker.record(self.subject, store="notes", key="summary", source="input", action="stored")
+        packet = self.out / "worker.json"
+        worker.seal(self.subject, packet)
+        collector.ingest(packet, producer=name)
+        receipt = self.drill(journal=collector, run_id=run, expected_producers=(name,))
+        self.assertEqual(receipt["technical_verdict"], "PASS")
+        schema = Path(__file__).resolve().parents[1] / "setrya/erasure/receipt-v3.schema.json"
+        Draft202012Validator(json.loads(schema.read_text())).validate(receipt)
+
     def test_required_store_cannot_be_external_or_borrow_another_subjects_claim(self):
         for claim in (replace(self.item, store="notes"), replace(self.item, subject_ref="0" * 64)):
             with self.assertRaises(InvalidReport):
@@ -209,7 +227,7 @@ class SharedReceiptTests(unittest.TestCase):
         self.drill()
         d = self.out / "run"
         e = json.loads((d / EVIDENCE).read_bytes())
-        e["final"]["answers"][2]["caller"] = "reviewer"
+        e["final"]["answers"][0][0]["caller"] = "mismatched-caller"
         with self.assertRaises(InvalidReport):
             derive(e, "0" * 64)
         (d / RECEIPT).write_text((d / RECEIPT).read_text().replace('"version": 3', '"version": true'))

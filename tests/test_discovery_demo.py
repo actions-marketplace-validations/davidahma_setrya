@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
+from setrya.core.receipt_v3 import answer_records
 from setrya.discovery import demo
 from setrya.discovery.cli import main
 from setrya.discovery.macie import load_finding
@@ -112,10 +113,10 @@ class DiscoveryTrialTests(unittest.TestCase):
                         self.assertEqual(ev["worker"]["held"], ev["worker"]["drained"])
                         self.assertTrue(ev["worker"]["held"])
                         final = ev["final"]
-                        self.assertEqual([r["caller"] for r in final["answers"]], [c for c in CALLERS for _ in range(2)])
-                        self.assertEqual([r["target_present"] for r in final["answers"]],
-                                         [lane == "broken", False, lane == "broken", False])
-                        self.assertEqual([r["control_present"] for r in final["answers"]], [False, True, False, True])
+                        self.assertEqual([r["caller"] for r in answer_records(ev, "final")], [c for c in CALLERS for _ in range(6)])
+                        self.assertEqual([r["target_present"] for r in answer_records(ev, "final")],
+                                         [lane == "broken", False] * 6)
+                        self.assertEqual([r["control_present"] for r in answer_records(ev, "final")], [False, True] * 6)
                         mirror = next(r for r in final["stored"] if r and r["store"] == "analyst-cache")
                         self.assertEqual(mirror["target_present"], lane == "broken")
                         self.assertTrue(mirror["control_present"])
@@ -184,6 +185,6 @@ class DiscoveryTrialTests(unittest.TestCase):
                     result = run_case(binding, **settings, mode="late-write", output=folder / "run")
             self.assertEqual(exit_code(result), 1, result)
             ev = json.loads((folder / "run" / "erasure" / "erasure-evidence.json").read_bytes())
-            self.assertTrue(all(not r["target_present"] for r in ev["final"]["answers"]))
+            self.assertTrue(all(not r["target_present"] for r in answer_records(ev, "final")))
             residual = [r["store"] for r in ev["final"]["stored"] if r and r["target_present"]]
             self.assertEqual(residual, ["analyst-cache"])

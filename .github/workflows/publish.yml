@@ -57,6 +57,15 @@ jobs:
           test "$TAG" = "v$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Verify the exact tag commit in the released quickstart workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ steps.version.outputs.commit }}
+        run: |
+          if [[ -f scripts/render-action-workflow.py ]]; then
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern setrya-quickstart.yml --dir "$RUNNER_TEMP"
+            python -I scripts/render-action-workflow.py --commit "$COMMIT" --expect "$RUNNER_TEMP/setrya-quickstart.yml"
+          fi
       - name: Build and check both distributions
         run: |
           python -m pip install build twine

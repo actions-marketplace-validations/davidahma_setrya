@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import inspect
 import json
+from itertools import islice
 from collections.abc import Mapping
 from typing import Any
 
 from setrya.dependencies import ChunkDependency
 from setrya.drill import InputError
 from .journal import CopyJournal, identifier
-from .subject import Subject, keyed_digest
+from .lineage import VersionLineage, VersionRef
+from .subject import Subject, _ACTIVE_TURN, keyed_digest
 
 
 def _payload_bytes(value):
@@ -72,17 +74,72 @@ def _cache_hint(request, provider):
 class CopyHooks:
     """One journal and subject per trusted request, job or graph invocation."""
 
-    def __init__(self, journal: CopyJournal, subject: Subject, *, fingerprint_key: bytes | None = None):
+    def __init__(self, journal: CopyJournal, subject: Subject, *, fingerprint_key: bytes | None = None,
+                 infer_lineage: bool = False, lineage: VersionLineage | None = None):
         if not isinstance(subject, Subject):
             raise InputError("expected a Subject")
         if fingerprint_key is not None and (not isinstance(fingerprint_key, bytes) or len(fingerprint_key) < 32):
             raise InputError("use a private fingerprint key of at least 32 bytes")
+        if type(infer_lineage) is not bool or (lineage is not None and (
+                not infer_lineage or not isinstance(lineage, VersionLineage)
+                or lineage.path.resolve() != journal.path.resolve())):
+            raise InputError("lineage inference requires a VersionLineage in the same copy journal")
         self.journal = journal
         self.subject = subject
         self._fingerprint_key = fingerprint_key
+        self._versions = (lineage or VersionLineage(journal, "turn-provenance")) if infer_lineage else None
+        self._scope_key = ((self._versions.path.resolve(), self._versions.namespace, subject.ref)
+                           if self._versions else None)
 
-    def _record(self, store, key, source, action, **details):
-        return self.journal.record(self.subject, store=store, key=key, source=source, action=action, details=details)
+    def lineage(self, subject: Subject) -> dict:
+        """Return the graph to use as the fixture's lineage hook."""
+        if self._versions is None:
+            raise InputError("enable infer_lineage on CopyHooks")
+        if not isinstance(subject, Subject) or subject.ref != self.subject.ref:
+            raise InputError("lineage hook belongs to a different subject")
+        return self._versions.affected(subject)
+
+    def record_copy(self, version: VersionRef, *, action: str, source: str | None = None, inputs=()):
+        """Record a completed application operation with its exact physical revision."""
+        if not isinstance(version, VersionRef):
+            raise InputError("expected the exact VersionRef of the observed copy")
+        return self._record(version.store, version.key, version.key if source is None else source, action,
+                            version=version, inputs=inputs)
+
+    def _infer(self, subject, action, version, inputs):
+        scope = _ACTIVE_TURN.get()
+        if self._versions is None or scope is None:
+            return
+        inputs = tuple(islice(inputs, 257))
+        if len(inputs) > 256 or any(not isinstance(ref, VersionRef) for ref in inputs):
+            raise InputError("use up to 256 exact VersionRef inputs for turn provenance")
+        if action == "retrieved" and version is not None:
+            inputs += (version,)
+        # A provider operation can contribute its explicitly supplied input versions, but
+        # the outbound request ID does not identify a source revision in application storage.
+        for ref in set(inputs):
+            self._versions.observe_source(ref, subject)
+        parents = scope.add(self._scope_key, inputs)
+        if action not in ("stored", "derived") or version is None:
+            return
+        if version in parents:
+            # A same-version re-observation changes no immutable artifact or dependency.
+            # If a new write absorbed other inputs, the caller needs a new revision.
+            if len(parents) > 1:
+                raise InputError("record a new revision for a write that used multiple input versions")
+            return
+        if parents:
+            self._versions.record(version, inputs=parents)
+        elif action == "stored":
+            self._versions.observe_source(version, subject)
+
+    def _record(self, store, key, source, action, *, version=None, inputs=(), **details):
+        if version is not None and action in ("stored", "derived") and details.get("stage") != "attempted":
+            details["revision"] = version.revision
+        row = self.journal.record(self.subject, store=store, key=key, source=source, action=action, details=details)
+        if action == "sent" or details.get("stage") != "attempted":
+            self._infer(self.subject, action, version, inputs)
+        return row
 
     def _fingerprint(self, value):
         if self._fingerprint_key is None:
@@ -95,20 +152,25 @@ class CopyHooks:
         # before handing bytes to a different durability or trust boundary.
         self._record(store, key, source, action, stage="attempted", **details)
 
-    def invoke_graph(self, graph, inputs, *, thread: str, store: str, source: str, config: Mapping | None = None):
+    def invoke_graph(self, graph, inputs, *, thread: str, store: str, source: str, config: Mapping | None = None,
+                     copy_revision: str | None = None):
         config = self.subject.langgraph_config(thread, config)
         key = config["configurable"]["thread_id"]
+        version = VersionRef(store, key, copy_revision) if copy_revision is not None else None
         self._attempt(store, key, source, "stored")
         with self.subject.activate():
             value = graph.invoke(inputs, config=config)
-        self._record(store, key, source, "stored", stage="returned")
+        self._record(store, key, source, "stored", version=version, stage="returned")
         return value
 
-    def put_memory(self, memory, key: str, value: dict, *, store: str, source: str, **options):
+    def put_memory(self, memory, key: str, value: dict, *, store: str, source: str, copy_revision: str | None = None, **options):
         from .adapters import memory_namespace
-        self._attempt(store, key, source, "stored")
-        value = memory.put(memory_namespace(self.subject), key, value, **options)
-        self._record(store, key, source, "stored", stage="returned")
+        namespace = memory_namespace(self.subject)
+        version = VersionRef(store, key, copy_revision) if copy_revision is not None else None
+        details = {"boundary_kind": "namespace", "boundary": "/".join(namespace)}
+        self._attempt(store, key, source, "stored", **details)
+        value = memory.put(namespace, key, value, **options)
+        self._record(store, key, source, "stored", version=version, stage="returned", **details)
         return value
 
     def add_documents(self, vector_store, documents, *, ids, store: str, **kwargs):
@@ -117,19 +179,20 @@ class CopyHooks:
         if len(documents) != len(ids) or len(set(ids)) != len(ids):
             raise InputError("supply one distinct vector store ID per document")
         tagged = []
-        markers = []
+        versions = []
         for doc, key in zip(documents, ids):
             identifier(key, "vector store ID")
-            marker = ChunkDependency.from_metadata(doc.metadata).setrya_marker
-            tagged.append(doc.model_copy(update={"metadata": self.subject.headers(doc.metadata)}))
-            markers.append(marker)
-        for key, marker in zip(ids, markers):
-            self._attempt(store, key, marker, "stored")
+            chunk = ChunkDependency.from_metadata(doc.metadata)
+            tagged.append(doc.model_copy(update={"metadata": self.subject.headers(doc.metadata, include_turn=False)}))
+            versions.append(chunk)
+        for key, chunk in zip(ids, versions):
+            self._attempt(store, key, chunk.setrya_marker, "stored")
         actual = list(vector_store.add_documents(tagged, ids=ids, **kwargs))
         if len(actual) != len(ids):
             raise InputError("vector store returned an unexpected number of written IDs")
-        for key, marker in zip(actual, markers):
-            self._record(store, key, marker, "stored", stage="returned")
+        for key, chunk in zip(actual, versions):
+            self._record(store, key, chunk.setrya_marker, "stored", stage="returned",
+                         version=VersionRef(store, key, chunk.revision) if self._versions else None)
         if actual != ids:
             raise InputError("vector store replaced the supplied physical IDs; inspect the journal")
         return actual
@@ -142,9 +205,12 @@ class CopyHooks:
             if doc.metadata.get("setrya_subject") != self.subject.ref:
                 continue
             metadata_subject = Subject.from_metadata(doc.metadata)
-            marker = ChunkDependency.from_metadata(doc.metadata).setrya_marker
+            chunk = ChunkDependency.from_metadata(doc.metadata)
             physical = doc.id if key is None else key(doc)
-            self.journal.record(metadata_subject, store=store, key=physical, action="retrieved", source=marker)
+            self.journal.record(metadata_subject, store=store, key=physical, action="retrieved",
+                                source=chunk.setrya_marker)
+            if self._versions:
+                self._infer(metadata_subject, "retrieved", VersionRef(store, physical, chunk.revision), ())
         return documents, evidence
 
     def fill_cache(self, cache, cache_key, retrieve, generate, *, store: str, source: str, metadata=None, **kwargs):
@@ -152,18 +218,29 @@ class CopyHooks:
         from .cache import answer_location
         key = answer_location(cache_key, self.subject)
         self._attempt(store, key, source, "derived")
+        generated = False
+
         def checked_metadata(item):
             data = item if metadata is None else metadata(item)
             if Subject.from_metadata(data) != self.subject:
                 raise InputError("a subject-exclusive answer cannot include a different subject or classification")
             return data
-        answer = cache.fill(cache_key, retrieve, generate, metadata=checked_metadata, **kwargs)
+        def generate_new(items):
+            nonlocal generated
+            value = generate(items)
+            generated = True
+            return value
+
+        answer = cache.fill(cache_key, retrieve, generate_new, metadata=checked_metadata, **kwargs)
         if answer is not None:
-            self._record(store, key, source, "derived", stage="returned", sources=answer.dependencies.markers)
+            version = (VersionRef(store, key, answer.dependencies.answer_id)
+                       if generated and self._versions else None)
+            self._record(store, key, source, "derived", stage="returned", version=version,
+                         sources=answer.dependencies.markers)
         return answer
 
     def _provider(self, call, request, *, provider, model, region, store, key, source, invocation_logging,
-                  prompt_caching, sources, operation):
+                  prompt_caching, sources, operation, input_versions=()):
         if not isinstance(request, Mapping):
             raise InputError("provider request must be a mapping of SDK arguments")
         if inspect.iscoroutinefunction(call) or inspect.iscoroutinefunction(inspect.unwrap(call)):
@@ -176,7 +253,7 @@ class CopyHooks:
                        sources=list(sources), operation=operation,
                        components=sorted(name for name in ("input", "instructions", "messages", "system", "tools", "body", "toolConfig", "tool_choice")
                                          if name in request), **self._fingerprint(request))
-        self._attempt(store, key, source, "sent", **details)
+        self._attempt(store, key, source, "sent", inputs=input_versions, **details)
         result = call(**request)
         if inspect.isawaitable(result):
             if inspect.iscoroutine(result):
@@ -187,7 +264,7 @@ class CopyHooks:
 
     def bedrock(self, client, request: Mapping[str, Any], *, store: str, key: str, source: str,
                 invocation_logging: bool | None = None, prompt_caching: bool | None = None,
-                sources=(), operation: str = "converse"):
+                sources=(), operation: str = "converse", input_versions=()):
         """Call a boto3 Bedrock Runtime client. Resolve the destination region from the client."""
         if operation not in {"converse", "invoke_model", "converse_stream", "invoke_model_with_response_stream"}:
             raise InputError("unsupported Bedrock operation")
@@ -195,19 +272,19 @@ class CopyHooks:
         region = getattr(getattr(client, "meta", None), "region_name", None)
         return self._provider(getattr(client, operation), request, provider="bedrock", model=model, region=region,
                               store=store, key=key, source=source, invocation_logging=invocation_logging,
-                              prompt_caching=prompt_caching, sources=sources, operation=operation)
+                              prompt_caching=prompt_caching, sources=sources, operation=operation, input_versions=input_versions)
 
     def anthropic(self, client, request: Mapping[str, Any], *, store: str, key: str, source: str,
-                  invocation_logging: bool | None = None, prompt_caching: bool | None = None, sources=()):
+                  invocation_logging: bool | None = None, prompt_caching: bool | None = None, sources=(), input_versions=()):
         """Call the Anthropic Messages API with the supplied request and record its configured exposure."""
         model = identifier(request.get("model"), "model")
         return self._provider(client.messages.create, request, provider="anthropic", model=model, region=None,
                               store=store, key=key, source=source, invocation_logging=invocation_logging,
-                              prompt_caching=prompt_caching, sources=sources, operation="messages.create")
+                              prompt_caching=prompt_caching, sources=sources, operation="messages.create", input_versions=input_versions)
 
     def langchain_callback(self, *, store: str, source: str, provider: str, model: str,
                            region: str | None = None, invocation_logging: bool | None = None,
-                           prompt_caching: bool | None = None, sources=()):
+                           prompt_caching: bool | None = None, sources=(), input_versions=()):
         """Attach at an application chat/LLM boundary when the framework owns the SDK call."""
         from langchain_core.callbacks import BaseCallbackHandler
         if provider not in {"anthropic", "bedrock"}:
@@ -216,6 +293,7 @@ class CopyHooks:
                        prompt_caching=prompt_caching, evidence_level="configuration", sources=list(sources),
                        operation="langchain.start")
         hooks = self
+        input_versions = tuple(islice(input_versions, 257))
 
         class ModelCopyCallback(BaseCallbackHandler):
             raise_error = True
@@ -223,19 +301,20 @@ class CopyHooks:
 
             def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
                 payload = [[msg.model_dump(mode="json") for msg in group] for group in messages]
-                hooks._attempt(store, str(run_id), source, "sent", **details, components=["messages"],
+                hooks._attempt(store, str(run_id), source, "sent", inputs=input_versions, **details, components=["messages"],
                                **hooks._fingerprint(payload))
 
             def on_llm_start(self, serialized, prompts, *, run_id, **kwargs):
-                hooks._attempt(store, str(run_id), source, "sent", **details, components=["prompts"],
+                hooks._attempt(store, str(run_id), source, "sent", inputs=input_versions, **details, components=["prompts"],
                                **hooks._fingerprint(prompts))
 
         return ModelCopyCallback()
 
-    async def call_tool(self, client, name: str, arguments: dict, *, store: str, key: str, source: str, **kwargs):
+    async def call_tool(self, client, name: str, arguments: dict, *, store: str, key: str, source: str,
+                        input_versions=(), **kwargs):
         """Wrap one MCP ClientSession.call_tool, recording the input and returned result separately."""
         identifier(name, "tool name")
-        self._attempt(store, key + "/input", source, "sent", tool=name, direction="input",
+        self._attempt(store, key + "/input", source, "sent", inputs=input_versions, tool=name, direction="input",
                       **self._fingerprint(arguments))
         self._attempt(store, key + "/result", source, "derived", tool=name, direction="result")
         result = await client.call_tool(name, arguments, **kwargs)

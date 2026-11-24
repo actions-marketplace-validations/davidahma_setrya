@@ -1,0 +1,326 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:setrya:copy-event:v1",
+  "title": "Setrya copy event v1",
+  "description": "One observed copy from a producer. This event does not prove the producer's coverage is complete.",
+  "type": "object",
+  "properties": {
+    "format": {
+      "const": "setrya.copy-event.v1"
+    },
+    "run_id": {
+      "$ref": "#/$defs/id"
+    },
+    "producer": {
+      "$ref": "#/$defs/id"
+    },
+    "subject_ref": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "store": {
+      "$ref": "#/$defs/id"
+    },
+    "key": {
+      "$ref": "#/$defs/id"
+    },
+    "source": {
+      "$ref": "#/$defs/id"
+    },
+    "action": {
+      "enum": [
+        "retrieved",
+        "stored",
+        "derived",
+        "sent"
+      ]
+    },
+    "classification": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\x00-\\x1F\\x7F]+$"
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "details": {
+      "$ref": "#/$defs/details"
+    },
+    "turn": {
+      "$ref": "#/$defs/id"
+    },
+    "initiator": {
+      "$ref": "#/$defs/id"
+    },
+    "agent": {
+      "$ref": "#/$defs/id"
+    },
+    "on_behalf_of": {
+      "$ref": "#/$defs/id"
+    },
+    "parent_turn": {
+      "$ref": "#/$defs/id"
+    }
+  },
+  "required": [
+    "format",
+    "run_id",
+    "producer",
+    "subject_ref",
+    "sequence",
+    "store",
+    "key",
+    "source",
+    "action",
+    "classification",
+    "observed_at",
+    "details"
+  ],
+  "dependentRequired": {
+    "turn": [
+      "initiator",
+      "agent"
+    ],
+    "initiator": [
+      "turn",
+      "agent"
+    ],
+    "agent": [
+      "turn",
+      "initiator"
+    ],
+    "on_behalf_of": [
+      "turn",
+      "initiator",
+      "agent"
+    ],
+    "parent_turn": [
+      "turn",
+      "initiator",
+      "agent"
+    ]
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_./:@+-]*$"
+    },
+    "details": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "region": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "direction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_level": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "boundary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "boundary_kind": {
+          "enum": [
+            "trace",
+            "namespace"
+          ]
+        },
+        "payload_hmac": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "invocation_logging": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "prompt_caching": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "maxItems": 1024
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "maxItems": 1024
+        }
+      },
+      "additionalProperties": false,
+      "dependentRequired": {
+        "boundary": [
+          "boundary_kind"
+        ],
+        "boundary_kind": [
+          "boundary"
+        ]
+      },
+      "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "model"
+                ]
+              },
+              {
+                "required": [
+                  "provider"
+                ]
+              },
+              {
+                "required": [
+                  "region"
+                ]
+              },
+              {
+                "required": [
+                  "invocation_logging"
+                ]
+              },
+              {
+                "required": [
+                  "prompt_caching"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "required": [
+              "evidence_level"
+            ],
+            "properties": {
+              "evidence_level": {
+                "const": "configuration"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "boundary"
+            ]
+          },
+          "then": {
+            "properties": {
+              "boundary": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

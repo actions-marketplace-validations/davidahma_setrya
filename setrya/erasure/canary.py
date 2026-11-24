@@ -4,9 +4,11 @@ from __future__ import annotations
 import re
 import sqlite3
 from collections.abc import Mapping
+from contextlib import contextmanager
 
 from setrya.drill import InputError
-from .adapters import _keys, _pg_connection, _sql_name
+from .adapters import _keys, _pg_connection, _require_pg_base_table, _sql_name, _sqlite_snapshot
+from .fs_canary import AgentFSCanaryScanner, FilesystemCanaryScanner, GitHistoryCanaryScanner, ScanLimits
 from .journal import identifier
 
 
@@ -24,20 +26,22 @@ class SQLiteCanaryScanner:
         names = table, key, content, scope_column
         if any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", v) for v in names):
             raise InputError("expected explicit SQLite table and column names")
-        self.db = db
+        self.db, self.table = db, table
         # Use a qualified table name on every column so SQLite cannot treat a
         # misspelled double-quoted column as a literal string and return no hits.
         self.query = f"""
             SELECT CASE WHEN typeof(t."{content}") = 'text' THEN t."{key}" END AS copy_key
-            FROM "{table}" t WHERE t."{scope_column}" COLLATE BINARY=?
+            FROM main."{table}" t WHERE CAST(t."{scope_column}" AS TEXT) COLLATE BINARY=?
               AND (typeof(t."{content}") NOT IN ('text', 'null') OR instr(t."{content}",?)>0) LIMIT 4097
         """
 
+    def snapshot(self):
+        return _sqlite_snapshot(self.db, (f'"{self.table}"',))
+
     def find(self, *, scope: str, marker: str) -> set[str]:
         validate_probe(scope, marker)
-        if self.db.in_transaction:
-            raise InputError("commit application writes before scanning")
-        rows = self.db.execute(self.query, (scope, marker)).fetchall()
+        with self.snapshot() as conn:
+            rows = conn.execute(self.query, (scope, marker)).fetchall()
         if any((row["copy_key"] if isinstance(row, Mapping) else row[0]) is None for row in rows):
             raise InputError("expected a text canary column and non-null copy keys")
         keys = _keys(rows)
@@ -49,18 +53,34 @@ class SQLiteCanaryScanner:
 class PostgresCanaryScanner:
     """Read one scoped text column, including pgvector rows absent from nearest neighbors."""
 
-    def __init__(self, connection, *, table: str, key: str, content: str, scope_column: str):
+    def __init__(self, connection, *, table: str, key: str, content: str, scope_column: str,
+                 jsonb: bool = False):
         self.connection = connection
+        self.table = _sql_name(table)
+        self.jsonb = jsonb
+        column = f"t.{_sql_name(content)}" + ("::jsonb::text" if jsonb else "")
         self.query = (f"SELECT t.{_sql_name(key)}::text AS copy_key FROM {_sql_name(table)} AS t "
                       f"WHERE t.{_sql_name(scope_column)}::text COLLATE \"C\" = %s "
-                      f"AND strpos(t.{_sql_name(content)}, %s::text) > 0 LIMIT 4097")
+                      f"AND strpos({column}, %s::text) > 0 LIMIT 4097")
+
+    @contextmanager
+    def snapshot(self):
+        with _pg_connection(self.connection) as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            _require_pg_base_table(conn, self.table)
+            yield conn
 
     def find(self, *, scope: str, marker: str) -> set[str]:
         validate_probe(scope, marker)
-        with _pg_connection(self.connection) as conn:
-            keys = _keys(conn.execute(self.query, (scope, marker)))
-        if len(keys) > LIMIT:
-            raise InputError("canary scan exceeds the scoped key limit")
+        # JSONB normalizes ASCII strings. Restrict the canary to characters that
+        # do not acquire an escape sequence in PostgreSQL's text rendering.
+        if self.jsonb and not re.fullmatch(r"[A-Za-z0-9_.:@/+ -]+", marker):
+            raise InputError("choose a plain ASCII synthetic marker for a JSONB scan")
+        with self.snapshot() as conn:
+            rows = conn.execute(self.query, (scope, marker)).fetchall()
+            keys = _keys(rows)
+        if len(rows) > LIMIT or len(rows) != len(keys):
+            raise InputError("canary scan needs bounded and distinct scoped keys")
         return keys
 
 

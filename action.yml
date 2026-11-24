@@ -2,7 +2,7 @@ name: Setrya erasure drill
 description: Catch deleted data resurfacing in AI answers after a background job finishes. Get a PR verdict and replayable receipt.
 inputs:
   operation:
-    description: Run a fixture or post its result from a separate job (run or comment).
+    description: Run a fixture, run a vendor conformance self-check, or post an erasure result (run, conformance, or comment).
     default: run
   starter:
     description: Trusted test fixture in the checked-out application.
@@ -13,10 +13,21 @@ inputs:
   output:
     description: New directory for the receipt and evidence.
     default: setrya-receipt
+  conformance-target:
+    description: Disposable backend to check (pgvector, langgraph-store, or mem0).
+  conformance-key:
+    description: Path to a Cosign 3 signing key on the runner. Leave empty only when using keyless signing.
+  conformance-keyless:
+    description: Sign the conformance report online with an authorized OIDC identity.
+    default: 'false'
   exit-code:
     description: For comment only, the exit-code output from the run job.
   review-status:
     description: For comment only, the review-status output from the run job.
+  evidence-summary:
+    description: Bounded observation codes from the run job.
+  artifact-id:
+    description: Optional receipt artifact ID from the upload step.
   token:
     description: For comment only, a token with pull-requests write permission.
 outputs:
@@ -26,24 +37,33 @@ outputs:
   review-status:
     description: Case review status, or UNAVAILABLE if no receipt was produced.
     value: ${{ steps.drill.outputs.review-status }}
+  evidence-summary:
+    description: Sanitised failure, gap and review signals.
+    value: ${{ steps.drill.outputs.evidence-summary }}
 runs:
   using: composite
   steps:
     - id: drill
-      if: inputs.operation == 'run'
+      if: inputs.operation == 'run' || inputs.operation == 'conformance'
       shell: bash
       env:
+        SETRYA_OPERATION: ${{ inputs.operation }}
         SETRYA_STARTER: ${{ inputs.starter }}
         SETRYA_MODE: ${{ inputs.mode }}
         SETRYA_OUTPUT: ${{ inputs.output }}
-      run: python -I "$GITHUB_ACTION_PATH/scripts/action.py" run
+        SETRYA_CONFORMANCE_TARGET: ${{ inputs.conformance-target }}
+        SETRYA_CONFORMANCE_KEY: ${{ inputs.conformance-key }}
+        SETRYA_CONFORMANCE_KEYLESS: ${{ inputs.conformance-keyless }}
+      run: python -I "$GITHUB_ACTION_PATH/scripts/action.py" "$SETRYA_OPERATION"
     - if: inputs.operation == 'comment'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
+        SETRYA_SUMMARY: ${{ inputs.evidence-summary }}
+        SETRYA_ARTIFACT: ${{ inputs.artifact-id }}
         SETRYA_CODE: ${{ inputs.exit-code }}
         SETRYA_REVIEW: ${{ inputs.review-status }}
       run: python -I "$GITHUB_ACTION_PATH/scripts/action.py" comment
-    - if: inputs.operation != 'run' && inputs.operation != 'comment'
+    - if: inputs.operation != 'run' && inputs.operation != 'conformance' && inputs.operation != 'comment'
       shell: bash
       run: exit 2

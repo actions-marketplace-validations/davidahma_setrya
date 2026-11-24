@@ -22,7 +22,7 @@ def check_erasure_adapter(
             raise ValueError("the direct observer must discover every seeded key before deletion")
     for _ in range(2):
         adapter.delete(subject)
-        if adapter.find(subject) or adapter.verify_absent(subject):
-            raise ValueError("the selected subject still has copies")
+        if adapter.find(subject) != set() or adapter.verify_absent(subject) != set():
+            raise ValueError("both direct reads must return an empty set for the deleted subject")
         if adapter.find(retained) != retained_expected or adapter.verify_absent(retained) != retained_expected:
             raise ValueError("deleting the selected subject changed the retained subject's copies")

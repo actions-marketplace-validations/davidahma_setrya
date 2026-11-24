@@ -2,7 +2,6 @@
 import argparse
 from importlib.resources import files
 from pathlib import Path
-import runpy
 from shlex import join
 import sys
 
@@ -20,57 +19,24 @@ def help_parser():
     for name, help_text in (
         ("init", "create a working delete-only starter for your application"),
         ("run", "test erasure in a disposable application and save a receipt"),
+        ("doctor", "check fixture wiring and observations before running a drill"),
         ("replay", "recompute the verdict from saved evidence"),
-        ("demo", "run the two-user workspace example or the analyst investigation"),
+        ("demo", "run the workspace, analyst, memory-files, branches, Northline or Northline source coverage example"),
+        ("journal", "verify journal integrity or import copy events from OTLP"),
+        ("branches", "check live forks and disclosed restore windows"),
+        ("conformance", "run a replayable vendor self-check"),
+        ("crypto-erasure", "observe AWS KMS key destruction using read-only credentials"),
+        ("mcp", "serve local erasure tools over MCP stdio"),
+        ("receipt", "summarize, pack or verify a deletion receipt"),
+        ("recheck", "recheck due follow-up items using read-only evidence"),
+        ("discovery", "import findings, scan Python PDF writes, and check reviewed mappings"),
+        ("route-coverage", "match changed routes and jobs to candidate evidence"),
+        ("coverage-drift", "find journalled systems without inspection or scanning coverage"),
+        ("observe", "check known keys for completed deletion requests with read-only credentials"),
         ("verify", "authenticate a receipt and check its evidence against a trusted signer"),
     ):
         commands.add_parser(name, help=help_text)
     return parser
-
-
-def doctor(argv):
-    from .erasure.v3 import SharedCase, observe_baseline
-
-    parser = argparse.ArgumentParser(prog="setrya doctor", description="Read a trusted fixture's baseline before erasure.")
-    parser.add_argument("--starter", type=Path, required=True)
-    parser.add_argument("--mode", choices=("deletion", "late-write"), default="deletion")
-    args = parser.parse_args(argv)
-    if not args.starter.is_file():
-        raise InputError("Supply a trusted starter file with --starter.")
-    source = args.starter.resolve()
-    original = sys.path
-    try:
-        sys.path = [str(source.parent), str(Path.cwd()), *original]
-        hooks = runpy.run_path(str(source))
-        case, open_fixture = hooks.get("CASE"), hooks.get("open_fixture")
-        if not isinstance(case, SharedCase) or not callable(open_fixture):
-            raise InputError("The trusted starter must define a SharedCase named CASE and open_fixture().")
-        case.spec()
-        with open_fixture() as (subject, app, items):
-            required = ["inspect", "read", "erase"]
-            if case.scan_stores:
-                required.append("scan")
-            if case.require_lineage:
-                required.append("lineage")
-            if args.mode == "late-write":
-                required += ["hold", "checkpoint", "release_and_drain"]
-            missing = [name for name in required if not callable(getattr(app, name, None))]
-            if missing:
-                print("NOT TESTED  Missing fixture methods: " + ", ".join(missing))
-                return 3
-            if not observe_baseline(subject, case, app, external_items=items):
-                print("NOT TESTED  The baseline could not establish the declared keys, callers, questions or scans.")
-                return 3
-            print(f"READY  Read {len(case.artifacts)} declared keys and both questions for {len(case.callers)} caller(s).")
-            print("Erasure and worker hooks will be exercised by setrya run.")
-            return 0
-    except NotImplementedError:
-        print("NOT TESTED  Connect open_fixture to your disposable application.")
-        return 3
-    except SystemExit:
-        raise InputError("The starter exited before its baseline could be checked.") from None
-    finally:
-        sys.path = original
 
 
 def _start(command, args):
@@ -81,14 +47,41 @@ def _start(command, args):
     parser.add_argument("--scope", choices=("person", "tenant"), default="person", help="deletion scope (default: person)")
     parser.add_argument("--output", type=Path, help="fresh output directory")
     if is_demo:
-        parser.add_argument("example", choices=("workspace", "analyst"), nargs="?", help="person example (default: workspace)")
+        parser.add_argument("example", choices=("workspace", "analyst", "memory-files", "branches", "northline", "northline-source"), nargs="?", help="person example (default: workspace)")
         parser.add_argument("--mode", choices=("deletion", "late-write"), help="person drill mode (default: late-write)")
+    else:
+        from .erasure.case_starters import STACKS
+        parser.add_argument("--stack", choices=STACKS, help="connect a store and an HTTP application fixture")
     opts = parser.parse_args(args)
+    if not is_demo and opts.stack:
+        if opts.scope != "person":
+            raise InputError("Stack starters use person scope.")
+        from .erasure.case_starters import init_stack
+        case = init_stack(opts.output or Path("setrya-case"), opts.stack)
+        print(f"Created {case}. Configure the disposable app and storage bindings.")
+        print(join(["setrya", "doctor", "--case", str(case)]))
+        return 0
+    if is_demo and opts.example in ("northline", "northline-source"):
+        if opts.scope != "person" or opts.mode not in (None, "late-write"):
+            raise InputError("Northline tests person erasure with a delayed refresh.")
+        if opts.example == "northline-source":
+            from .discovery.northline_source import demo
+        else:
+            from .discovery.northline import demo
+        return demo(opts.output or Path(opts.example))
+    if is_demo and opts.example == "branches":
+        if opts.scope != "person" or opts.mode is not None:
+            raise InputError("The branch demo supplies its own fork and restore schedule.")
+        from .branches.demo import demo
+        return demo(opts.output or Path("branches"))
     if opts.scope == "tenant":
         from .erasure.cli import main
         return main([command, *args], prog="setrya")
     if is_demo:
         mode = opts.mode or "late-write"
+        if opts.example == "memory-files":
+            from .examples.memory_files import demo
+            return demo(opts.output or Path("memory-files"), mode)
         if opts.example == "analyst":
             from .erasure.investigation import run_demo
             return run_demo(opts.output or Path("investigation"), mode=mode)
@@ -114,8 +107,36 @@ def dispatch(argv):
     options = {arg.partition("=")[0] for arg in args if arg.startswith("--")}
     first = args[0] if args else None
     try:
+        if cmd == "branches":
+            from .branches.cli import command
+            return command(args)
+        if cmd == "conformance":
+            from .vendor.cli import command
+            return command(args)
+        if cmd == "crypto-erasure":
+            from .casework.crypto_erasure import command
+            return command(args)
+        if cmd == "mcp":
+            from .mcp_server import command
+            return command(args)
+        if cmd == "journal":
+            from .erasure.journal_cli import command
+            return command(args)
+        if cmd == "route-coverage":
+            from .route_coverage import main
+            return main(args)
+        if cmd == "coverage-drift":
+            from .coverage_drift import main
+            return main(args)
+        if cmd == "recheck":
+            from .casework.recheck import command
+            return command(args)
+        if cmd in ("receipt", "observe"):
+            from .casework.cli import command
+            return command(argv)
         if cmd == "doctor":
-            return doctor(args)
+            from .erasure.doctor import run
+            return run(args)
         if cmd in ("run", "verify"):
             from .erasure.cli import main
             return main([cmd, *args], prog="setrya")

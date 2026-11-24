@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from importlib.resources import files
 from pathlib import Path
 from shlex import quote
+from shutil import rmtree
 from tempfile import TemporaryDirectory
 
 from setrya.drill import InputError
@@ -34,13 +35,17 @@ def init_example(output):
     return destination
 
 
-@contextmanager
-def open_fixture(binding, *, guarded=True, connect_analyst_cache=True):
-    """Supply facts observed by the application independently of the submitted binding."""
+def _require_demo_dependencies():
     try:
         import langgraph.checkpoint.sqlite  # noqa: F401
     except ImportError:
         raise InputError("Install the LangGraph demo with python -m pip install 'setrya[erasure]'.") from None
+
+
+@contextmanager
+def open_fixture(binding, *, guarded=True, connect_analyst_cache=True):
+    """Supply facts observed by the application independently of the submitted binding."""
+    _require_demo_dependencies()
     # A fixed key on fictional identities keeps the packaged finding and fixture reproducible.
     subject, retained = (Subject.derive(bytes(range(32)), ENVIRONMENT, person, "restricted")
                          for person in ("person-one", "person-two"))
@@ -67,17 +72,34 @@ def run_demo(output):
     from .mapping import bind_finding, load_mapping
 
     destination = Path(output)
-    destination.mkdir(parents=True, exist_ok=False)
-    example = init_example(destination / "example")
-    binding = bind_finding(load_finding(example / "finding.json"), load_mapping(example / "mapping.json"))
-    print("SEC-417 checks one source, two cached copies and the investigation reopened by two analysts.")
-    for name, expected in (("gap", 3), ("broken", 1), ("guarded", 0)):
-        directory = destination / name
-        with open_fixture(binding, guarded=name != "broken", connect_analyst_cache=name != "gap") as settings:
-            run_case(binding, **settings, mode="late-write", output=directory)
-        result = replay(directory, expected_binding=binding)
-        print(f"\n{name}\n{summary(result)}")
-        print(f"Replay: setrya replay {quote(str(directory))}")
-        if exit_code(result) != expected:
-            raise InputError(f"The {name} discovery fixture produced an unexpected verdict.")
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError(destination)
+    _require_demo_dependencies()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    messages = ["SEC-417 checks one source, two cached copies and the investigation reopened by two analysts."]
+    with TemporaryDirectory(prefix=".setrya-demo-", dir=destination.parent) as temp:
+        staging = Path(temp)
+        example = init_example(staging / "example")
+        binding = bind_finding(load_finding(example / "finding.json"), load_mapping(example / "mapping.json"))
+        for name, expected in (("gap", 3), ("broken", 1), ("guarded", 0)):
+            directory = staging / name
+            with open_fixture(binding, guarded=name != "broken", connect_analyst_cache=name != "gap") as settings:
+                run_case(binding, **settings, mode="late-write", output=directory)
+            result = replay(directory, expected_binding=binding)
+            if exit_code(result) != expected:
+                raise InputError(f"The {name} discovery fixture produced an unexpected verdict.")
+            messages.extend((f"\n{name}\n{summary(result)}", f"Replay: setrya replay {quote(str(destination / name))}"))
+        destination.mkdir()
+        moved = []
+        try:
+            for child in staging.iterdir():
+                target = destination / child.name
+                child.rename(target)
+                moved.append(target)
+        except OSError:
+            for target in moved:
+                rmtree(target)
+            destination.rmdir()
+            raise
+    print("\n".join(messages))
     return 0
