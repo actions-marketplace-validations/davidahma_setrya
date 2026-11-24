@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.0
+
+- Reuse HTTP drill behavior across deployments. Capture the endpoint's TLS certificate fingerprint and application-reported build, with an independent deployment pin for review.
+- Compare two signed client assessments to show gained and lost observations, residuals, build changes, and open items. Attach the signed approval and customer summaries to an existing review.
+- Give the draft receipt exchange independent verification in Python and the browser, with shared error codes and an offline keyless verifier.
+
 ## 1.9.0
 
 - Capture v3.2 tool, test file, Git checkout and CI provenance for deletion drills and allow independent replay pins.

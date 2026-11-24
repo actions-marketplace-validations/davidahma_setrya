@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 
+from setrya.core.deployment import read_pin as read_deployment_pin, verify_pin as verify_deployment_pin
 from setrya.core.provenance import describe, read_pin, verify_pins
 from setrya.drill import InputError
 from setrya.evidence import bundle_manifest
@@ -12,10 +13,11 @@ from setrya.offboarding.inputs import MAX_JSON_BYTES, read_regular_bytes, requir
 
 
 def replay_bytes(directory, raw, *, expected_request=None, expected_job=None,
-                 expected_provenance=None, expected_app_commit=None):
+                 expected_provenance=None, expected_app_commit=None, expected_deployment=None):
     """Recompute the decision for exact receipt bytes, then check independent pins."""
     result = _replay_bytes(directory, raw, expected_request=expected_request, expected_job=expected_job)
-    return verify_pins(result, expected_provenance=expected_provenance, expected_app_commit=expected_app_commit)
+    verify_pins(result, expected_provenance=expected_provenance, expected_app_commit=expected_app_commit)
+    return verify_deployment_pin(result, expected_deployment)
 
 
 def _replay_bytes(directory, raw, *, expected_request, expected_job):
@@ -43,10 +45,11 @@ def _replay_bytes(directory, raw, *, expected_request, expected_job):
 
 
 def replay(directory, *, expected_request=None, expected_job=None, records=None,
-           expected_provenance=None, expected_app_commit=None):
+           expected_provenance=None, expected_app_commit=None, expected_deployment=None):
     """Offline replay with optional request, job or producer-provenance pins."""
     result = _replay(directory, expected_request=expected_request, expected_job=expected_job, records=records)
-    return verify_pins(result, expected_provenance=expected_provenance, expected_app_commit=expected_app_commit)
+    verify_pins(result, expected_provenance=expected_provenance, expected_app_commit=expected_app_commit)
+    return verify_deployment_pin(result, expected_deployment)
 
 
 def _replay(directory, *, expected_request, expected_job, records):
@@ -97,7 +100,12 @@ def summary(receipt):
     """Render the verdict, case obligations and recorded producer details."""
     text = _summary(receipt)
     producer = receipt.get("provenance")
-    return "\n".join([text, *describe(producer)]) if producer is not None else text
+    lines = [text, *(describe(producer) if producer is not None else [])]
+    if observed := receipt.get("deployment"):
+        record = observed["record"]
+        lines.append(f"Deployment {observed['status']} · {record['environment']} · {record['origin']} · "
+                     f"expected build {record['build_id']}")
+    return "\n".join(lines)
 
 
 def _summary(receipt):
@@ -141,6 +149,7 @@ def signature_command(args):
 
     expected_provenance = read_pin(getattr(args, "expect_provenance", None))
     expected_app_commit = getattr(args, "expect_app_commit", None)
+    expected_deployment = read_deployment_pin(getattr(args, "expect_deployment", None))
 
     def validate(raw):
         header = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_fields)
@@ -151,12 +160,13 @@ def signature_command(args):
             validate_receipt(header)
             check_scope(header, args.scope)
             verify_pins(header, expected_provenance=expected_provenance, expected_app_commit=expected_app_commit)
+            verify_deployment_pin(header, expected_deployment)
             return
         require(not os.path.lexists(args.receipt.parent / "receipt.json")
                 and args.receipt.name == bundle_manifest(args.receipt.parent),
                 "Choose the manifest from the original evidence bundle.")
         receipt = replay_bytes(args.receipt.parent, raw, expected_provenance=expected_provenance,
-                               expected_app_commit=expected_app_commit)
+                               expected_app_commit=expected_app_commit, expected_deployment=expected_deployment)
         check_scope(receipt, args.scope)
 
     return signature.run(args, receipt_limit=v2.MAX_BUNDLE_FILE_BYTES, validate=validate)

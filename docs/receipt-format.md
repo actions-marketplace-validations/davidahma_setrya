@@ -14,7 +14,7 @@ print(summary(receipt))
 code = exit_code(receipt, case_review=True)
 ```
 
-Replay establishes what the captured reads and exhibits support. Authenticate those bytes with `setrya verify --receipt FILE --bundle SIGNATURE --key independently-trusted.pub` for a local Cosign signature, or supply a trusted Sigstore root, exact identity and issuer for a keyless bundle. A signed receipt still depends on the app's observer and the scope it tested. A v3.2 person drill receipt also binds the recorded Setrya version, application checkout, test-file hashes and GitHub Actions run to the evidence. [Pin the producer and fixture](receipt-provenance.md)
+Replay establishes what the captured reads and exhibits support. Authenticate those bytes with `setrya verify --receipt FILE --bundle SIGNATURE --key independently-trusted.pub` for a local Cosign signature, or supply a trusted Sigstore root, exact identity and issuer for a keyless bundle. A signed receipt still depends on the app's observer and the scope it tested. Person drill receipts from v3.2 evidence onward bind the recorded Setrya version, application checkout, test-file hashes and GitHub Actions run. Split HTTP cases use v3.3 evidence and add observable deployment identity. [Pin the producer and fixture](receipt-provenance.md) · [Pin a deployment](http-cases.md#run-the-same-behavior-against-two-deployments)
 
 The draft exchange wraps an original person receipt so another team can authenticate the issuer and replay the evidence offline. It supports synthetic drills and observed-deletion receipts. [Draft v1 exchange](receipt-exchange.md)
 

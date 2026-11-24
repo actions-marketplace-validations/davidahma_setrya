@@ -85,6 +85,13 @@ def _linked(folder, filename, digest):
     return replay_bytes(folder, raw)
 
 
+def _read_drill_evidence(folder, receipt):
+    evidence = receipt["evidence"]
+    raw = read_regular_bytes(folder / evidence["file"], "summary evidence", MAX_BUNDLE_FILE_BYTES)
+    require(sha256(raw).hexdigest() == evidence["sha256"], "Summary evidence changed after replay.")
+    return json.loads(raw.decode(), object_pairs_hook=unique_fields)
+
+
 def _outcome(bundle, receipt, *, audience):
     folder = Path(bundle)
     if folder.is_file():
@@ -148,10 +155,7 @@ def _outcome(bundle, receipt, *, audience):
         if "after_control_absent" in reasons:
             kinds.add("control-loss")
         return kinds, ["Recorded results: " + ", ".join(f"{n} {label}" for label, n in sorted(counts.items())) + "."]
-    evidence = receipt["evidence"]
-    raw = read_regular_bytes(folder / evidence["file"], "summary evidence", MAX_BUNDLE_FILE_BYTES)
-    require(sha256(raw).hexdigest() == evidence["sha256"], "Summary evidence changed after replay.")
-    observed = json.loads(raw.decode(), object_pairs_hook=unique_fields)
+    observed = _read_drill_evidence(folder, receipt)
     findings, _ = post_erasure_findings(observed, grouped=observed["format"] in GROUPED_EVIDENCE_FORMATS)
     return findings.kinds, [line for key, label in (("immediate", "After erasure"), ("final", "At the final read"))
                             for line in _stage_outcome(observed, key, label)]

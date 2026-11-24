@@ -23,6 +23,7 @@ from setrya.receipts import replay_bytes
 from .profiles import decode, fields, new_bundle, snapshot, stamp
 
 FORMAT = "setrya.assessment.v1"
+CLIENT_FORMAT = "setrya.assessment.v2"
 PLAN = "setrya.assessment-input.v1"
 REPORT = "assessment.json"
 SIGNATURE = "assessment.sig"
@@ -60,7 +61,7 @@ def _source(directory, value):
     return directory / value
 
 
-def _check(path, commit):
+def _check(path, commit, *, detailed=False):
     raw = snapshot(path, MAX_JSON_BYTES)
     data = decode(raw)
     require(isinstance(data, dict), "Expected a coverage or scan object.")
@@ -88,17 +89,38 @@ def _check(path, commit):
     else:
         gap_count = len(rows)
     canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-    return {"kind": kind, "input_sha256": _digest(raw), "report_sha256": _digest(canonical),
-            "entries": len(rows), "gaps": gap_count,
-            "commit_binding": "reported" if commit_field else "unbound"}
+    result = {"kind": kind, "input_sha256": _digest(raw), "report_sha256": _digest(canonical),
+              "entries": len(rows), "gaps": gap_count,
+              "commit_binding": "reported" if commit_field else "unbound"}
+    if detailed:
+        result["scope_ids"] = sorted({identity for row in rows if (identity := _check_scope(kind, row)) is not None})
+    return result
 
 
-def _receipt(path, commit):
+def _check_scope(kind, row):
+    if kind == "setrya.copy-review.v1":
+        site = row.get("site_id")
+        return site if isinstance(site, str) and _SHA256.fullmatch(site) else None
+    if kind == "setrya.route-coverage.v1" and "surface" in row:
+        identity = [row.get("component"), row.get("path"), row["surface"]]
+        if all(isinstance(value, str) and value for value in identity[:2]) and (
+                identity[2] is None or isinstance(identity[2], str)):
+            return _digest(json.dumps(identity, ensure_ascii=True, separators=(",", ":")).encode())
+    if kind == "journal-coverage":
+        identity = [row.get(field) for field in ("store", "kind", "name")]
+        if all(isinstance(value, str) and value for value in identity):
+            return _digest(json.dumps(identity, ensure_ascii=True, separators=(",", ":")).encode())
+    return None
+
+
+def _receipt(path, commit, *, detailed=False, expected_deployment=None):
     require(path.is_dir() and not path.is_symlink(), "Supply a receipt directory.")
     name = bundle_manifest(path)
     require(name in ("erasure-receipt.json", "case-result.json"), "Expected an erasure or discovery receipt.")
     raw = snapshot(path / name, MAX_BUNDLE_FILE_BYTES)
     result = replay_bytes(path, raw)
+    if expected_deployment is not None:
+        _check_deployment(result, expected_deployment)
     verdict, review = result.get("technical_verdict"), result.get("review_status")
     require(verdict in _VERDICTS and review in _REVIEWS, "Expected a technical verdict and review status.")
     captured = result.get("provenance", {})
@@ -114,9 +136,20 @@ def _receipt(path, commit):
     else:
         binding = "unbound"
     evidence = result.get("evidence", result.get("erasure_receipt", {}))
-    return {"receipt_sha256": _digest(raw), "evidence_sha256": evidence.get("sha256"),
+    row = {"receipt_sha256": _digest(raw), "evidence_sha256": evidence.get("sha256"),
             "verdict": verdict, "review": review, "commit_binding": binding,
             "profile": result.get("profile", result.get("scope", "discovery"))}
+    if detailed:
+        from .assessment_details import details
+
+        row["details"] = details(result, path)
+    return row
+
+
+def _check_deployment(receipt, expected):
+    from setrya.core.deployment import check_pin
+
+    check_pin(receipt.get("deployment"), expected)
 
 
 
@@ -125,9 +158,13 @@ def _hash(value):
 
 
 def _validate(result):
-    fields(result, "format setrya_version issued_at signature_type repositories files")
-    require(result["format"] == FORMAT and result["signature_type"] in ("cosign-detached", "sigstore-bundle"),
+    fields(result, "format setrya_version issued_at signature_type repositories files", ("client",))
+    require(result["format"] in (FORMAT, CLIENT_FORMAT) and result["signature_type"] in ("cosign-detached", "sigstore-bundle"),
             "Unsupported assessment format.")
+    detailed = result["format"] == CLIENT_FORMAT
+    require(("client" in result) == detailed, "Assessment format and client scope disagree.")
+    if detailed:
+        _label(result["client"])
     _label(result["setrya_version"])
     stamp(result["issued_at"])
     fields(result["files"], SUMMARY)
@@ -143,17 +180,33 @@ def _validate(result):
         git_revision(repo["commit"])
         check_digests = set()
         for row in _listed(repo["checks"], 8, "checks per repository"):
-            fields(row, "kind input_sha256 report_sha256 entries gaps commit_binding")
+            fields(row, "kind input_sha256 report_sha256 entries gaps commit_binding" + (" scope_ids" if detailed else ""))
             require(row["kind"] in _CHECKS and row["commit_binding"] in ("reported", "unbound")
                     and type(row["entries"]) is int and type(row["gaps"]) is int
                     and 0 <= row["gaps"] <= row["entries"] <= 4096, "Invalid assessment coverage record.")
             _hash(row["input_sha256"])
             _hash(row["report_sha256"])
+            if detailed:
+                scope = _listed(row["scope_ids"], row["entries"], "coverage scope identifiers")
+                for identity in scope:
+                    _hash(identity)
+                require(scope == sorted(set(scope)), "Coverage scope identifiers must be distinct and ordered.")
             require(row["report_sha256"] not in check_digests, "Duplicate coverage report digest.")
             check_digests.add(row["report_sha256"])
         receipt_digests = set()
         for receipt in _listed(repo["receipts"], 24, "receipts per repository"):
-            fields(receipt, "receipt_sha256 evidence_sha256 verdict review commit_binding profile")
+            fields(receipt, "receipt_sha256 evidence_sha256 verdict review commit_binding profile" + (" details" if detailed else ""))
+            if detailed:
+                from .assessment_details import validate_details
+
+                validate_details(receipt["details"])
+                require(not receipt["details"]["residual"] or receipt["verdict"] == "FAIL",
+                        "Assessment residual conflicts with its verdict.")
+                require(not receipt["details"]["open_items"] or receipt["review"] != "READY_FOR_REVIEW",
+                        "Assessment follow-ups conflict with its review status.")
+                deployment = receipt["details"]["deployment"]
+                require(deployment is None or deployment["status"] == "verified" or receipt["verdict"] != "PASS",
+                        "An unverified deployment cannot produce a passing assessment observation.")
             require(receipt["verdict"] in _VERDICTS and receipt["review"] in _REVIEWS
                     and receipt["commit_binding"] in ("receipt-checkout", "unbound"),
                     "Invalid assessment receipt result.")
@@ -171,6 +224,8 @@ def _summary(result):
     lines = ["# Deletion assessment", "", f"Issued {result['issued_at']} · Setrya {result['setrya_version']}", "",
              "Repository checks below describe the supplied evidence. A coverage map identifies where to test.",
              ""]
+    if "client" in result:
+        lines.extend((f"Client `{result['client']}`", ""))
     for repo in result["repositories"]:
         label = repo["name"]
         receipts = repo["receipts"]
@@ -198,11 +253,13 @@ def _summary(result):
     return ("\n".join(lines) + "\n").encode()
 
 
-def build(plan, output, *, key=None):
+def build(plan, output, *, key=None, expected_deployment=None):
     plan = Path(plan)
     source = decode(snapshot(plan, MAX_JSON_BYTES))
-    fields(source, "format repositories")
+    fields(source, "format repositories", ("client",))
     require(source["format"] == PLAN, "Expected a Setrya assessment input file.")
+    client = _label(source["client"]) if "client" in source else None
+    require(expected_deployment is None or client is not None, "Supply a client label for a deployment-pinned assessment.")
     repos = []
     seen = set()
     for item in _listed(source["repositories"], 32, "repositories"):
@@ -213,10 +270,15 @@ def build(plan, output, *, key=None):
         checks = _listed(item["checks"], 8, "checks per repository")
         receipts = _listed(item["receipts"], 24, "receipts per repository")
         repos.append({"name": name, "commit": commit,
-                      "checks": [_check(_source(plan.parent, path), commit) for path in checks],
-                      "receipts": [_receipt(_source(plan.parent, path), commit) for path in receipts]})
+                      "checks": [_check(_source(plan.parent, path), commit, detailed=client is not None) for path in checks],
+                      "receipts": [_receipt(_source(plan.parent, path), commit, detailed=client is not None,
+                                            expected_deployment=expected_deployment) for path in receipts]})
     require(repos, "Supply at least one repository.")
-    result = {"format": FORMAT, "setrya_version": __version__, "issued_at": datetime.now(UTC).isoformat(),
+    if expected_deployment is not None:
+        require(any(repo["receipts"] for repo in repos), "No receipt was supplied for deployment review.")
+    result = {"format": CLIENT_FORMAT if client is not None else FORMAT,
+              **({"client": client} if client is not None else {}),
+              "setrya_version": __version__, "issued_at": datetime.now(UTC).isoformat(),
               "signature_type": "cosign-detached" if key else "sigstore-bundle", "repositories": repos}
     summary = _summary(result)
     result["files"] = {SUMMARY: _digest(summary)}
@@ -229,7 +291,7 @@ def build(plan, output, *, key=None):
     return result
 
 
-def verify(directory, *, key=None, identity=None, issuer=None, trusted_root=None):
+def read_signed(directory, *, key=None, identity=None, issuer=None, trusted_root=None, expected_deployment=None):
     directory = Path(directory)
     require(directory.is_dir() and not directory.is_symlink(), "Supply an assessment directory.")
     require(not key or not any((identity, issuer, trusted_root)), "Choose one signer policy.")
@@ -245,7 +307,17 @@ def verify(directory, *, key=None, identity=None, issuer=None, trusted_root=None
     summary = snapshot(directory / SUMMARY, MAX_JSON_BYTES)
     require(manifest["files"] == {SUMMARY: _digest(summary)} and summary == _summary(manifest),
             "Summary differs from the signed assessment.")
-    return summary.decode()
+    if expected_deployment is not None:
+        rows = [row["details"] for repo in manifest["repositories"] for row in repo["receipts"]
+                if "details" in row]
+        require(rows, "No receipts with deployment evidence were supplied.")
+        for details in rows:
+            _check_deployment(details, expected_deployment)
+    return manifest, _digest(raw), summary
+
+
+def verify(directory, **options):
+    return read_signed(directory, **options)[2].decode()
 
 
 def command(argv):
@@ -255,17 +327,29 @@ def command(argv):
     issue.add_argument("--plan", required=True, type=Path)
     issue.add_argument("--output", required=True, type=Path)
     issue.add_argument("--key", type=Path, help="local Cosign signing key (default: Sigstore keyless)")
+    issue.add_argument("--expect-deployment", type=Path)
     inspect = sub.add_parser("verify", help="verify the signer and summary")
     inspect.add_argument("directory", type=Path)
     inspect.add_argument("--key", type=Path)
     inspect.add_argument("--identity")
     inspect.add_argument("--issuer")
     inspect.add_argument("--trusted-root", type=Path)
+    inspect.add_argument("--expect-deployment", type=Path)
+    from .assessment_comparison import add_commands, dispatch
+
+    add_commands(sub)
     args = parser.parse_args(argv)
+    if args.operation in ("compare", "verify-comparison"):
+        return dispatch(args)
+    expected = None
+    if args.expect_deployment is not None:
+        from setrya.core.deployment import read_pin
+
+        expected = read_pin(args.expect_deployment)
     if args.operation == "build":
-        build(args.plan, args.output, key=args.key)
+        build(args.plan, args.output, key=args.key, expected_deployment=expected)
         print(f"Signed assessment saved in {args.output}")
     else:
         print(verify(args.directory, key=args.key, identity=args.identity, issuer=args.issuer,
-                     trusted_root=args.trusted_root), end="")
+                     trusted_root=args.trusted_root, expected_deployment=expected), end="")
     return 0

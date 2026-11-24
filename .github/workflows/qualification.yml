@@ -3,6 +3,7 @@ name: Offline qualification
 on:
   push:
     branches: [main]
+  pull_request:
   schedule:
     - cron: '30 14 * * 2'
   workflow_dispatch:
@@ -20,6 +21,7 @@ concurrency:
 
 jobs:
   qualification:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -70,9 +72,9 @@ jobs:
           create-storage-record: false
 
   assessment:
-    name: Signed cross-repository assessment
+    name: Signed assessment and offline browser checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -83,5 +85,36 @@ jobs:
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532
         with:
           cosign-release: v3.1.4
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.4'
+          cache-dependency-path: scripts/browser-verifier/go.sum
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.20.0'
       - run: python3 scripts/verify-assessment.py --output "$RUNNER_TEMP/setrya-assessment"
-      - run: node scripts/verify-browser-report.mjs docs/verify-offline.html "$RUNNER_TEMP/setrya-assessment"
+      - run: python3 scripts/verify-exchange-vectors.py --output "$RUNNER_TEMP/exchange-vectors"
+      - run: python3 scripts/build-browser-verifier.py --output "$RUNNER_TEMP/setrya-verify-offline.html"
+      - name: Provision independent trust and pinned published exchange fixtures
+        env:
+          TUF_ROOT: ${{ runner.temp }}/browser-trust
+        run: |
+          cosign initialize
+          archive="$RUNNER_TEMP/exchange-v1.9.0.zip"
+          curl --fail --silent --show-error --location --max-time 60 --max-filesize 1048576 \
+            https://github.com/davidahma/setrya/releases/download/v1.9.0/deletion-receipt-exchange.zip \
+            --output "$archive"
+          printf '%s  %s\n' a53677da6807955af310491f15236f8416abb6e0b8f5cb1dd2db4a48a64af378 "$archive" | sha256sum -c -
+          unzip -q "$archive" -d "$RUNNER_TEMP/exchange-v1.9.0"
+      - name: Verify signed and malformed bundles without network access
+        run: |
+          root="$RUNNER_TEMP/browser-trust/tuf-repo-cdn.sigstore.dev/targets/trusted_root.json"
+          sudo -n -- /usr/bin/unshare --net /usr/bin/setpriv --reuid "$(id -u)" \
+            --regid "$(id -g)" --clear-groups --no-new-privs "$(command -v node)" \
+            scripts/verify-browser-report.mjs "$RUNNER_TEMP/setrya-verify-offline.html" "$RUNNER_TEMP/setrya-assessment" \
+            --vectors "$RUNNER_TEMP/exchange-vectors" --signed "$RUNNER_TEMP/exchange-v1.9.0" --root "$root"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: offline-browser-verifier
+          path: ${{ runner.temp }}/setrya-verify-offline.html
+          if-no-files-found: error

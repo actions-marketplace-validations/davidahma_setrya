@@ -226,7 +226,7 @@ def observe_baseline(subject, case, application, *, external_items=(), on_gap=No
 
 def run_shared(subject, *, case, application, output, mode="late-write", external_items=(),
                journal=None, run_id=None, expected_producers=(), authorize_erase=None, authorize_hold=None,
-               cancel_hold=None, erase_action=None, provenance=None):
+               cancel_hold=None, erase_action=None, provenance=None, deployment_evidence=None):
     """Run trusted callbacks only against a disposable, authorized application fixture."""
     start = monotonic()
     require(isinstance(subject, Subject) and isinstance(case, SharedCase), "Expected a subject and shared case.")
@@ -363,6 +363,8 @@ def run_shared(subject, *, case, application, output, mode="late-write", externa
                 "immediate": rules.group_samples(immediate, spec), "final": rules.group_samples(final, spec),
                 "expected_producers": expected, "coverage": coverage, "journal": events, "journal_chain": chain,
                 "errors": errors, "drill_duration_ms": 0, "provenance": producer}
+    if deployment_evidence is not None:
+        evidence.update(format=rules.DEPLOYMENT_EVIDENCE_FORMAT, deployment=deployment_evidence)
     if window and window["start"] < window["stop"]:
         evidence["late_write_window"] = window
         if late_residuals:

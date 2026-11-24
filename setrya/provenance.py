@@ -53,7 +53,7 @@ def _matches_commit(root, commit, path, raw):
     return blob == recorded.hexdigest().encode("ascii")
 
 
-def capture(starter, test_files=(), *, deployed_commit=None, executed_copy=None):
+def capture(starter, test_files=(), *, deployed_commit=None, executed_copy=None, expected_hashes=None):
     """Fingerprint the executing entrypoint and explicitly declared local test code."""
     files = [starter, *test_files]
     require(len(files) <= _MAX_TEST_FILES, "Declare at most 32 test files including the entrypoint.")
@@ -68,9 +68,12 @@ def capture(starter, test_files=(), *, deployed_commit=None, executed_copy=None)
         inside = commit is not None and source.is_relative_to(root)
         label = source.relative_to(root).as_posix() if inside else source.name
         raw = read_regular_bytes(source, "test provenance file", _MAX_TEST_BYTES)
+        digest = sha256(raw).hexdigest()
+        if expected_hashes is not None and source in expected_hashes:
+            require(digest == expected_hashes[source], "The parsed HTTP test inputs changed before this run.")
         result["test_files"].append({
             "path": label, "location": "checkout" if inside else "external",
-            "role": "test" if index else "entrypoint", "sha256": sha256(raw).hexdigest(),
+            "role": "test" if index else "entrypoint", "sha256": digest,
             "commit_bound": inside and _matches_commit(root, commit, label, raw),
         })
     if executed_copy is not None:
