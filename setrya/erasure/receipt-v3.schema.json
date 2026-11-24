@@ -1385,15 +1385,46 @@
         }
       }
     },
+    "deploymentBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record", "behavior_sha256", "deployment_sha256", "status"],
+      "properties": {
+        "record": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["format", "environment", "origin", "build_id", "tls_sha256"],
+          "properties": {
+            "format": {"const": "setrya.deployment-record.v1"},
+            "environment": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}(?![\\s\\S])"},
+            "origin": {"type": "string", "pattern": "^https://", "maxLength": 270},
+            "build_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}(?![\\s\\S])"},
+            "tls_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}(?![\\s\\S])"}
+          }
+        },
+        "behavior_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}(?![\\s\\S])"},
+        "deployment_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}(?![\\s\\S])"},
+        "status": {"enum": ["verified", "unverified"]}
+      }
+    },
     "person": {
       "type": "object",
       "dependentRequired": {
         "evidence_format": ["provenance"],
-        "provenance": ["evidence_format"]
+        "provenance": ["evidence_format"],
+        "deployment": ["evidence_format"]
       },
+      "allOf": [{
+        "if": {"required": ["evidence_format"], "properties": {
+          "evidence_format": {"const": "setrya.erasure.evidence.v3.3"}
+        }},
+        "then": {"required": ["deployment"]},
+        "else": {"not": {"required": ["deployment"]}}
+      }],
       "properties": {
-        "evidence_format": {"const": "setrya.erasure.evidence.v3.2"},
+        "evidence_format": {"enum": ["setrya.erasure.evidence.v3.2", "setrya.erasure.evidence.v3.3"]},
         "provenance": {"$ref": "#/$defs/producerProvenance"},
+        "deployment": {"$ref": "#/$defs/deploymentBinding"},
         "format": {
           "const": "setrya.erasure.receipt.v3"
         },

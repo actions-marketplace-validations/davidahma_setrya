@@ -36,6 +36,7 @@
     },
     "scope": { "const": "person" },
     "signature_type": { "enum": ["cosign-detached", "sigstore-bundle"] },
+    "deployment": { "$ref": "#/$defs/deployment" },
     "observation": {
       "type": "object",
       "required": ["last_checked_at"],
@@ -114,6 +115,7 @@
   },
   "if": { "properties": { "evidence_kind": { "const": "read-only-observation" } } },
   "then": {
+    "not": { "required": ["deployment"] },
     "properties": {
       "observation": {
         "required": ["first_checked_at"],
@@ -132,6 +134,9 @@
       "files": {
         "required": ["observation-evidence.json"],
         "not": { "required": ["erasure-evidence.json"] }
+      },
+      "open_items": {
+        "items": { "properties": { "kind": { "enum": ["verification", "coverage"] } } }
       }
     }
   },
@@ -143,7 +148,10 @@
       },
       "ticket": { "type": "null" },
       "surfaces": { "properties": { "routes": { "minItems": 1 } } },
-      "open_items": { "maxItems": 640 },
+      "open_items": {
+        "maxItems": 640,
+        "items": { "properties": { "kind": { "enum": ["configuration", "attested", "retained"] } } }
+      },
       "files": {
         "required": ["erasure-evidence.json"],
         "not": { "required": ["observation-evidence.json"] }
@@ -151,6 +159,29 @@
     }
   },
   "$defs": {
+    "deployment": {
+      "description": "Projection of the HTTPS deployment evidence in the original drill receipt.",
+      "type": "object",
+      "required": ["record", "behavior_sha256", "deployment_sha256", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "record": {
+          "type": "object",
+          "required": ["format", "environment", "origin", "build_id", "tls_sha256"],
+          "additionalProperties": false,
+          "properties": {
+            "format": { "const": "setrya.deployment-record.v1" },
+            "environment": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}(?![\\s\\S])" },
+            "origin": { "type": "string", "pattern": "^https://[^/\\\\?#@\\s]+(?![\\s\\S])", "maxLength": 270 },
+            "build_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}(?![\\s\\S])" },
+            "tls_sha256": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        "behavior_sha256": { "$ref": "#/$defs/sha256" },
+        "deployment_sha256": { "$ref": "#/$defs/sha256" },
+        "status": { "enum": ["verified", "unverified"] }
+      }
+    },
     "systemLabel": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+:-]{0,95}(?![\\s\\S])"

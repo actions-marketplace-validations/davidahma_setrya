@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -78,6 +79,26 @@ def main():
         run(*cli, "receipt", "pack", str(workspace / "guarded"), "--output", str(exchange), "--synthetic",
             "--system", "synthetic-support", "--system-version", "1",
             "--key", str(scratch / "cosign.key"), env=env)
+        client = {"format": "setrya.assessment-input.v1", "client": "synthetic-support", "repositories": [
+            {"name": "support", "commit": head, "checks": ["copy-review.json"], "receipts": ["workspace/guarded"]},
+        ]}
+        approved, candidate = out / "approved", out / "candidate"
+        for receipt, folder in (("guarded", approved), ("broken", candidate)):
+            client["repositories"][0]["receipts"] = [f"workspace/{receipt}"]
+            plan.write_text(json.dumps(client))
+            run(*cli, "assess", "build", "--plan", str(plan), "--output", str(folder),
+                "--key", str(scratch / "cosign.key"), env=env)
+        comparison = out / "approval"
+        digest = sha256((approved / "assessment.json").read_bytes()).hexdigest()
+        run(*cli, "assess", "compare", str(approved), str(candidate), "--client", "synthetic-support",
+            "--approved-sha256", digest, "--key", str(public), "--sign-key", str(scratch / "cosign.key"),
+            "--output", str(comparison), env=env)
+        decision = run(*cli, "assess", "verify-comparison", str(comparison), "--key", str(public))
+        customer = (comparison / "customer.md").read_text()
+        if not all(label in decision for label in ("SEND BACK FOR REVIEW", "Erased data found", "Owner platform-team")):
+            raise RuntimeError("The signed comparison omitted the review decision or its basis.")
+        if "a copy or an answer that should have been erased" not in customer:
+            raise RuntimeError("The customer summary omitted the residual.")
     print(text)
 
 

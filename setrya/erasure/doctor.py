@@ -8,6 +8,7 @@ import runpy
 import sys
 import traceback
 
+from setrya.core.deployment import matches
 from setrya.drill import InputError
 from .v3 import SharedCase, observe_baseline
 
@@ -33,9 +34,7 @@ class Locations:
                     self.hooks.setdefault(name, n)
 
     def yaml(self, keys):
-        while keys and keys not in self.case.locations:
-            keys = keys[:-1]
-        return f"{self.path}:{self.case.locations.get(keys, 1)}"
+        return self.case.position(keys)
 
     def hook(self, name, subject=None, detail=None, app=None):
         if self.case is not None:
@@ -60,11 +59,14 @@ def run(argv):
     source_arg = parser.add_mutually_exclusive_group(required=True)
     source_arg.add_argument("--starter", type=Path, help="trusted Python starter or YAML case")
     source_arg.add_argument("--case", type=Path, help="trusted declarative YAML case")
+    parser.add_argument("--deployment", type=Path, help="client deployment bindings for a split YAML case")
     parser.add_argument("--mode", choices=("deletion", "late-write"), default="deletion")
     args = parser.parse_args(argv)
     if args.case and args.case.suffix.lower() not in (".yaml", ".yml"):
         raise InputError("Use a .yaml or .yml file with --case.")
     source = (args.case or args.starter).resolve()
+    if args.deployment is not None and source.suffix.lower() not in (".yaml", ".yml"):
+        raise InputError("A deployment file requires a YAML behavior case.")
     if not source.is_file():
         raise InputError("Supply a trusted application case or starter file.")
     original = sys.path
@@ -77,7 +79,7 @@ def run(argv):
             gaps.add(f"{store_location.yaml(('stores', name, 'connection_env'))}  {name}: observer could not open ({error}).")
 
         if args.case or source.suffix.lower() in (".yml", ".yaml"):
-            parsed = load_case(source, locate=True)
+            parsed = load_case(source, deployment_path=args.deployment, locate=True)
             location = store_location = Locations(source, case=parsed)
             missing = [(msg, location.yaml(keys)) for msg, keys in parsed.missing_bindings()]
             if args.mode == "late-write":
@@ -133,6 +135,9 @@ def run(argv):
 
             observe_baseline(subject, case, app, external_items=items, on_gap=baseline_gap,
                              on_warning=baseline_warning)
+            deployment = getattr(app, "deployment", None) if args.deployment is not None else None
+            if deployment is not None and any(not matches(item, deployment.record) for item in deployment.evidence["reads"]):
+                gaps.add(f"{location.yaml(('record',))}  HTTPS certificate or response build did not match the deployment.")
             if gaps:
                 print("NOT TESTED  Check these fixture locations:")
                 for message in sorted(gaps):

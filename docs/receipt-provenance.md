@@ -11,7 +11,7 @@ Pass each supporting test file with its own `--test-file`. The run checks the fi
 
 ## Read the producer metadata
 
-Person drills use the v3 receipt family with `evidence_format: "setrya.erasure.evidence.v3.2"`. The receipt's `provenance` object mirrors the evidence protected by its SHA-256 digest.
+Person drills record producer metadata in the v3 receipt family from `setrya.erasure.evidence.v3.2` onward. The receipt's `provenance` object mirrors the evidence protected by its SHA-256 digest. Split HTTP cases use v3.3 and also record the behavior and deployment fingerprints and the answering deployment's TLS and build signals. [HTTP deployment cases](http-cases.md)
 
 | Field | Meaning |
 | --- | --- |

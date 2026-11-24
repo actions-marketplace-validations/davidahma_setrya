@@ -10,12 +10,17 @@ The exchange directory contains four regular files.
 
 | File | Purpose |
 | --- | --- |
-| `exchange.json` | Versioned manifest. It records the system and version supplied by the issuer, the declared stores and route, the observation timing, the replayed verdict and open items, and SHA-256 digests of the two v3 files. |
+| `exchange.json` | Versioned manifest. It records the system and version supplied by the issuer, declared stores and route, observation timing, the replayed verdict and open items, and SHA-256 digests of the two v3 files. Split HTTP drills also carry the deployment and the behavior and deployment file fingerprints from the receipt. |
 | `exchange.sig` | Cosign detached signature or Sigstore bundle for the exact manifest bytes. The `signature_type` selects the representation. |
 | `erasure-receipt.json` | The exact original v3 receipt. |
 | `observation-evidence.json` or `erasure-evidence.json` | The exact original companion, chosen by the evidence kind. |
 
-A **read-only observation** binds an opaque completed ticket ID and the SHA-256 of the exact completed-request export. Its two timestamps are the completion times of the recorded reads. The second journal snapshot must follow the first completed observation when that snapshot is available. It checks known, journalled keys with a retained visibility control. A **synthetic drill** uses an isolated fixture, carries no completed-ticket binding, and records the drill's end time and duration. A **vendor attestation** can appear as an external open item, with its owner and follow-up date when recorded. Its status remains an attestation in the original evidence.
+| Evidence kind | Required claims | Excluded claims |
+| --- | --- | --- |
+| `read-only-observation` | Completed ticket ID, exact request-export fingerprint, completion times of both recorded reads, declared stores, and `observation-evidence.json`. | Synthetic drill duration, endpoint route, live HTTP deployment, and drill evidence. |
+| `synthetic-drill` | Recorded end time, duration, declared stores and route, and `erasure-evidence.json`. Split HTTP drills carry the observed deployment projection. | Completed ticket, first read-only observation time, and read-only observation evidence. |
+
+For a read-only observation, the second journal snapshot must follow the first completed observation whenever that snapshot is available. A retained control shows that the observer could see the journalled store. A **vendor attestation** can appear as an `attested` external open item in a synthetic drill, with its owner and follow-up date when recorded. It contributes an obligation and carries no independent deletion verdict.
 
 The system label, version and declared surfaces describe the issuer's scope. The original evidence shows which reads occurred. The signature authenticates the receipt issuer against the verifier's own trust policy. The observer still determines what could be seen. Use the original bundle only with reviewers authorized to see potentially linkable subject, ticket and store identifiers. Synthetic evidence can also contain configured answer excerpts. Public examples use fictional data.
 
@@ -30,7 +35,11 @@ setrya receipt verify-exchange received/ --key independently-trusted.pub \
 
 Get the expected ticket ID and frame digest from the originating ticket system. These checks bind the exchange to the case under review. No database, app fixture or network is needed after trust and tools have been provisioned. For keyless verification, substitute `--identity`, `--issuer` and `--trusted-root` for `--key`. For the GitHub release examples, the trusted identity is `https://github.com/davidahma/setrya/.github/workflows/erasure.yml@refs/heads/main` and the issuer is `https://token.actions.githubusercontent.com`. Provision the Sigstore root as described in the [receipt verification guide](northline.md).
 
-An independent implementation verifies the signature over the exact bytes of `exchange.json`, validates the schema, and checks the SHA-256 of the exact companion bytes. Replay the original v3 files and compare the resulting state, surfaces, timing, ticket binding, and open items to the manifest. Schema validation or signature verification alone covers only one part of the check. JSON Pointer fragments in open items address fields in the original receipt.
+For a split HTTP drill, `--expect-deployment record.json` pins the environment and build to the reviewer's independently sourced deployment record. `--expect-app-commit` pins a clean checkout and committed fixture files for a local starter. The two options check different observations. [HTTP case configuration](http-cases.md)
+
+An independent implementation verifies the signature over the exact bytes of `exchange.json`, validates the schema, and checks the SHA-256 of the exact companion bytes. Python also replays the original v3 evidence and compares the resulting state, surfaces, timing, ticket binding, and open items to the manifest. The browser reports the issuer's result alongside a separate check status for verdict replay. JSON Pointer fragments in open items address fields in the original receipt.
+
+The standalone browser verifier accepts detached and keyless signatures and supports the independent ticket, export, deployment and app pins. [Verify without installing tools](assessment.md#verify-without-installing-tools)
 
 | Example directory | Replayed result | Exit |
 | --- | --- | --- |
@@ -40,3 +49,26 @@ An independent implementation verifies the signature over the exact bytes of `ex
 | `open-items` | `PASS · OPEN_ITEMS` | 0, or 3 with `--case-review` |
 
 [Download the four signed examples](https://github.com/davidahma/setrya/releases/download/v1.8.0/deletion-receipt-exchange.zip). The first three capture native PostgreSQL observations of synthetic completed tickets. The fourth opens the synthetic workspace issue with its provider follow-up unchanged. A malformed bundle, unverifiable signature or case pin mismatch exits 2. A valid signature can accompany any engineering verdict.
+
+## Verification error codes
+
+A rejected exchange reports one stable code. The CLI adds it in brackets and exits 2. A valid exchange still reports its own engineering exit code. For bundles with multiple faults, repair the reported fault and verify again.
+
+| Code | Meaning |
+| --- | --- |
+| `UNEXPECTED_FILES` | Supply the four expected regular files with their original names. |
+| `DUPLICATE_JSON_KEY` | A JSON file repeats a key within one object. |
+| `INVALID_MANIFEST` | The exchange envelope or its required fields are invalid. |
+| `WRONG_SIGNER` | The signature or its signer could not be authenticated with the supplied trust. |
+| `EVIDENCE_KIND_MISMATCH` | The original receipt or evidence belongs to a different kind than the exchange declares. |
+| `EVIDENCE_DIGEST_MISMATCH` | A companion differs from the signed manifest or the evidence differs from the original receipt's digest. |
+| `SNAPSHOT_ORDER` | The second journal snapshot began before the first observation completed. |
+| `VERDICT_MISMATCH` | The claimed verdict or review status differs from the original receipt or from replayed evidence. |
+| `CLAIMS_MISMATCH` | The original evidence cannot be interpreted or the remaining claims differ. |
+| `TICKET_ID_MISMATCH` | The completed ticket differs from the expected ticket. |
+| `EXPORT_DIGEST_MISMATCH` | The completed request export differs from the expected export. |
+| `DEPLOYMENT_MISMATCH` | The receipt does not verify the independently supplied deployment. |
+| `APP_COMMIT_MISMATCH` | The receipt does not bind the expected clean application checkout. |
+| `PROVENANCE_MISMATCH` | The receipt differs from the supplied full provenance record. |
+
+Qualification exercises the same signed inputs against Python and JavaScript. In the case where the signed manifest and original receipt repeat the same incorrect verdict, Python detects the error by replaying the evidence. The browser identifies the verdict as issuer-reported and marks replay as unchecked.

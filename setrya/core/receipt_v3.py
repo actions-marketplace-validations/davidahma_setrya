@@ -5,7 +5,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 
-from . import scan_scope
+from . import deployment, scan_scope
 from .inputs import keys_match, read_regular_bytes, require, unique_fields
 from .judges import check_observation, check_policy, coverage
 from .journal_chain import check_summary as check_chain
@@ -20,7 +20,8 @@ LEGACY_EVIDENCE_FORMAT = "setrya.erasure.evidence.v3"
 FLAT_EVIDENCE_FORMAT = "setrya.erasure.evidence.v3.sampled"
 GROUPED_V31_FORMAT = "setrya.erasure.evidence.v3.1"
 EVIDENCE_FORMAT = "setrya.erasure.evidence.v3.2"
-GROUPED_EVIDENCE_FORMATS = (GROUPED_V31_FORMAT, EVIDENCE_FORMAT)
+DEPLOYMENT_EVIDENCE_FORMAT = "setrya.erasure.evidence.v3.3"
+GROUPED_EVIDENCE_FORMATS = (GROUPED_V31_FORMAT, EVIDENCE_FORMAT, DEPLOYMENT_EVIDENCE_FORMAT)
 
 
 def _fields(row, fields):
@@ -568,12 +569,13 @@ def post_erasure_findings(e, *, grouped=False):
 def derive(e, digest):
     evidence_format = e.get("format") if isinstance(e, dict) else None
     modern = evidence_format in GROUPED_EVIDENCE_FORMATS
-    provenanced = evidence_format == EVIDENCE_FORMAT
+    deployed = evidence_format == DEPLOYMENT_EVIDENCE_FORMAT
+    provenanced = evidence_format in (EVIDENCE_FORMAT, DEPLOYMENT_EVIDENCE_FORMAT)
     _fields(e, "format run scope observed_at subject mode case worker external lineage baseline erased immediate final "
                "expected_producers coverage journal errors drill_duration_ms" + (" journal_chain" if modern else "")
                + (" late_write_window" if modern and "late_write_window" in e else "")
                + (" late_residuals" if modern and "late_write_window" in e and "late_residuals" in e else "")
-               + (" provenance" if provenanced else ""))
+               + (" provenance" if provenanced else "") + (" deployment" if deployed else ""))
     require(evidence_format in (*GROUPED_EVIDENCE_FORMATS, FLAT_EVIDENCE_FORMAT, LEGACY_EVIDENCE_FORMAT) and e["scope"] == "person" and _hex(digest, 64),
             "Invalid v3 evidence header.")
     producer = validate_provenance(e["provenance"]) if provenanced else None
@@ -645,10 +647,15 @@ def derive(e, digest):
         adapter_errors = [err for err in errors if err["operation"] not in ("target_judge", "control_judge")]
         if len(adapter_errors) != len(errors):
             gaps.add("An answer judge could not evaluate a required reply.")
+    observed_deployment = deployment.derive(e["deployment"], e, producer) if deployed else None
+    if observed_deployment is not None and observed_deployment["status"] != "verified":
+        gaps.add("One or more HTTP observations did not match the configured deployment identity.")
     tech = "FAIL" if failures else "ERROR" if adapter_errors else "NOT TESTED" if gaps else "PASS"
 
     review = "RESIDUAL_FOUND" if tech == "FAIL" else "OPEN_ITEMS" if open_items or tech != "PASS" else "READY_FOR_REVIEW"
     metadata = {"evidence_format": evidence_format, "provenance": producer} if provenanced else {}
+    if observed_deployment is not None:
+        metadata["deployment"] = observed_deployment
     attribution = _write_attribution(e, race)
     if attribution:
         metadata["write_attribution"] = attribution

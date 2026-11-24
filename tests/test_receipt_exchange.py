@@ -72,35 +72,35 @@ class ReceiptExchangeTests(unittest.TestCase):
         raw = json.dumps(manifest).encode()
         (bundle / exchange.MANIFEST).write_bytes(raw)
         (bundle / exchange.SIGNATURE).write_bytes(sha256(raw).digest())
-        with self.assertRaisesRegex(InvalidReport, "claims differ from the original"):
+        with self.assertRaisesRegex(exchange.ExchangeError, r"\[VERDICT_MISMATCH\].*differs from the evidence"):
             exchange.verify(bundle, key=self.key)
 
     def test_file_bytes_and_signed_manifest_are_both_bound(self):
         bundle, _ = self.pack()
         evidence = bundle / exchange.DRILL_EVIDENCE
         evidence.write_bytes(evidence.read_bytes() + b"\n")
-        with self.assertRaisesRegex(InvalidReport, "file digests differ"):
+        with self.assertRaisesRegex(exchange.ExchangeError, r"\[EVIDENCE_DIGEST_MISMATCH\].*file digests differ"):
             exchange.verify(bundle, key=self.key)
         manifest = bundle / exchange.MANIFEST
         manifest.write_bytes(manifest.read_bytes() + b"\n")
-        with self.assertRaisesRegex(InvalidReport, "exact signed bytes"):
+        with self.assertRaisesRegex(exchange.ExchangeError, r"\[WRONG_SIGNER\].*could not be authenticated"):
             exchange.verify(bundle, key=self.key)
 
     def test_bounds_and_trust_are_explicit(self):
         bundle, _ = self.pack()
-        with self.assertRaisesRegex(InvalidReport, "signer policy"):
+        with self.assertRaisesRegex(exchange.ExchangeError, r"\[WRONG_SIGNER\].*signer policy"):
             exchange.verify(bundle)
-        with self.assertRaisesRegex(InvalidReport, "independently supplied ticket"):
+        with self.assertRaisesRegex(exchange.ExchangeError, r"\[TICKET_ID_MISMATCH\].*independently supplied ticket"):
             exchange.verify(bundle, key=self.key, expect_ticket="TICKET-1")
         extra = bundle / "approved-mapping.toml"
         extra.touch()
-        with self.assertRaisesRegex(InvalidReport, "Expected exactly"):
+        with self.assertRaisesRegex(exchange.ExchangeError, r"\[UNEXPECTED_FILES\].*Expected exactly"):
             exchange.verify(bundle, key=self.key)
         extra.unlink()
         manifest = bundle / exchange.MANIFEST
         renamed = manifest.rename(self.root / "outside.json")
         manifest.symlink_to(renamed)
-        with self.assertRaisesRegex(InvalidReport, "stay inside"):
+        with self.assertRaisesRegex(exchange.ExchangeError, r"\[UNEXPECTED_FILES\].*regular files"):
             exchange.verify(bundle, key=self.key)
 
     def test_pack_is_atomic_and_keeps_original_receipt(self):

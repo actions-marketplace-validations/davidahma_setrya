@@ -1,0 +1,248 @@
+"""Attach a signed client release comparison to an existing approval process."""
+
+import json
+from collections import Counter
+from datetime import UTC, datetime
+from pathlib import Path
+
+from setrya.core import signing
+from setrya.core.inputs import publish_new_bytes, read_regular_bytes, require
+
+from . import assessment
+from .profiles import decode, fields, new_bundle, sha, snapshot, stamp
+from .receipt_summary import _markdown
+
+FORMAT = "setrya.assessment-comparison.v1"
+MANIFEST = "comparison.json"
+SIGNATURE = "comparison.sig"
+SUMMARY = "approval.md"
+CUSTOMER = "customer.md"
+_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _surfaces(rows):
+    result = {}
+    for row in rows:
+        for surface in row["details"]["observed"]:
+            key, samples = (tuple(surface[:-1]), surface[-1]) if surface[0] == "query" else (tuple(surface), 1)
+            result[key] = max(result.get(key, 0), samples)
+    return result
+
+
+def _label_surface(surface):
+    kind, *parts = surface
+    if kind == "query":
+        route, caller, question = parts
+        return f"Endpoint {route}, caller {caller}, question {question[:12]}"
+    if kind == "scan":
+        return f"Scanner {parts[0]}"
+    if kind == "worker":
+        return f"Delayed worker on {parts[0]} in {parts[1]}"
+    if kind == "observed-copy":
+        return f"Store {parts[0]}, key digest {parts[1][:12]}"
+    return f"Copy {parts[0]}/{parts[1]} ({parts[2]})"
+
+
+def _coverage_changes(before, after):
+    for surface in sorted(before.keys() | after.keys()):
+        former, current = before.get(surface, 0), after.get(surface, 0)
+        if former != current:
+            label = _label_surface(surface)
+            if surface[0] == "query":
+                label += f" · {former} → {current} samples"
+            yield current > former, label
+
+
+def _deployment_rows(rows):
+    instances = set()
+    for row in rows:
+        binding = row["details"]["deployment"]
+        if binding is not None:
+            record = binding["record"]
+            instances.add((record["environment"], record["origin"], record["build_id"],
+                           f"TLS SHA-256 {record['tls_sha256']}", binding["status"]))
+    return instances
+
+
+def _outputs(result):
+    client = result["client"]
+    old = {r["name"]: r for r in result["previous"]["assessment"]["repositories"]}
+    new = {r["name"]: r for r in result["candidate"]["assessment"]["repositories"]}
+    engineering = [f"# Release comparison for {client}", "",
+                   f"Approved assessment SHA-256 `{result['previous']['sha256']}`", "",
+                   f"Candidate assessment SHA-256 `{result['candidate']['sha256']}`", ""]
+    customer = [f"# Deletion results for {client}", ""]
+    ready = True
+    for name in sorted(old.keys() | new.keys()):
+        before, after = old.get(name, {}), new.get(name, {})
+        prior, current = before.get("receipts", []), after.get("receipts", [])
+        old_surfaces, new_surfaces = _surfaces(prior), _surfaces(current)
+        gained, lost = [], []
+        for increased, label in _coverage_changes(old_surfaces, new_surfaces):
+            (gained if increased else lost).append(label)
+        issues = [item for row in current for item in row["details"]["open_items"]]
+        checks = [check for check in after.get("checks", []) if check["kind"] != "setrya.copy-scan.v1"]
+        old_kinds = Counter(check["kind"] for check in before.get("checks", []) if check["kind"] != "setrya.copy-scan.v1")
+        missing_checks = old_kinds - Counter(check["kind"] for check in checks)
+        before_deployments, after_deployments = _deployment_rows(prior), _deployment_rows(current)
+        changed_scope = {row[:2] for row in before_deployments} != {row[:2] for row in after_deployments}
+        old_commit, new_commit = before.get("commit", "unavailable"), after.get("commit", "unavailable")
+        changed_deployment = bool(after_deployments) and before_deployments != after_deployments
+        changed_checkout = old_commit != new_commit and any(row["commit_binding"] == "unbound" for row in current)
+        unbound = not result.get("deployment_pinned") and (changed_checkout or changed_deployment)
+        ready = ready and bool(new_surfaces) and not (lost or issues or missing_checks or changed_scope or unbound) and all(
+            row["verdict"] == "PASS" and row["review"] == "READY_FOR_REVIEW" for row in current
+        ) and not any(check["gaps"] for check in checks)
+        engineering.extend((f"## {name}", "", f"Commit `{old_commit}` → `{new_commit}`", ""))
+        for label, rows in (("New observed coverage", gained), ("Lost observed coverage", lost)):
+            engineering.append(f"### {label}")
+            engineering.append("")
+            engineering.extend(f"- {_markdown(row)}" for row in rows)
+            if not rows:
+                engineering.append("None recorded.")
+            engineering.append("")
+        departed = before_deployments - after_deployments
+        arrived = after_deployments - before_deployments
+        if departed or arrived:
+            engineering.extend(("### Changed deployment observations", ""))
+            for label, rows in (("Previous", departed), ("Candidate", arrived)):
+                engineering.extend(f"- {label} · {_markdown(' · '.join(row))}" for row in sorted(rows))
+            if changed_scope:
+                engineering.append("- The observed environment or origin changed. Review the destination separately.")
+            engineering.append("")
+        if unbound:
+            engineering.extend(("Candidate evidence lacks an independent binding to the changed release.", ""))
+        if checks or missing_checks:
+            engineering.extend(("### Coverage checks", ""))
+            engineering.extend(f"- {check['kind']} · {check['gaps']} of {check['entries']} need review."
+                               for check in checks)
+            engineering.extend(f"- {kind} · {count} missing from the candidate assessment."
+                               for kind, count in sorted(missing_checks.items()))
+            engineering.append("")
+        engineering.extend(("### Candidate verdicts and follow-ups", ""))
+        if not current:
+            engineering.append("No candidate receipts supplied for this repository.")
+        else:
+            for row in current:
+                detail = row["details"]
+                marker = " · Erased data found" if detail["residual"] else ""
+                engineering.append(f"- {row['verdict']} · {row['review']}{marker} · `{row['receipt_sha256']}`")
+                engineering.extend(f"  - {_markdown(line)}" for line in detail["failures"])
+            for item in issues:
+                description = f"{item['surface']} · {item['kind']} · Owner {item['owner'] or 'unassigned'}"
+                engineering.append(f"- {_markdown(description)} · Due {item['due'] or 'unrecorded'}")
+            customer.extend((f"## {name}", ""))
+            for row in current:
+                customer.extend(_markdown(line) for line in row["details"]["customer_summary"].split("\n"))
+                customer.append("")
+        engineering.append("")
+    disposition = "READY FOR APPROVAL" if ready else "SEND BACK FOR REVIEW"
+    engineering[2:2] = [f"**{disposition}**", ""]
+    return {SUMMARY: ("\n".join(engineering) + "\n").encode(), CUSTOMER: ("\n".join(customer) + "\n").encode()}
+
+
+def _validate(result):
+    fields(result, "format client issued_at signature_type previous candidate files", ("deployment_pinned",))
+    require(result["format"] == FORMAT and result["signature_type"] in ("cosign-detached", "sigstore-bundle"),
+            "Unsupported comparison format.")
+    assessment._label(result["client"])
+    stamp(result["issued_at"])
+    for name in ("previous", "candidate"):
+        entry = result[name]
+        fields(entry, "sha256 assessment")
+        sha(entry["sha256"])
+        assessment._validate(entry["assessment"])
+        require(entry["assessment"].get("client") == result["client"], "Assessment client differs from comparison scope.")
+    require(result["previous"]["sha256"] != result["candidate"]["sha256"], "Choose two distinct assessments.")
+    if "deployment_pinned" in result:
+        from setrya.core.deployment import check_pin, validate_record
+
+        validate_record(result["deployment_pinned"])
+        rows = [row for repo in result["candidate"]["assessment"]["repositories"] for row in repo["receipts"]]
+        require(rows, "Candidate receipt is required for deployment pinning.")
+        for row in rows:
+            check_pin(row["details"]["deployment"], result["deployment_pinned"])
+    require(stamp(result["previous"]["assessment"]["issued_at"]) < stamp(result["candidate"]["assessment"]["issued_at"]),
+            "Candidate assessment must follow the approved assessment.")
+    fields(result["files"], f"{SUMMARY} {CUSTOMER}")
+    for digest in result["files"].values():
+        sha(digest)
+
+
+def compare(previous, candidate, *, client, approved_sha256, output, key=None, trust, expected_deployment=None):
+    sha(approved_sha256)
+    old, old_digest, _ = assessment.read_signed(previous, **trust)
+    require(old_digest == approved_sha256, "Previous assessment differs from the independently approved digest.")
+    new, new_digest, _ = assessment.read_signed(candidate, **trust, expected_deployment=expected_deployment)
+    result = {"format": FORMAT, "client": client, "issued_at": datetime.now(UTC).isoformat(),
+              "signature_type": "cosign-detached" if key else "sigstore-bundle",
+              "previous": {"sha256": old_digest, "assessment": old},
+              "candidate": {"sha256": new_digest, "assessment": new},
+              "files": {SUMMARY: "0" * 64, CUSTOMER: "0" * 64}}
+    if expected_deployment is not None:
+        result["deployment_pinned"] = expected_deployment
+    _validate(result)
+    files = _outputs(result)
+    result["files"] = {name: assessment._digest(contents) for name, contents in files.items()}
+    raw = (json.dumps(result, indent=2) + "\n").encode()
+    require(len(raw) <= _MAX_BYTES and all(len(data) <= _MAX_BYTES for data in files.values()),
+            "Comparison packaging exceeds the evidence limit.")
+    with new_bundle(output) as folder:
+        publish_new_bytes(raw, folder / MANIFEST, max_bytes=_MAX_BYTES)
+        for name, data in files.items():
+            publish_new_bytes(data, folder / name, max_bytes=_MAX_BYTES)
+        signing.sign_bytes(raw, folder / SIGNATURE, key=key)
+    return files[SUMMARY].decode()
+
+
+def verify(directory, *, key=None, identity=None, issuer=None, trusted_root=None):
+    directory = Path(directory)
+    require(directory.is_dir() and not directory.is_symlink(), "Supply a comparison directory.")
+    require(not key or not any((identity, issuer, trusted_root)), "Choose one signer policy.")
+    require(key or (identity and issuer and trusted_root), "Supply independently trusted signer information.")
+    raw = snapshot(directory / MANIFEST, _MAX_BYTES)
+    signature = snapshot(directory / SIGNATURE, signing.MAX_SIGSTORE_BYTES)
+    root = read_regular_bytes(trusted_root, "trusted root", signing.MAX_SIGSTORE_BYTES) if trusted_root else None
+    signing.verify_bytes(raw, signature, key=key, identity=identity, issuer=issuer, trusted_root=root)
+    result = decode(raw)
+    _validate(result)
+    require(result["signature_type"] == ("cosign-detached" if key else "sigstore-bundle"), "Wrong comparison signer policy.")
+    files = _outputs(result)
+    for name, data in files.items():
+        require(result["files"][name] == assessment._digest(data) and snapshot(directory / name, _MAX_BYTES) == data,
+                "An attachment differs from the signed comparison.")
+    return files[SUMMARY].decode()
+
+
+def add_commands(sub):
+    compare_parser = sub.add_parser("compare", help="sign a client release comparison")
+    compare_parser.add_argument("previous", type=Path)
+    compare_parser.add_argument("candidate", type=Path)
+    compare_parser.add_argument("--client", required=True)
+    compare_parser.add_argument("--approved-sha256", required=True)
+    compare_parser.add_argument("--output", required=True, type=Path)
+    compare_parser.add_argument("--sign-key", type=Path)
+    compare_parser.add_argument("--expect-deployment", type=Path)
+    verify_parser = sub.add_parser("verify-comparison", help="verify a signed comparison and both attachments")
+    verify_parser.add_argument("directory", type=Path)
+    for parser in (compare_parser, verify_parser):
+        parser.add_argument("--key", type=Path)
+        parser.add_argument("--identity")
+        parser.add_argument("--issuer")
+        parser.add_argument("--trusted-root", type=Path)
+
+
+def dispatch(args):
+    trust = {"key": args.key, "identity": args.identity, "issuer": args.issuer, "trusted_root": args.trusted_root}
+    if args.operation == "verify-comparison":
+        answer = verify(args.directory, **trust)
+    else:
+        expected = None
+        if args.expect_deployment is not None:
+            from setrya.core.deployment import read_pin
+
+            expected = read_pin(args.expect_deployment)
+        answer = compare(args.previous, args.candidate, client=args.client, approved_sha256=args.approved_sha256,
+                         output=args.output, key=args.sign_key, trust=trust, expected_deployment=expected)
+    print(answer, end="")
+    return 0
