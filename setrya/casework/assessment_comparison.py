@@ -83,7 +83,11 @@ def _check_coverage(prior, current):
     lines.extend(f"- {kind} · {count} checked entries lost." for kind, count in lost.items() if count > 0)
     lines.extend(f"- {kind} · {count} entries lacked stable scope identifiers."
                  for kind, count in unbound.items() if count)
-    ready = not (missing or any(lost.values()) or any(unbound.values()) or any(check["gaps"] for check in new))
+    empty_journal = any(check["kind"] == "journal-coverage" and not check["entries"] for check in new)
+    if empty_journal:
+        lines.append("- journal-coverage · No journal boundaries were observed.")
+    ready = not (missing or empty_journal or any(lost.values()) or any(unbound.values())
+                 or any(check["gaps"] for check in new))
     return lines, ready
 
 

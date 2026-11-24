@@ -177,19 +177,26 @@ class AssessmentTests(unittest.TestCase):
         self.plan.write_text(json.dumps(self.source))
         route_review = {"format": "setrya.route-coverage.v1", "candidate_commit": self.revision, "surfaces": []}
 
-        def write_report(name, paths):
+        def write_report(name, paths, *, add_journal=False):
             rows = [{"component": "support", "path": path, "surface": "/answer", "status": "PASS"} for path in paths]
             self.check.write_text(json.dumps({**route_review, "surfaces": rows}))
+            checks = [self.check.name]
+            if add_journal:
+                journal = self.root / "journal-check.json"
+                journal.write_text(json.dumps({"status": "NOT TESTED", "boundaries": []}))
+                checks.append(journal.name)
+            self.source["repositories"][0]["checks"] = checks
+            self.plan.write_text(json.dumps(self.source))
             assessment.build(self.plan, self.root / name, key=self.key)
 
         write_report("approved", ["a.py", "b.py"])
         approved = self.root / "approved"
         digest = sha256((approved / assessment.REPORT).read_bytes()).hexdigest()
         for lane, paths, lost in (("empty", [], 2), ("replacement", ["a.py", "c.py"], 1),
-                                  ("same", ["b.py", "a.py"], 0)):
+                                  ("same", ["b.py", "a.py"], 0), ("journal", ["a.py", "b.py"], 0)):
             with self.subTest(lane=lane):
                 candidate = self.root / lane
-                write_report(lane, paths)
+                write_report(lane, paths, add_journal=lane == "journal")
                 review = assessment_comparison.compare(
                     approved, candidate, client="northline", approved_sha256=digest, output=self.root / f"review-{lane}",
                     trust={"key": self.key}, key=self.key,
@@ -197,5 +204,8 @@ class AssessmentTests(unittest.TestCase):
                 if lost:
                     self.assertIn("SEND BACK FOR REVIEW", review)
                     self.assertIn(f"setrya.route-coverage.v1 · {lost} checked entries lost", review)
+                elif lane == "journal":
+                    self.assertIn("SEND BACK FOR REVIEW", review)
+                    self.assertIn("No journal boundaries were observed", review)
                 else:
                     self.assertIn("READY FOR APPROVAL", review)
