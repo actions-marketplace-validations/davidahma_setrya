@@ -29,7 +29,8 @@ class AssessmentTests(unittest.TestCase):
                        "sites": [{"status": "needs-review"}], "review_required": 1}
         self.check = self.root / "review.json"
         self.check.write_text(json.dumps(self.review))
-        demo(self.root / "workspace", "late-write")
+        with patch("socket.getfqdn", side_effect=AssertionError("Loopback fixture attempted a DNS lookup.")):
+            self.assertEqual(demo(self.root / "workspace", "late-write"), 0)
 
         def sign(data, output, *, key):
             output.write_bytes(sha256(data).digest())

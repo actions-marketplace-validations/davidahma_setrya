@@ -2,10 +2,11 @@
 from contextlib import ExitStack, closing, contextmanager
 from datetime import date, timedelta
 from http.client import HTTPConnection
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
 import json
 from pathlib import Path
 import secrets
+from socketserver import TCPServer
 import sqlite3
 from threading import RLock, Thread
 from uuid import uuid4
@@ -163,7 +164,8 @@ def open_fixture(*, shared=False, guarded=True):
     with ExitStack() as stack:
         db = stack.enter_context(closing(sqlite3.connect(":memory:", check_same_thread=False)))
         app = Workspace(db, subject, guarded=guarded, shared=shared)
-        server = stack.enter_context(HTTPServer(("127.0.0.1", 0), Endpoint))
+        # The fixture serves a numeric loopback address, so bind it without a DNS lookup.
+        server = stack.enter_context(TCPServer(("127.0.0.1", 0), Endpoint))
         server.application = app
         app.address = server.server_address
         thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
