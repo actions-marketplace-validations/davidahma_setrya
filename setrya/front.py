@@ -25,7 +25,7 @@ def help_parser():
         ("demo", "run the workspace deletion drill or another bundled example"),
         ("journal", "verify journal integrity or import copy events from OTLP"),
         ("branches", "check live forks and disclosed restore windows"),
-        ("conformance", "run a replayable vendor self-check"),
+        ("conformance", "run or review replayable vendor checks"),
         ("crypto-erasure", "observe AWS KMS key destruction using read-only credentials"),
         ("mcp", "serve local erasure tools over MCP stdio"),
         ("receipt", "summarize, pack or verify a deletion receipt"),
