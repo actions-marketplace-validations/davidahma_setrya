@@ -14,6 +14,7 @@ from setrya.core.provenance import read_pin, verify_pins
 from setrya.drill import InputError
 from setrya.offboarding import signature
 from setrya.offboarding.inputs import InvalidReport, read_regular_bytes, require
+from .modes import CLI_MODES, evidence_mode
 from .receipt import RECEIPT
 from .v3 import _RUN_CONFIRMATION, _RUN_OUTPUT
 from setrya.receipts import check_scope, exit_code as receipt_exit, replay as load_directory, report, signature_command
@@ -24,7 +25,7 @@ def replay_directory(directory, *, case_review=False, expected_scope=None,
     receipt = load_directory(directory, expected_provenance=expected_provenance,
                              expected_app_commit=expected_app_commit, expected_deployment=expected_deployment)
     check_scope(receipt, expected_scope)
-    return report(receipt, case_review=case_review)
+    return report(receipt, case_review=case_review, bundle=directory)
 
 
 def _run_starter(starter, mode, output, producer):
@@ -58,14 +59,17 @@ def run_person_starter(starter, mode, output, *, test_files=(), deployed_commit=
     snapshot = starter if fixture_source is not None else None
     capture_options = {"deployed_commit": deployed_commit, "executed_copy": snapshot}
     parsed = None
-    if deployment_path is not None:
-        if starter.suffix.lower() not in (".yml", ".yaml") or mode != "deletion" or fixture_source is not None:
-            raise InputError("A deployment file requires a YAML behavior case in deletion mode.")
+    yaml_case = starter.suffix.lower() in (".yml", ".yaml")
+    if deployment_path is not None and (not yaml_case or mode != "deletion" or fixture_source is not None):
+        raise InputError("A deployment file requires a YAML behavior case in deletion mode.")
+    if yaml_case:
         from .casefile import load_case
 
         parsed = load_case(starter, deployment_path=deployment_path)
-        test_files += (deployment_path,)
-        capture_options["expected_hashes"] = parsed.source_digests()
+        capture_options["expected_entrypoint_sha256"] = parsed.source_sha256
+        if deployment_path is not None:
+            test_files += (parsed.deployment_path,)
+            capture_options["expected_hashes"] = {parsed.deployment_path: parsed.deployment["deployment_sha256"]}
     producer = provenance.capture(canonical, test_files, **capture_options)
     output.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="setrya-provenance-", dir=output.parent) as temp:
@@ -84,10 +88,9 @@ def run_person_starter(starter, mode, output, *, test_files=(), deployed_commit=
 
 
 def _run_person(starter, mode, output, producer, *, parsed=None):
-    if starter.suffix.lower() in (".yml", ".yaml"):
-        from .casefile import load_case
+    if parsed is not None:
         from .v3 import run_shared
-        spec = parsed or load_case(starter)
+        spec = parsed
         if spec.missing():
             print("NOT TESTED  Missing fixture bindings: " + ", ".join(spec.missing()), file=sys.stderr)
             return 3, None
@@ -125,7 +128,7 @@ def main(argv, *, prog="setrya erasure"):
     demo.add_argument("--scope", choices=("person", "tenant"), default="person")
     demo.add_argument("--output", type=Path, default=Path("investigation"))
     demo.add_argument("--example", choices=("shared", "investigation"))
-    demo.add_argument("--mode", choices=("deletion", "late-write"))
+    demo.add_argument("--mode", type=evidence_mode, choices=CLI_MODES)
     init = commands.add_parser("init", help="create an application starter or tenant observation policy")
     init.add_argument("--scope", choices=("person", "tenant"), default="person")
     init.add_argument("--output", type=Path, default=Path("setrya-erasure"))
@@ -136,7 +139,7 @@ def main(argv, *, prog="setrya erasure"):
     case_arg = run.add_mutually_exclusive_group()
     case_arg.add_argument("--starter", type=Path, help="trusted generated test file")
     case_arg.add_argument("--case", type=Path, help="trusted declarative YAML file")
-    run.add_argument("--mode", choices=("deletion", "late-write"))
+    run.add_argument("--mode", type=evidence_mode, choices=CLI_MODES)
     run.add_argument("--output", type=Path)
     run.add_argument("--test-file", type=Path, action="append", default=[],
                      help="additional trusted test file whose exact bytes should be bound (repeatable)")
@@ -209,7 +212,7 @@ def main(argv, *, prog="setrya erasure"):
             code, receipt = run_person_starter(args.case or args.starter, args.mode or "deletion", args.output,
                                                test_files=args.test_file, deployed_commit=args.deployed_commit,
                                                fixture_source=args.fixture_source, deployment_path=args.deployment)
-            return report(receipt) if receipt is not None else code
+            return report(receipt, bundle=args.output) if receipt is not None else code
         if args.scope == "tenant" and (args.example or getattr(args, "mode", None)):
             raise InputError("Use person scope to select a shared investigation mode.")
         if args.action == "demo":

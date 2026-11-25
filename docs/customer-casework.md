@@ -109,7 +109,7 @@ setrya observe request --id N-204 --population completed.json \
 setrya replay N-204-observed
 ```
 
-The v3 profile is `observed-deletion`. Either reading a residual fails the check. PASS requires two absences for each expected exclusive key and consistent journal coverage. A shared key, missing control, unavailable reader or changed journal scope leaves a gap. Production observation uses the journal and read-only SQLite or PostgreSQL readers. Endpoint answers, unjournalled data, provider copies and worker races need separate evidence.
+The v3 profile is `observed-deletion`. Either reading a residual fails the check. PASS requires two absences for each expected exclusive key and consistent journal coverage. A shared key, missing control, unavailable reader or changed journal scope leaves a gap. Production observation uses the journal and read-only SQLite or PostgreSQL readers. Endpoint answers, unjournalled data, provider copies, and stale write-backs need separate evidence.
 
 For a distributed app, pass the combined `CollectedJournal` SQLite file to `--journal`. List the expected producers in the observer inventory and import a sealed packet for the selected subject from each one. A worker that saw no copies still exports an empty packet.
 

@@ -1,7 +1,9 @@
 """Bind a turn to a reappearing revision through a real held-worker run."""
 
+from contextlib import redirect_stdout
 from copy import deepcopy
 from hashlib import sha256
+from io import StringIO
 import json
 from pathlib import Path
 import shutil
@@ -9,12 +11,14 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from setrya.casework.receipt_summary import receipt_summary
+from setrya.cli import main
 from setrya.core.receipt_v3 import derive
 from setrya.erasure import Stored, run_shared
 from setrya.erasure.lineage import VersionRef
 from setrya.examples.memory_files import DERIVED_FILE, TARGET, TARGET_FILE, open_fixture
+from setrya.examples.workspace import demo as workspace_demo
 from setrya.offboarding.inputs import InvalidReport
-from setrya.receipts import replay, summary
+from setrya.receipts import STALE_WRITE_BACK_LEAD, replay, stale_write_back_entry, summary, write_back_lead
 
 
 @unittest.skipUnless(shutil.which("git"), "Git is required for the memory-file fixture")
@@ -39,6 +43,13 @@ class Attribution(unittest.TestCase):
             self.assertIn("turn late-memory", summary(receipt))
             self.assertIn("turn late-memory", receipt_summary(root, audience="reviewer"))
             self.assertNotIn("late-memory", receipt_summary(root, audience="customer"))
+            lead = STALE_WRITE_BACK_LEAD.format(entry=index)
+            self.assertEqual(stale_write_back_entry(receipt, root), index)
+            self.assertEqual(summary(receipt, bundle=root).splitlines()[0], lead)
+            for audience in ("engineer", "reviewer", "customer"):
+                for output_format in ("text", "markdown"):
+                    text = receipt_summary(root, audience=audience, output_format=output_format)
+                    self.assertEqual(text.splitlines()[0], lead)
             self.assertNotIn(" at after erasure.", summary(receipt))
             self.assertNotIn(" at after erasure.", receipt_summary(root, audience="reviewer"))
 
@@ -61,12 +72,47 @@ class Attribution(unittest.TestCase):
                     self.assertEqual(result["technical_verdict"], "FAIL")
                     self.assertNotIn("write_attribution", result)
 
-            scanner_only = deepcopy(evidence)
-            retained = next(row for row in scanner_only["final"]["stored"] if row["key"] == DERIVED_FILE)
-            retained["target_present"] = None
-            result = derive(scanner_only, receipt["evidence"]["sha256"])
-            self.assertEqual(result["technical_verdict"], "FAIL")
-            self.assertEqual(result["write_attribution"], [attribution])
+            for reason, present in (("inconclusive direct read", None), ("clean direct read", False),
+                                    ("unchanged revision", True)):
+                with self.subTest(reason=reason):
+                    observed = deepcopy(evidence)
+                    if present is True:
+                        earlier = next(row for row in observed["immediate"]["stored"] if row["key"] == DERIVED_FILE)
+                        self.assertFalse(earlier["target_present"])
+                        earlier["revision"] = attribution["revision"]
+                    else:
+                        later = next(row for row in observed["final"]["stored"] if row["key"] == DERIVED_FILE)
+                        later["target_present"] = present
+                    raw = json.dumps(observed).encode()
+                    result = derive(observed, sha256(raw).hexdigest())
+                    self.assertEqual(result["technical_verdict"], "FAIL")
+                    self.assertEqual(result["write_attribution"], [attribution])
+                    historical = root.parent / reason
+                    historical.mkdir()
+                    (historical / "erasure-evidence.json").write_bytes(raw)
+                    (historical / "erasure-receipt.json").write_text(json.dumps(result))
+                    self.assertEqual(replay(historical), result)
+                    self.assertIsNone(stale_write_back_entry(result, historical))
+                    self.assertNotIn("Stale write-back:", receipt_summary(historical, audience="reviewer"))
+
+            # A verified journal can correlate a residual to a different writer
+            # active during the hold. That does not reveal when it read the input.
+            unbound = deepcopy(evidence)
+            unbound["worker"] = dict.fromkeys(evidence["worker"], "other-worker")
+            raw = json.dumps(unbound).encode()
+            changed = derive(unbound, sha256(raw).hexdigest())
+            self.assertEqual(changed["write_attribution"], [attribution])
+            historical = root.parent / "unbound"
+            historical.mkdir()
+            (historical / "erasure-evidence.json").write_bytes(raw)
+            (historical / "erasure-receipt.json").write_text(json.dumps(changed))
+            self.assertEqual(replay(historical), changed)
+            self.assertIsNone(stale_write_back_entry(changed, historical))
+            self.assertNotIn("Stale write-back:", receipt_summary(historical, audience="reviewer"))
+
+            (historical / "erasure-evidence.json").write_bytes((root / "erasure-evidence.json").read_bytes())
+            with self.assertRaisesRegex(InvalidReport, "changed after replay"):
+                stale_write_back_entry(changed, historical)
 
             malformed = deepcopy(evidence)
             malformed["late_write_window"]["stop"] = len(evidence["journal"]) + 1
@@ -91,8 +137,8 @@ class Attribution(unittest.TestCase):
             def inspect(subject, store, key):
                 if key == extra and store == "files":
                     self.assertTrue((app.root / extra).is_file())
-                    actual = sha256((app.root / extra).read_bytes()).hexdigest()
-                    return Stored(key, True, None, None, actual)
+                    body = (app.root / extra).read_bytes()
+                    return Stored(key, True, canary in body, None, sha256(body).hexdigest())
                 return original_read(subject, store, key)
 
             app._publish, app.inspect = publish, inspect
@@ -108,6 +154,17 @@ class Attribution(unittest.TestCase):
                              [extra])
             new, = [row for row in result["write_attribution"] if row["key"] == extra]
             self.assertEqual((new["revision"], new["turn"]), (revision, "late-memory"))
+
+            observed = deepcopy(evidence)
+            primary = next(row for row in observed["final"]["stored"] if row["key"] == DERIVED_FILE)
+            primary["target_present"] = None
+            raw = json.dumps(observed).encode()
+            (root / "erasure-evidence.json").write_bytes(raw)
+            changed = derive(observed, sha256(raw).hexdigest())
+            (root / "erasure-receipt.json").write_text(json.dumps(changed))
+            self.assertEqual(replay(root), changed)
+            self.assertEqual(changed["write_attribution"], result["write_attribution"])
+            self.assertEqual(stale_write_back_entry(changed, root), new["journal_entry"])
 
             evidence["immediate"]["scan_details"]["files"]["patterns"] = ["**/*.jsonl"]
             changed = derive(evidence, result["evidence"]["sha256"])
@@ -133,3 +190,24 @@ class Attribution(unittest.TestCase):
             self.assertIn("Remote copies were not inspected.", reviewer)
             self.assertIn("Remote copies were not inspected", receipt_summary(root, audience="customer"))
             self.assertNotIn("example.invalid", reviewer)
+
+
+class WorkspaceWriteBack(unittest.TestCase):
+    def test_workspace_proves_write_back_in_the_broken_lane_only(self):
+        with TemporaryDirectory() as work, redirect_stdout(StringIO()) as transcript:
+            bundle = Path(work, "workspace")
+            self.assertEqual(workspace_demo(bundle, "late-write"), 0)
+            self.assertIn("Stale write-back:", transcript.getvalue())
+            for lane, code, expected in (("broken", 1, True), ("guarded", 0, False)):
+                folder = bundle / lane
+                receipt = replay(folder)
+                lead = write_back_lead(receipt, folder)
+                self.assertEqual(lead is not None, expected)
+                for path in (folder, folder / "erasure-receipt.json"):
+                    transcript.seek(0)
+                    transcript.truncate()
+                    self.assertEqual(main(["replay", str(path)]), code)
+                    if expected:
+                        self.assertTrue(transcript.getvalue().startswith(lead))
+                    else:
+                        self.assertNotIn("Stale write-back:", transcript.getvalue())

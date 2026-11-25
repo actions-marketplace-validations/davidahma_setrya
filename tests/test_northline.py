@@ -74,6 +74,9 @@ class NorthlineTest(unittest.TestCase):
         self.assertIn("Provider evidence unavailable", customer)
         self.assertNotIn("Provider configuration", customer)
         broken_review = cli("receipt", "summary", output / "broken", "--audience", "reviewer")[1]
+        self.assertRegex(broken_review.splitlines()[0],
+                         r"^Stale write-back: the worker turn at journal entry \d+ wrote a copy captured before deletion\.$")
+        self.assertIn("Write-back check exercised", broken_review)
         self.assertIn("turn northline-refresh", broken_review)
         self.assertIn("erasure/erasure-evidence.json#/journal/", broken_review)
         for lane, expected, verdict in (("broken", 1, "FAIL"), ("guarded", 0, "PASS")):

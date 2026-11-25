@@ -47,15 +47,15 @@ setrya assess compare approved-assessment candidate-assessment \
 setrya assess verify-comparison approval --key trusted-comparison.pub
 ```
 
-Attach `approval.md` and `customer.md` to the existing approval ticket. Keep `comparison.json` and `comparison.sig` with the attachments so reviewers can authenticate both files. The comparison records gains and losses among observed copies, queries and their sample counts, scans, and delayed-worker checks. It also lists residual findings, each candidate follow-up with its owner and due date, and deployment or build changes.
+Attach `approval.md` and `customer.md` to the existing approval ticket. Keep `comparison.json` and `comparison.sig` with the attachments so reviewers can authenticate both files. The comparison records gains and losses among observed copies, queries, scans, and write-back checks. Query coverage includes the caller, route, question digest, role, and sample count. Reassigning a question from retained control to erased target loses coverage of the original control. The comparison also lists residual findings and each candidate follow-up with its owner and due date.
 
-The comparison sends a candidate back for review when it loses coverage, reports a coverage gap or an open item, finds a residual, or changes the observed environment or origin. It uses stable scope identifiers to detect individual route, copy-review and journal entries that disappear from retained reports. A changed Git release needs a clean checkout binding or the independently supplied deployment pin. A changed deployed build or certificate needs the deployment pin. The release approver still owns the decision.
+The comparison sends a candidate back for review when it loses coverage, reports a coverage gap or an open item, finds a residual, or changes the observed environment, origin, or HTTP behavior digest. It uses stable scope identifiers to detect individual route, copy-review and journal entries that disappear from retained reports. A changed Git release needs a clean checkout binding or the independently supplied deployment pin. A changed deployed build or certificate needs the deployment pin. The pin confirms the deployment identity. If the HTTP behavior SHA-256 changed, review the test file that produced the new digest before approving the release.
 
-The command accepts the existing Cosign public-key or keyless trust options. The two input assessments must use the same independently supplied verification policy. Older assessment bundles remain verifiable. Use client assessments for exact comparisons.
+The command accepts the existing Cosign public-key or keyless trust options. The two input assessments must use the same independently supplied verification policy. Older assessments and comparison attachments still verify against their signed contents. If an assessment lacks query roles, rebuild it from the recorded receipts with the current Setrya release before using the comparison for approval.
 
 ## Verify without installing tools
 
-Download the [offline verifier](https://github.com/davidahma/setrya/releases/download/v1.10.0/setrya-verify-offline.html) independently of the sender and open it in a browser. Select all files from one assessment or draft receipt exchange.
+Download the [offline verifier](https://github.com/davidahma/setrya/releases/download/v1.11.0/setrya-verify-offline.html) independently of the sender and open it in a browser. Select all files from one assessment or draft receipt exchange.
 
 - For detached signatures, select the trusted Cosign P-256 PEM public key from your organization's approved channel. Confirm the displayed key fingerprint against your trust record.
 - For keyless signatures, select an independently provisioned Sigstore trust root and enter the exact expected certificate identity and OIDC issuer. The page checks the signing certificate and transparency-log proof.

@@ -3,7 +3,8 @@
 import ast
 import json
 import re
-from dataclasses import asdict, dataclass
+from collections import defaultdict, deque
+from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from .source_scan import (
     MAX_SOURCE_CANDIDATE_BYTES,
     MAX_SOURCE_CANDIDATES,
     _argument,
+    _definition_header,
     _expression,
     _parse_tree,
     _scan_python,
@@ -48,13 +50,18 @@ _STARTER_STORES = {
     "trace": "trace-store",
 }
 _IMPORTS = frozenset({
-    "anthropic", "boto3", "chromadb", "elasticsearch", "google", "graphiti_core", "langfuse", "langgraph",
-    "letta", "mem0", "openai", "opentelemetry", "pinecone", "qdrant_client", "redis", "zep_cloud",
+    "anthropic", "asyncio", "backoff", "boto3", "celery", "chromadb", "crewai", "dramatiq", "elasticsearch",
+    "google", "graphiti_core", "langfuse", "langgraph", "langmem", "letta", "mem0", "openai", "opentelemetry",
+    "pinecone", "qdrant_client", "redis", "retry", "retrying", "rq", "stamina", "temporalio", "tenacity", "zep_cloud",
 })
 _CLIENTS = {
     "anthropic.Anthropic": "$anthropic", "anthropic.AsyncAnthropic": "$anthropic",
+    "asyncio.get_running_loop": "$event-loop", "asyncio.get_event_loop": "$event-loop",
     "boto3.Session": "boto3", "boto3.session.Session": "boto3",
+    "celery.Celery": "$celery", "celery.app.base.Celery": "$celery",
     "chromadb.Client": "$chroma", "chromadb.PersistentClient": "$chroma", "chromadb.HttpClient": "$chroma",
+    "crewai.Memory": "$crewai-memory", "crewai.memory.Memory": "$crewai-memory",
+    "crewai.memory.unified_memory.Memory": "$crewai-memory",
     "elasticsearch.Elasticsearch": "$elasticsearch", "elasticsearch.AsyncElasticsearch": "$elasticsearch",
     "$elasticsearch.options": "$elasticsearch",
     "google.cloud.storage.Client": "$gcs", "$gcs.bucket": "$gcs-bucket", "$gcs-bucket.blob": "$gcs-blob",
@@ -64,6 +71,9 @@ _CLIENTS = {
     "langgraph.store.postgres.AsyncPostgresStore": "$langgraph-store",
     "langgraph.store.postgres.PostgresStore.from_conn_string": "$langgraph-store",
     "langgraph.store.postgres.AsyncPostgresStore.from_conn_string": "$langgraph-store",
+    "langmem.ReflectionExecutor": "$reflection", "langmem.reflection.ReflectionExecutor": "$reflection",
+    "langmem.reflection.LocalReflectionExecutor": "$reflection",
+    "langmem.reflection.RemoteReflectionExecutor": "$reflection",
     "letta.Letta": "$letta", "letta.AsyncLetta": "$letta",
     "mem0.Memory": "$mem0", "mem0.Memory.from_config": "$mem0", "mem0.MemoryClient": "$mem0",
     "mem0.AsyncMemory": "$mem0", "mem0.AsyncMemory.from_config": "$mem0",
@@ -80,6 +90,7 @@ _CLIENTS = {
     "redis.Redis.from_url": "$redis", "redis.StrictRedis.from_url": "$redis",
     "redis.asyncio.Redis": "$redis", "redis.asyncio.Redis.from_url": "$redis",
     "redis.asyncio.from_url": "$redis", "$redis.pipeline": "$redis",
+    "rq.Queue": "$rq-queue", "rq.queue.Queue": "$rq-queue",
     "zep_cloud.Zep": "$zep", "zep_cloud.AsyncZep": "$zep",
 }
 _CLIENTS.update(dict.fromkeys((f"$chroma.{method}" for method in (
@@ -102,7 +113,8 @@ _OPERATIONS = {
                          "rpush", "sadd", "zadd", "xadd", "getset", "setnx")},
     "memory": {"$graphiti": ("add_episode", "add_episode_bulk"), "$zep.graph": ("add", "add_batch"),
                "$mem0": ("add", "update"), "$langgraph-store": ("put", "aput"),
-               "$letta.agents.passages": ("create",), "$letta.agents.blocks": ("update",)},
+               "$letta.agents.passages": ("create",), "$letta.agents.blocks": ("update",),
+               "$reflection": ("submit",), "$crewai-memory": ("remember", "remember_many")},
     "model-state": {"$openai.conversations": ("create",), "$openai.conversations.items": ("create",),
                     "$openai.responses": ("create",), "$openai.chat.completions": ("create",),
                     "$bedrock-agent": ("invoke_agent", "create_session", "put_invocation_step")},
@@ -114,6 +126,27 @@ _OPERATIONS = {
 _CALLS = {f"{receiver}.{name}": kind for kind, receivers in _OPERATIONS.items()
           for receiver, names in receivers.items() for name in names}
 _CALLS.update({"opentelemetry.trace.set_tracer_provider": "trace"})
+WRITERS = {
+    "celery": "Celery task", "rq": "RQ job", "dramatiq": "Dramatiq actor", "asyncio": "asyncio task or callback",
+    "retry": "retry decorator", "temporal": "Temporal activity", "langmem": "LangMem reflection",
+    "crewai": "CrewAI background memory save",
+}
+_WRITER_DECORATORS = {
+    "celery.shared_task": "celery", "celery.app.shared_task": "celery", "celery.current_app.task": "celery",
+    "$celery.task": "celery", "rq.decorators.job": "rq", "dramatiq.actor": "dramatiq",
+    "temporalio.activity.defn": "temporal", "tenacity.retry": "retry", "backoff.on_exception": "retry",
+    "backoff.on_predicate": "retry", "retry.retry": "retry", "retrying.retry": "retry", "stamina.retry": "retry",
+}
+_BACKGROUND_OPERATIONS = {"$reflection.submit": "langmem", "$crewai-memory.remember_many": "crewai"}
+_TASK_SCHEDULERS = {"asyncio.create_task": "coro", "asyncio.ensure_future": "coro_or_future",
+                    "$event-loop.create_task": "coro"}
+_CALLBACK_SCHEDULERS = {
+    "$rq-queue.enqueue": ("rq", 0, "f"), "$rq-queue.enqueue_call": ("rq", 0, "func"),
+    "$rq-queue.enqueue_at": ("rq", 1, "f"), "$rq-queue.enqueue_in": ("rq", 1, "f"),
+    "$event-loop.call_soon": ("asyncio", 0, "callback"), "$event-loop.call_soon_threadsafe": ("asyncio", 0, "callback"),
+    "$event-loop.call_later": ("asyncio", 1, "callback"), "$event-loop.call_at": ("asyncio", 1, "callback"),
+    "$event-loop.run_in_executor": ("asyncio", 1, "func"),
+}
 _SERVICE_FACTORIES = {"s3": "$s3", "bedrock-agent-runtime": "$bedrock-agent"}
 _OID = re.compile(r"[0-9a-f]{64}")
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,255}")
@@ -133,12 +166,17 @@ class CopySite:
     line: int
     kind: str
     operation: str
+    writer: str | None = None
 
     def wire(self):
         result = asdict(self)
         result["site_id"] = result.pop("id")
         result["starter"] = {"site_id": self.id, "store": _STARTER_STORES[self.kind],
                              "key": "replace-with-disposable-test-key", "test": "setrya-case/test_erasure.py"}
+        if self.writer is None:
+            result.pop("writer")
+        else:
+            result["starter"]["mode"] = "late-write"
         return result
 
 
@@ -146,6 +184,8 @@ class CopySite:
 class _Reference:
     name: str
     anchor: str = ""
+    function: ast.FunctionDef | ast.AsyncFunctionDef | None = None
+    async_api: bool = False
 
 
 def _digest(value):
@@ -153,6 +193,20 @@ def _digest(value):
 
 
 class _CopyScanner(_Scanner):
+    def __init__(self, path, tree):
+        super().__init__(path, tree)
+        self.function = None
+        self.module_functions = {
+            node.name: _Reference("$local-function", function=node) for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and self.names[node.name] == 1
+            and node.name not in self.external and not self.star_import
+        }
+        self.enclosing_names = ()
+        self.writers = {}
+        self.scheduled_calls = set()
+        self.local_calls = defaultdict(dict)
+        self.site_owners = {}
+
     def _bind(self, name, value):
         reference = self._reference(value) if isinstance(value, ast.AST) else None
         super()._bind(name, reference if reference is not None else value)
@@ -174,6 +228,13 @@ class _CopyScanner(_Scanner):
         args = [*node.args, *(row.value for row in node.keywords)]
         return [self._value(arg).anchors for arg in args]
 
+    def _scope(self, body, name, *, arguments=None, class_scope=False):
+        previous = self.enclosing_names
+        if self.scope and self.class_parent is None:
+            self.enclosing_names = (*previous, self.names)
+        super()._scope(body, name, arguments=arguments, class_scope=class_scope)
+        self.enclosing_names = previous
+
     def _reference(self, node):
         if isinstance(node, ast.Name):
             value = self.values.get(node.id)
@@ -181,7 +242,7 @@ class _CopyScanner(_Scanner):
         if isinstance(node, ast.Attribute):
             base = self._reference(node.value)
             if base is not None:
-                return _Reference(base.name + "." + node.attr, base.anchor)
+                return _Reference(base.name + "." + node.attr, base.anchor, async_api=base.async_api)
         if isinstance(node, ast.Call):
             func = self._reference(node.func)
             if func is None:
@@ -190,8 +251,75 @@ class _CopyScanner(_Scanner):
             if func.name in {"boto3.client", "boto3.resource"}:
                 client = _SERVICE_FACTORIES.get(self._value(_argument(node, 0, "service_name")).text)
             if client:
-                return _Reference(client, _digest([func.anchor, _expression(node), self._known_arguments(node)]))
+                async_api = func.async_api or func.name.startswith("redis.asyncio.") or ".Async" in func.name
+                return _Reference(client, _digest([func.anchor, _expression(node), self._known_arguments(node)]),
+                                  async_api=async_api)
         return None
+
+    def _writer_reference(self, node):
+        reference = self._reference(node)
+        if reference is not None or self.function is None or not isinstance(node, ast.Name):
+            return reference
+        # Function bodies can see module definitions made after their own definition.
+        # Keep forward lookup out of top-level statements and ordinary value binding.
+        target = self.module_functions.get(node.id)
+        if target and node.id not in self.names and all(node.id not in names for names in self.enclosing_names):
+            return target
+        return None
+
+    def visit_FunctionDef(self, node):
+        writer = None
+        for decorator in node.decorator_list:
+            reference = self._reference(decorator.func if isinstance(decorator, ast.Call) else decorator)
+            if reference and (kind := _WRITER_DECORATORS.get(reference.name)):
+                # A retry wrapper can run in-line. Prefer an explicit worker decorator on the same function.
+                writer = kind if writer in (None, "retry") else writer
+        if writer:
+            self.writers[node] = writer
+        for expression in _definition_header(node):
+            self.visit(expression)
+        self._bind(node.name, _Reference("$local-function", function=node))
+        previous, self.function = self.function, node
+        self._scope(node.body, node.name, arguments=node.args)
+        self.function = previous
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Lambda(self, node):
+        self.visit(node.args)
+        previous, self.function = self.function, None
+        self._scope((node.body,), "<lambda>", arguments=node.args)
+        self.function = previous
+
+    def _scheduled_callback(self, node, reference):
+        task_arg = _TASK_SCHEDULERS.get(reference.name)
+        if task_arg:
+            coroutine = _argument(node, 0, task_arg)
+            if isinstance(coroutine, ast.Call):
+                target = self._writer_reference(coroutine.func)
+                if target and isinstance(target.function, ast.AsyncFunctionDef):
+                    self.writers.setdefault(target.function, "asyncio")
+                elif target and target.async_api:
+                    self.scheduled_calls.add(coroutine)
+        if signature := _CALLBACK_SCHEDULERS.get(reference.name):
+            writer, index, keyword = signature
+            target = self._writer_reference(_argument(node, index, keyword))
+            if target and target.function is not None:
+                self.writers.setdefault(target.function, writer)
+            elif target and not target.async_api and target.name in _CALLS:
+                return target, writer
+        return None, None
+
+    def scan(self):
+        self.visit(self.tree)
+        pending = deque(self.writers)
+        while pending:
+            caller = pending.popleft()
+            for callee in self.local_calls.get(caller, ()):
+                if callee not in self.writers:
+                    self.writers[callee] = self.writers[caller]
+                    pending.append(callee)
+        return [replace(site, writer=site.writer or self.writers.get(self.site_owners[site.id])) for site in self.found]
 
     def _provider_call(self, node, name):
         if name in {"$openai.responses.create", "$openai.chat.completions.create"}:
@@ -243,7 +371,11 @@ class _CopyScanner(_Scanner):
         return None
 
     def visit_Call(self, node):
-        reference = self._reference(node.func)
+        reference = self._writer_reference(node.func)
+        target, writer = self._scheduled_callback(node, reference) if reference else (None, None)
+        if reference and reference.function is not None and self.function is not None:
+            self.local_calls[self.function][reference.function] = None
+        reference = target or reference
         if reference and reference.name.startswith(("openai.responses.", "openai.conversations.",
                                                      "openai.chat.", "openai.files.", "openai.vector_stores.")):
             reference = _Reference("$" + reference.name, reference.anchor)
@@ -265,7 +397,13 @@ class _CopyScanner(_Scanner):
         stem = _digest([self.path, self.scope, kind, operation, _expression(node), anchor, self._known_arguments(node)])
         occurrence = self.occurrences[stem]
         self.occurrences[stem] += 1
-        self.found.append(CopySite(_digest([stem, occurrence]), self.path, node.lineno, kind, operation))
+        identity = _digest([stem, occurrence])
+        if reference and writer is None:
+            writer = _BACKGROUND_OPERATIONS.get(reference.name)
+        if node in self.scheduled_calls and writer is None:
+            writer = "asyncio"
+        self.site_owners[identity] = self.function
+        self.found.append(CopySite(identity, self.path, node.lineno, kind, operation, writer))
         require(len(self.found) <= MAX_SOURCE_CANDIDATES, "Copy scan exceeded its candidate limit.")
         self.generic_visit(node)
 
@@ -275,7 +413,8 @@ def _inspect(raw, path):
 
 
 def scan(root):
-    return {"format": SCAN_FORMAT, "sites": [site.wire() for site in _scan_python(root, _inspect)]}
+    sites = sorted(_scan_python(root, _inspect), key=lambda site: site.writer is None)
+    return {"format": SCAN_FORMAT, "sites": [site.wire() for site in sites]}
 
 
 def _mapping(raw):
@@ -288,10 +427,12 @@ def _mapping(raw):
             "Invalid copy mapping format.")
     sites = {}
     for site in data["sites"]:
-        require(keys_match(site, {"site_id", "store", "key", "test"}), "Invalid copy mapping entry.")
+        fields = {"site_id", "store", "key", "test"}
+        require(keys_match(site, fields) or keys_match(site, fields | {"mode"}), "Invalid copy mapping entry.")
         identity = site["site_id"]
         require(isinstance(identity, str) and _OID.fullmatch(identity) and identity not in sites
-                and all(isinstance(site[key], str) and _TOKEN.fullmatch(site[key]) for key in ("store", "key")),
+                and all(isinstance(site[key], str) and _TOKEN.fullmatch(site[key]) for key in ("store", "key"))
+                and site.get("mode", "deletion") in ("deletion", "late-write", "write-back"),
                 "Invalid or duplicate copy mapping.")
         _path(site["test"])
         require(len(site["test"]) <= _MAX_PATH, "Copy mapping test path exceeds its limit.")
@@ -317,7 +458,10 @@ def _covered(receipts, candidate):
             if artifact["action"] in {"delete", "rewrite"}:
                 identity = artifact["store"], artifact["key"], entrypoint
                 if result.get("technical_verdict") == "PASS":
-                    subjects.setdefault(identity, digest)
+                    modes = subjects.setdefault(identity, {})
+                    modes.setdefault("deletion", digest)
+                    if result.get("mode") == "late-write" and result.get("race") == "exercised":
+                        modes.setdefault("late-write", digest)
                 else:
                     incomplete.add(identity)
     return {identity: digest for identity, digest in subjects.items() if identity not in incomplete}
@@ -340,13 +484,14 @@ def _new_sites(repo, ancestor, candidate):
         total_bytes += len(before) + len(after)
         require(max(len(before), len(after)) <= _MAX_FILE_BYTES and total_bytes <= _MAX_TOTAL_BYTES,
                 "Changed Python source exceeds the scan byte limit.")
-        previous = {site.id for site in _inspect(before, path)}
-        added = [site.wire() for site in _inspect(after, path) if site.id not in previous]
+        previous = {site.id: site.writer for site in _inspect(before, path)}
+        added = [site.wire() for site in _inspect(after, path)
+                 if site.id not in previous or (site.writer is not None and site.writer != previous[site.id])]
         report_bytes += sum(len(json.dumps(site)) for site in added)
         found.extend(added)
         require(len(found) <= MAX_SOURCE_CANDIDATES and report_bytes <= MAX_SOURCE_CANDIDATE_BYTES,
                 "Copy review exceeded its candidate limit.")
-    return sorted(found, key=lambda row: (row["path"], row["line"], row["site_id"]))
+    return sorted(found, key=lambda row: ("writer" not in row, row["path"], row["line"], row["site_id"]))
 
 
 def check(repo, base_ref, candidate_ref="HEAD", *, map_path=MAP_FILE, receipts=()):
@@ -363,7 +508,10 @@ def check(repo, base_ref, candidate_ref="HEAD", *, map_path=MAP_FILE, receipts=(
     for site in sites:
         baseline = approved.get(site["site_id"])
         binding = declared.get(site["site_id"])
-        digest = replayed.get((binding["store"], binding["key"], binding["test"])) if binding and binding == baseline else None
+        digest = None
+        if binding and binding == baseline:
+            mode = "late-write" if "writer" in site or binding.get("mode") in ("late-write", "write-back") else "deletion"
+            digest = replayed.get((binding["store"], binding["key"], binding["test"]), {}).get(mode)
         site.update(status="evidence-replayed" if digest else "needs-review", binding=binding, receipt_sha256=digest)
     return {"format": REVIEW_FORMAT, "base_commit": base, "merge_base_commit": ancestor,
             "candidate_commit": candidate, "map_changed": approved != declared,
@@ -381,6 +529,8 @@ def summarize(report):
         status = site.get("status", "detected").upper()
         name = ascii(site["path"])[1:-1]
         lines.append(f"{status}  {name}:{site['line']} · {KINDS[site['kind']]} · {site['operation']}")
+        if writer := site.get("writer"):
+            lines.append(f"  Possible deferred writer · {WRITERS[writer]}. Hold it across a deletion.")
         if site.get("status") != "evidence-replayed":
             lines.append("  Starter mapping " + json.dumps(site["starter"], separators=(",", ":")))
     if not report["sites"]:

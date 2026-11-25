@@ -11,7 +11,7 @@ setrya replay investigation/broken
 setrya replay investigation/guarded
 ```
 
-The broken replay exits 1. The guarded replay exits 0. The demo reopens the same investigation for two analysts after a delayed writer finishes. The receipt records store and answer observations. A provider follow-up stays open even when the application checks pass. [Shared investigation](shared-investigation.md)
+The broken replay exits 1. The guarded replay exits 0. The demo reopens the same investigation for two analysts after the deferred writer finishes. The receipt records store and answer observations. A provider follow-up stays open even when the application checks pass. [Shared investigation](shared-investigation.md)
 
 ## Connect your application's Postgres memory
 
@@ -31,7 +31,7 @@ setrya replay graph-receipt
 
 The starter reads three declared boundaries. The checkpoint observer inspects a full `PostgresSaver` thread, including orphan blobs and pending writes. The memory observer reads one exact `PostgresStore` namespace. The vector observer scans the declared raw text column within its scoped SQL rows. Point the YAML at disposable rows and a thread you can read with a PostgreSQL role that has visibility into all three. Keep the configured thread ID and checkpoint artifact key identical.
 
-Use the generated Python file when you already have a test client and deletion hook. Add the hold and release hooks if you need to control a delayed writer. [HTTP case format](http-cases.md) · [Checkpoint and memory observers](harnesses.md) · [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence)
+Use the generated Python file when you already have a test client and deletion hook. Add the hold and release hooks if you need to test whether a deferred writer can commit old inputs. [HTTP case format](http-cases.md) · [Checkpoint and memory observers](harnesses.md) · [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence)
 
 ## Approve a checkpoint snapshot
 

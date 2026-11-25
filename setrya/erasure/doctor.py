@@ -10,6 +10,7 @@ import traceback
 
 from setrya.core.deployment import matches
 from setrya.drill import InputError
+from .modes import CLI_MODES, evidence_mode
 from .v3 import SharedCase, observe_baseline
 
 
@@ -60,7 +61,7 @@ def run(argv):
     source_arg.add_argument("--starter", type=Path, help="trusted Python starter or YAML case")
     source_arg.add_argument("--case", type=Path, help="trusted declarative YAML case")
     parser.add_argument("--deployment", type=Path, help="client deployment bindings for a split YAML case")
-    parser.add_argument("--mode", choices=("deletion", "late-write"), default="deletion")
+    parser.add_argument("--mode", type=evidence_mode, choices=CLI_MODES, default="deletion")
     args = parser.parse_args(argv)
     if args.case and args.case.suffix.lower() not in (".yaml", ".yml"):
         raise InputError("Use a .yaml or .yml file with --case.")

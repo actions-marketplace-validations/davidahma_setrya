@@ -1,5 +1,6 @@
 """Exercise the public YAML contract using real authenticated requests and storage."""
 from contextlib import chdir, ExitStack, redirect_stderr, redirect_stdout
+from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.util import find_spec
 from io import StringIO
@@ -12,7 +13,7 @@ import sqlite3
 from tempfile import TemporaryDirectory
 from threading import Thread
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from setrya.cli import main
@@ -138,7 +139,9 @@ class HttpCaseTests(unittest.TestCase):
         self.assertRegex(starter_output, r"case.yml:\d+  memory: observer could not open")
 
     def test_positional_case_saves_same_receipt_and_records_observed_keys(self):
+        from setrya import provenance
         from setrya.erasure import CopyJournal, Subject
+        from setrya.erasure import casefile
         path = self.case_file("openai-agents")
         cfg = self.yaml.safe_load(path.read_text())
         store = cfg["stores"]["memory"]
@@ -158,8 +161,17 @@ class HttpCaseTests(unittest.TestCase):
             with sqlite3.connect(db) as conn:
                 conn.execute("DELETE FROM memo WHERE id='1'")
         self.on_erase = erase
-        with chdir(self.root):
+        exact_digest = sha256(path.read_bytes()).hexdigest()
+        calls = Mock()
+        with (chdir(self.root), patch.object(casefile, "load_case", wraps=casefile.load_case) as load,
+              patch.object(provenance, "capture", wraps=provenance.capture) as capture):
+            calls.attach_mock(load, "load")
+            calls.attach_mock(capture, "capture")
             self.cli(0, "run", path)
+        self.assertEqual([call[0] for call in calls.mock_calls], ["load", "capture", "capture"])
+        self.assertTrue(all(call.kwargs["expected_entrypoint_sha256"] == exact_digest
+                            for call in capture.call_args_list))
+        with chdir(self.root):
             self.cli(0, "replay", "setrya-receipt")
             self.cli(2, "run", path)
             self.cli(2, "run", path, "--case", path)

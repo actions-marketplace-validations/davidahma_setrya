@@ -141,6 +141,8 @@ class _LoopbackServer(HTTPServer):
 
 
 class Northline:
+    WORKER_ATTEMPT = "northline-refresh"
+
     def __init__(self, folder, target, journal, *, guarded):
         self.target = target
         self.journal = journal
@@ -157,7 +159,7 @@ class Northline:
             );
             CREATE TABLE saved (store TEXT PRIMARY KEY, payload BLOB NOT NULL);
         """)
-        self.worker = WorkerFixture(self._refresh, self.read)
+        self.worker = WorkerFixture(self._refresh, self.read, attempt=self.WORKER_ATTEMPT)
 
     def _finding(self):
         row = self.db.execute("""SELECT f.revision, f.owner, d.exposure
@@ -237,7 +239,7 @@ class Northline:
             captured = self._finding()
             publication = _render(captured)
         before_write()
-        with self.lock, Turn("northline-refresh", "analyst-east", "dashboard-worker").activate():
+        with self.lock, Turn(self.WORKER_ATTEMPT, "analyst-east", "dashboard-worker").activate():
             if self.guarded and self._finding() != captured:
                 return
             with self.db:

@@ -5,6 +5,8 @@ from math import isfinite
 from threading import Event, Thread
 from uuid import uuid4
 
+from setrya.core.subject import identifier
+
 
 class _Cancelled(Exception):
     """The held job was retired at its pre-write checkpoint."""
@@ -16,9 +18,10 @@ class WorkerFixture:
     snapshot_job(subject, before_write) calls before_write() after capturing its
     input, immediately before its write. It returns after the write and all
     downstream processing or refreshes that the serving path depends on.
+    An optional attempt ID lets the fixture correlate a journal turn with this hold.
     """
 
-    def __init__(self, snapshot_job, read_chat, *, timeout=10):
+    def __init__(self, snapshot_job, read_chat, *, timeout=10, attempt=None):
         if not isfinite(timeout) or timeout <= 0:
             raise ValueError("use a finite, positive worker timeout")
         self.snapshot_job = snapshot_job
@@ -28,7 +31,7 @@ class WorkerFixture:
         self._paused = Event()
         self._cancel = Event()
         self._release = Event()
-        self._attempt = uuid4().hex
+        self._attempt = identifier(attempt, "worker attempt") if attempt is not None else uuid4().hex
         self._future = Future()
         self._thread = None
         self._subject = None

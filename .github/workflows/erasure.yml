@@ -229,7 +229,7 @@ jobs:
           artifact-id: ${{ needs.drill.outputs.artifact }}
 
   copy-scan:
-    name: Fixture-free Redis copy-site review
+    name: Fixture-free deferred Redis copy-site review
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -255,8 +255,10 @@ jobs:
           git -C app commit -m 'Answer without storage'
           echo "base=$(git -C app rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           cat > app/answers.py <<'PY'
+          from celery import shared_task
           from redis import Redis
           cache = Redis.from_url(cache_url)
+          @shared_task
           def save_answer(key, answer):
               cache.set(key, answer)
           PY
@@ -278,8 +280,8 @@ jobs:
           COPY_SUMMARY: ${{ steps.scan.outputs.copy-summary }}
         run: |
           test "$EXIT_CODE" = 3
-          printf '%s' "$COPY_SUMMARY" | jq -e '.[0] == 1 and .[1][0][:3] == ["answers.py", 4, "cache"]'
-          jq -e '.sites[0].starter.store == "redis-answer-cache"' setrya-copy-report.json
+          printf '%s' "$COPY_SUMMARY" | jq -e '.[0] == 1 and .[1][0][:3] == ["answers.py", 6, "cache"] and .[1][0][4] == "celery" and .[3] == 1'
+          jq -e '.sites[0] | .writer == "celery" and .starter.store == "redis-answer-cache" and .starter.mode == "late-write"' setrya-copy-report.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: checked-copy-site-review

@@ -5,7 +5,8 @@ from pathlib import Path
 import shlex
 
 from setrya.erasure import Artifact, SharedCase, run_shared
-from setrya.erasure.v3_receipt import exit_code, summary
+from setrya.erasure.modes import CLI_MODES, evidence_mode
+from setrya.receipts import exit_code, report, summary
 
 CASE = SharedCase("investigation-1", "/investigations", ("analyst-one", "analyst-two"),
                   "Which laptop was quarantined?", "Which credential was reset?",
@@ -17,8 +18,9 @@ def open_fixture():
     """Seed two synthetic people in the same record, then yield subject, application, external_items.
 
     Wire application.inspect to a direct read of the named key, read to the authenticated
-    route, and erase to the app's own selective rewrite. For late-write mode, also
+    route, and erase to the app's own selective rewrite. For write-back testing, also
     connect hold, checkpoint and release_and_drain around the real worker write.
+    Expose the worker's CopyJournal as application.journal to attribute a write-back.
     Register all required stores in CASE. See docs/erasure-v3.md for the typed observations.
     When the fixture uses a Setrya cache, import make_cache from the generated answer_cache.py.
     """
@@ -28,7 +30,8 @@ def open_fixture():
 
 def run(output, mode):
     with open_fixture() as (subject, app, external_items):
-        return run_shared(subject, application=app, case=CASE, external_items=external_items, output=output, mode=mode)
+        return run_shared(subject, application=app, case=CASE, external_items=external_items, output=output,
+                          mode=mode, journal=getattr(app, "journal", None))
 
 
 def test_subject_erasure(tmp_path):
@@ -41,18 +44,17 @@ def test_subject_erasure(tmp_path):
         pytest.fail(f"NOT TESTED · {exc}", pytrace=False)
     print(f"Replay: setrya replay {shlex.quote(str(output))}")
     if exit_code(receipt):
-        pytest.fail(summary(receipt), pytrace=False)
-    print(summary(receipt))
+        pytest.fail(summary(receipt, bundle=output), pytrace=False)
+    print(summary(receipt, bundle=output))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("deletion", "late-write"), default="deletion")
+    parser.add_argument("--mode", type=evidence_mode, choices=CLI_MODES, default="deletion")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
         receipt = run(args.output, args.mode)
     except NotImplementedError as exc:
         parser.exit(3, f"NOT TESTED · {exc}\n")
-    print(summary(receipt))
-    raise SystemExit(exit_code(receipt))
+    raise SystemExit(report(receipt, bundle=args.output))

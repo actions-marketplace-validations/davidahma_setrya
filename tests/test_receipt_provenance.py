@@ -139,6 +139,16 @@ class ProvenanceRunTests(unittest.TestCase):
         with self.assertRaisesRegex(InvalidReport, "expected clean application checkout"):
             verify_pins({"provenance": recorded}, expected_app_commit=commit)
 
+    def test_capture_requires_every_parsed_source(self):
+        parsed = (self.root / "case.yaml").resolve()
+        parsed.write_text("case: synthetic\n", encoding="utf-8")
+        digest = sha256(parsed.read_bytes()).hexdigest()
+        provenance.capture(parsed, expected_hashes={parsed: digest})
+        with self.assertRaisesRegex(InvalidReport, "parsed HTTP test inputs changed"):
+            provenance.capture(self.starter, expected_hashes={parsed: digest})
+        with self.assertRaisesRegex(InvalidReport, "parsed HTTP entrypoint changed"):
+            provenance.capture(self.starter, [parsed], expected_entrypoint_sha256=digest)
+
     def test_archived_grouped_receipts_replay_without_producer_claim(self):
         self.assertEqual(self.run_starter(), 0, self.stderr.getvalue())
         original = self.output / "erasure-evidence.json"

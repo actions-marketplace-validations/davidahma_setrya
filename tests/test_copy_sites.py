@@ -128,6 +128,157 @@ class CopySites(unittest.TestCase):
                 sites = copy_sites._inspect((examples / name).read_bytes(), name)
                 self.assertTrue(operations <= {site.operation for site in sites if site.kind == "vector"})
 
+    def test_deferred_writer_patterns_use_resolved_framework_calls(self):
+        source = dedent("""\
+            from asyncio import create_task as start_task, get_running_loop
+            from celery import Celery, shared_task as task
+            from crewai import Memory as CrewMemory
+            from dramatiq import actor
+            from langmem import ReflectionExecutor
+            from redis import Redis
+            from redis.asyncio import Redis as AsyncRedis
+            from rq import Queue
+            from rq.decorators import job
+            from temporalio import activity
+            from tenacity import retry as try_again
+
+            cache = Redis.from_url(location)
+            async_cache = AsyncRedis.from_url(location)
+            application = Celery("support")
+            queue = Queue()
+
+            def write_note(key, body):
+                cache.set(key, body)
+
+            @application.task
+            def celery_task():
+                write_note(key, body)
+
+            @task()
+            def shared():
+                cache.set(shared_key, body)
+
+            @job("copies")
+            def rq_job():
+                cache.set(rq_key, body)
+
+            @actor
+            def background_actor():
+                cache.set(actor_key, body)
+
+            @activity.defn(name="write")
+            async def temporal_writer():
+                await async_cache.set(temporal_key, body)
+
+            @try_again
+            def retried():
+                cache.set(retry_key, body)
+
+            async def coroutine():
+                await async_cache.set(coro_key, body)
+
+            def queued_copy():
+                cache.set(queue_key, body)
+
+            async def schedule():
+                start_task(coroutine())
+                get_running_loop().create_task(async_cache.set(pending_key, body))
+                start_task(cache.set(immediate_key, body))
+                queue.enqueue(queued_copy)
+                queue.enqueue(cache.set, callback_key, body)
+
+            memory = CrewMemory()
+            memory.remember(body)
+            memory.remember_many([body])
+            extractor = ReflectionExecutor(reflector, store=client)
+            extractor.submit(payload, after_seconds=10)
+
+            def no_writer_hints(task, start_task, extractor):
+                @task
+                def unrelated():
+                    cache.set(unrelated_key, body)
+                start_task(async_cache.set(unknown_scheduler_key, body))
+                extractor.submit(payload)
+        """)
+        site_at = {site.line: site.wire() for site in copy_sites._inspect(source.encode(), "deferred.py")}
+        labels = [(source.splitlines()[line - 1].strip(), row.get("writer")) for line, row in site_at.items()]
+        self.assertEqual(labels, [
+            ("cache.set(key, body)", "celery"), ("cache.set(shared_key, body)", "celery"),
+            ("cache.set(rq_key, body)", "rq"), ("cache.set(actor_key, body)", "dramatiq"),
+            ("await async_cache.set(temporal_key, body)", "temporal"), ("cache.set(retry_key, body)", "retry"),
+            ("await async_cache.set(coro_key, body)", "asyncio"), ("cache.set(queue_key, body)", "rq"),
+            ("get_running_loop().create_task(async_cache.set(pending_key, body))", "asyncio"),
+            ("start_task(cache.set(immediate_key, body))", None), ("queue.enqueue(cache.set, callback_key, body)", "rq"),
+            ("memory.remember(body)", None), ("memory.remember_many([body])", "crewai"),
+            ("extractor.submit(payload, after_seconds=10)", "langmem"), ("cache.set(unrelated_key, body)", None),
+            ("start_task(async_cache.set(unknown_scheduler_key, body))", None),
+        ])
+        self.assertTrue(all(row["starter"].get("mode") == ("late-write" if "writer" in row else None)
+                            for row in site_at.values()))
+
+    def test_forward_module_helpers_keep_their_deferred_writers(self):
+        source = dedent("""\
+            from asyncio import create_task
+            from celery import shared_task
+            from redis import Redis
+            from redis.asyncio import Redis as AsyncRedis
+            from rq import Queue
+
+            cache = Redis()
+            async_cache = AsyncRedis()
+            queue = Queue()
+
+            @shared_task
+            def task():
+                save_answer()
+                rebound()
+
+            async def request():
+                create_task(write_answer())
+                queue.enqueue(queue_answer)
+
+            async def shadowed_argument(write_unrelated):
+                create_task(write_unrelated())
+
+            def factory():
+                @shared_task
+                def shadowed_closure():
+                    save_unrelated()
+                save_unrelated = injected_callback()
+
+            def save_answer():
+                write_to_cache()
+
+            def write_to_cache():
+                cache.set(celery_key, answer)
+
+            async def write_answer():
+                await async_cache.set(asyncio_key, answer)
+
+            def queue_answer():
+                cache.set(rq_key, answer)
+
+            def rebound():
+                cache.set(overwritten_key, answer)
+
+            rebound = another_callback()
+
+            async def write_unrelated():
+                await async_cache.set(argument_key, answer)
+
+            def save_unrelated():
+                cache.set(closure_key, answer)
+        """)
+        sites = copy_sites._inspect(source.encode(), "forward.py")
+        self.assertEqual([(source.splitlines()[site.line - 1].strip(), site.writer) for site in sites], [
+            ("cache.set(celery_key, answer)", "celery"),
+            ("await async_cache.set(asyncio_key, answer)", "asyncio"),
+            ("cache.set(rq_key, answer)", "rq"),
+            ("cache.set(overwritten_key, answer)", None),
+            ("await async_cache.set(argument_key, answer)", None),
+            ("cache.set(closure_key, answer)", None),
+        ])
+
     def git(self, path, *args):
         return subprocess.check_output(["git", "-C", str(path), *args], text=True, stderr=subprocess.DEVNULL).strip()
 
@@ -203,6 +354,68 @@ class CopySites(unittest.TestCase):
             self.assertTrue(body["body"].startswith(action.COPY_MARKER + "\n"))
             self.assertIn("answers.py:4", body["body"])
 
+            saved.append({"id": 68, "body": action.COPY_MARKER + "\n" + action.copy_details("[0,[],false]"),
+                          "user": {"login": "github-actions[bot]", "type": "Bot"}})
+            with patch.dict(os.environ, {**env, "SETRYA_COPY_SUMMARY": "error"}), patch.object(action, "api", side_effect=api):
+                self.assertEqual(action.copy_comment(), 0)
+            method, dest, body = writes[-1]
+            self.assertEqual((method, dest), ("PATCH", "repos/owner/repo/issues/comments/68"))
+            self.assertTrue(body["body"].startswith(action.COPY_MARKER + "\n**Setrya copy scan · ERROR**"))
+            self.assertNotIn("No new copy sites", body["body"])
+
+    def test_copy_action_ranks_deferred_writers_and_defaults_the_starter(self):
+        self.assertEqual(action.COPY_WRITERS, copy_sites.WRITERS)
+        report = {"map_changed": False, "sites": [
+            {"path": "a.py", "line": 8, "kind": "memory", "site_id": "a" * 64, "status": "needs-review"},
+            {"path": "z.py", "line": 3, "kind": "cache", "site_id": "b" * 64, "status": "needs-review", "writer": "celery"},
+        ]}
+        signals = action.copy_signals(report)
+        self.assertEqual(signals[1][0], ["z.py", 3, "cache", "b" * 64, "celery"])
+        details = action.copy_details(json.dumps(signals))
+        self.assertIn("Hold it across a deletion.", details)
+        self.assertIn("`z.py:3` · cache · deferred writer (Celery task)", details)
+        self.assertIn('"mode": "late-write"', details)
+        signals[1][0][-1] = "unknown writer"
+        with self.assertRaisesRegex(ValueError, "invalid deferred writer"):
+            action.copy_details(json.dumps(signals))
+
+    def test_action_labels_only_a_replayed_stale_write_back_fail(self):
+        with TemporaryDirectory() as tmp, contextlib.redirect_stdout(StringIO()):
+            folder = Path(tmp)
+            workspace = folder / "workspace"
+            self.assertEqual(main(["demo", "--output", str(workspace)]), 0)
+            from setrya.core.receipt_v3 import MAX_JOURNAL_OBSERVATIONS
+            from setrya.receipts import STALE_WRITE_BACK_LEAD, replay, stale_write_back_entry, write_back_lead
+
+            self.assertEqual(action.WRITE_BACK, STALE_WRITE_BACK_LEAD)
+            self.assertEqual(action.MAX_JOURNAL_OBSERVATIONS, MAX_JOURNAL_OBSERVATIONS)
+            broken = workspace / "broken"
+            fixed = workspace / "guarded"
+            receipt = replay(broken)
+            entry = stale_write_back_entry(receipt, broken)
+            self.assertEqual(entry, receipt["write_attribution"][0]["journal_entry"])
+            self.assertIsNone(stale_write_back_entry(replay(fixed), fixed))
+            signal = ["write-back", "case", entry]
+            encoded = json.dumps([signal, *action.signals(receipt)])
+            rendered = action.receipt_details("1", "RESIDUAL_FOUND", encoded)
+            lead = write_back_lead(receipt, broken)
+            self.assertTrue(rendered.startswith(lead + "\n\n**Setrya · FAIL**"))
+            zero = action.receipt_details("1", "RESIDUAL_FOUND", '[["write-back","case",0]]')
+            self.assertTrue(zero.startswith(action.WRITE_BACK.format(entry=0)))
+            output, summary = folder / "output.txt", folder / "summary.md"
+            env = {"SETRYA_OUTPUT": str(broken), "SETRYA_STARTER": "fixture.py", "SETRYA_MODE": "write-back",
+                   "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
+            with (patch.dict(os.environ, env), patch.object(action, "require_version"),
+                  patch("setrya.erasure.cli.run_person_starter", return_value=(1, receipt)) as run):
+                self.assertEqual(action.run(), 1)
+            run.assert_called_once_with(Path("fixture.py"), "late-write", broken.absolute(), test_files=[])
+            self.assertIn(f'evidence-summary=[["write-back","case",{entry}]', output.read_text())
+            self.assertTrue(summary.read_text().startswith(lead + "\n\n**Setrya · FAIL**"))
+            invalid = [["write-back", "case", value] for value in (True, -1, MAX_JOURNAL_OBSERVATIONS, "0")]
+            for code, rows in (("0", [signal]), ("1", [signal, signal]), *(("1", [row]) for row in invalid)):
+                with self.subTest(code=code, rows=rows), self.assertRaises(ValueError):
+                    action.receipt_details(code, "RESIDUAL_FOUND", json.dumps(rows))
+
     def test_committed_operator_binding_needs_replayed_candidate_provenance(self):
         with TemporaryDirectory() as tmp, contextlib.redirect_stdout(StringIO()):
             folder = Path(tmp)
@@ -236,3 +449,21 @@ class CopySites(unittest.TestCase):
             self.assertEqual(reviewed["status"], "evidence-replayed")
             self.assertEqual(reviewed["receipt_sha256"], sha256((clean / "erasure-receipt.json").read_bytes()).hexdigest())
             self.assertEqual(copy_sites.check(repo, base, candidate, receipts=(dirty,))["review_required"], 1)
+
+            app.write_text(REDIS_SOURCE.replace("def save_answer", "from celery import shared_task\n@shared_task\ndef save_answer"))
+            self.git(repo, "add", "answers.py")
+            self.git(repo, "commit", "-m", "Defer the existing answer write")
+            deferred = self.git(repo, "rev-parse", "HEAD")
+            deletion, late = folder / "deletion", folder / "late"
+            with contextlib.chdir(repo), patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}):
+                self.assertEqual(main(["run", "--starter", str(fixture), "--output", str(deletion)]), 0)
+                self.assertEqual(main(["run", "--starter", str(fixture), "--output", str(late), "--mode", "late-write"]), 0)
+            scanned, = copy_sites.check(repo, candidate, deferred, receipts=(deletion,))["sites"]
+            self.assertEqual(scanned["site_id"], site["site_id"])
+            self.assertEqual(scanned["writer"], "celery")
+            self.assertEqual(scanned["status"], "needs-review")
+            self.assertEqual(copy_sites._mapping(json.dumps({"format": copy_sites.MAP_FORMAT,
+                             "sites": [scanned["starter"]]}).encode())[site["site_id"]]["mode"], "late-write")
+            reviewed, = copy_sites.check(repo, candidate, deferred, receipts=(deletion, late))["sites"]
+            self.assertEqual(reviewed["status"], "evidence-replayed")
+            self.assertEqual(reviewed["receipt_sha256"], sha256((late / "erasure-receipt.json").read_bytes()).hexdigest())

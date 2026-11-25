@@ -95,11 +95,13 @@ with TemporaryDirectory() as tmp:
                                                    "from application_fixture import CASE").replace(
         "from setrya.examples.workspace import open_fixture", "from application_fixture import open_fixture"))
     fixture = ("--starter", "setrya-case/test_erasure.py")
-    for mode in ("deletion", "late-write"):
+    for mode in ("deletion", "late-write", "write-back"):
         call(path, "doctor", *fixture, "--mode", mode)
         call(path, "run", *fixture, "--mode", mode, "--output", mode)
         call(path, "replay", mode)
         receipt = json.loads((path / mode / "erasure-receipt.json").read_bytes())
+        if receipt["mode"] != ("late-write" if mode == "write-back" else mode):
+            raise RuntimeError("The mode alias changed the receipt wire value.")
         if len(receipt["case"]["callers"]) != 1 or receipt["case"]["artifacts"][0]["action"] != "delete":
             raise RuntimeError("The starter must exercise a single-caller delete-only case.")
 print("Installed workspace, branch, Northline and source coverage demos, case review, starter, doctor, deletion, late writer and replay passed.")

@@ -12,7 +12,8 @@ from . import assessment
 from .profiles import decode, fields, new_bundle, sha, snapshot, stamp
 from .receipt_summary import _markdown
 
-FORMAT = "setrya.assessment-comparison.v1"
+LEGACY_FORMAT = "setrya.assessment-comparison.v1"
+FORMAT = "setrya.assessment-comparison.v2"
 MANIFEST = "comparison.json"
 SIGNATURE = "comparison.sig"
 SUMMARY = "approval.md"
@@ -32,8 +33,11 @@ def _surfaces(rows):
 def _label_surface(surface):
     kind, *parts = surface
     if kind == "query":
-        route, caller, question = parts
-        return f"Endpoint {route}, caller {caller}, question {question[:12]}"
+        route, caller, question, *role = parts
+        label = f"Endpoint {route}, caller {caller}, question {question[:12]}"
+        if role:
+            label += ", retained control" if role[0] == "control" else ", erased target"
+        return label
     if kind == "scan":
         return f"Scanner {parts[0]}"
     if kind == "worker":
@@ -53,14 +57,17 @@ def _coverage_changes(before, after):
             yield current > former, label
 
 
-def _deployment_rows(rows):
+def _deployment_rows(rows, *, include_behavior):
     instances = set()
     for row in rows:
         binding = row["details"]["deployment"]
         if binding is not None:
             record = binding["record"]
-            instances.add((record["environment"], record["origin"], record["build_id"],
-                           f"TLS SHA-256 {record['tls_sha256']}", binding["status"]))
+            instance = (record["environment"], record["origin"], record["build_id"],
+                        f"TLS SHA-256 {record['tls_sha256']}", binding["status"])
+            if include_behavior:
+                instance += (f"Behavior SHA-256 {binding['behavior_sha256']}",)
+            instances.add(instance)
     return instances
 
 
@@ -92,6 +99,7 @@ def _check_coverage(prior, current):
 
 
 def _outputs(result):
+    role_aware = result["format"] == FORMAT
     client = result["client"]
     old = {r["name"]: r for r in result["previous"]["assessment"]["repositories"]}
     new = {r["name"]: r for r in result["candidate"]["assessment"]["repositories"]}
@@ -104,20 +112,32 @@ def _outputs(result):
         before, after = old.get(name, {}), new.get(name, {})
         prior, current = before.get("receipts", []), after.get("receipts", [])
         old_surfaces, new_surfaces = _surfaces(prior), _surfaces(current)
+        unknown_roles = role_aware and any(surface[0] == "query" and len(surface) == 4
+                                           for surface in old_surfaces.keys() | new_surfaces.keys())
         gained, lost = [], []
         for increased, label in _coverage_changes(old_surfaces, new_surfaces):
             (gained if increased else lost).append(label)
         issues = [item for row in current for item in row["details"]["open_items"]]
         coverage_lines, coverage_ready = _check_coverage(before.get("checks", []), after.get("checks", []))
-        before_deployments, after_deployments = _deployment_rows(prior), _deployment_rows(current)
-        changed_scope = {row[:2] for row in before_deployments} != {row[:2] for row in after_deployments}
+        before_deployments = _deployment_rows(prior, include_behavior=role_aware)
+        after_deployments = _deployment_rows(current, include_behavior=role_aware)
+        before_scope = {row[:2] for row in before_deployments}
+        after_scope = {row[:2] for row in after_deployments}
+        changed_scope = before_scope != after_scope
+        shared_scope = before_scope & after_scope
+        changed_behavior = role_aware and (
+            {(*row[:2], row[-1]) for row in before_deployments if row[:2] in shared_scope}
+            != {(*row[:2], row[-1]) for row in after_deployments if row[:2] in shared_scope}
+        )
         old_commit, new_commit = before.get("commit", "unavailable"), after.get("commit", "unavailable")
-        changed_deployment = bool(after_deployments) and before_deployments != after_deployments
+        changed_deployment = bool(after_deployments) and (
+            {row[:5] for row in before_deployments} != {row[:5] for row in after_deployments}
+        )
         changed_checkout = old_commit != new_commit and any(row["commit_binding"] == "unbound" for row in current)
         unbound = not result.get("deployment_pinned") and (changed_checkout or changed_deployment)
-        ready = ready and coverage_ready and bool(new_surfaces) and not (lost or issues or changed_scope or unbound) and all(
-            row["verdict"] == "PASS" and row["review"] == "READY_FOR_REVIEW" for row in current
-        )
+        ready = ready and coverage_ready and bool(new_surfaces) and not (
+            lost or issues or changed_scope or changed_behavior or unbound or unknown_roles
+        ) and all(row["verdict"] == "PASS" and row["review"] == "READY_FOR_REVIEW" for row in current)
         engineering.extend((f"## {name}", "", f"Commit `{old_commit}` → `{new_commit}`", ""))
         for label, rows in (("New observed coverage", gained), ("Lost observed coverage", lost)):
             engineering.append(f"### {label}")
@@ -126,6 +146,8 @@ def _outputs(result):
             if not rows:
                 engineering.append("None recorded.")
             engineering.append("")
+        if unknown_roles:
+            engineering.extend(("A supplied assessment lacks query roles. Rebuild it from the recorded receipts before approval.", ""))
         departed = before_deployments - after_deployments
         arrived = after_deployments - before_deployments
         if departed or arrived:
@@ -134,6 +156,8 @@ def _outputs(result):
                 engineering.extend(f"- {label} · {_markdown(' · '.join(row))}" for row in sorted(rows))
             if changed_scope:
                 engineering.append("- The observed environment or origin changed. Review the destination separately.")
+            if changed_behavior:
+                engineering.append("- The HTTP behavior SHA-256 changed. Review the changed test before approval.")
             engineering.append("")
         if unbound:
             engineering.extend(("Candidate evidence lacks an independent binding to the changed release.", ""))
@@ -165,7 +189,7 @@ def _outputs(result):
 
 def _validate(result):
     fields(result, "format client issued_at signature_type previous candidate files", ("deployment_pinned",))
-    require(result["format"] == FORMAT and result["signature_type"] in ("cosign-detached", "sigstore-bundle"),
+    require(result["format"] in (LEGACY_FORMAT, FORMAT) and result["signature_type"] in ("cosign-detached", "sigstore-bundle"),
             "Unsupported comparison format.")
     assessment._label(result["client"])
     stamp(result["issued_at"])

@@ -22,6 +22,7 @@ GROUPED_V31_FORMAT = "setrya.erasure.evidence.v3.1"
 EVIDENCE_FORMAT = "setrya.erasure.evidence.v3.2"
 DEPLOYMENT_EVIDENCE_FORMAT = "setrya.erasure.evidence.v3.3"
 GROUPED_EVIDENCE_FORMATS = (GROUPED_V31_FORMAT, EVIDENCE_FORMAT, DEPLOYMENT_EVIDENCE_FORMAT)
+MAX_JOURNAL_OBSERVATIONS = 16384
 
 
 def _fields(row, fields):
@@ -349,7 +350,7 @@ def _journal(e, declared, external, gaps):
         if expected:
             gaps.add("Missing subject journal observations.")
         return
-    _list(events, 16384, "journal observation")
+    _list(events, MAX_JOURNAL_OBSERVATIONS, "journal observation")
     for event in events:
         fields = {"store", "key", "source", "action", "classification", "observed_at", "details"}
         require(isinstance(event, dict) and fields <= event.keys(), "Invalid journal observation fields.")
@@ -703,14 +704,15 @@ def human_issue(text):
 def attribution_lines(receipt, *, prefix=""):
     return [
         f'{row["store"]}/{row["key"]} · turn {row["turn"]} · agent {row["agent"]} · initiator {row["initiator"]}. '
-        f'The journaled late write matches the residual revision ({prefix}{EVIDENCE}#/journal/{row["journal_entry"]}).'
+        f'The journaled write matches the residual revision ({prefix}{EVIDENCE}#/journal/{row["journal_entry"]}).'
         for row in receipt.get("write_attribution", ())
     ]
 
 
 def summary(receipt):
+    mode = "write-back" if receipt["mode"] == "late-write" else receipt["mode"]
     lines = [f"Technical verdict {receipt['technical_verdict']} · Review status {receipt['review_status']}",
-             f"{receipt['case']['conversation']} · {receipt['mode']} · worker race {receipt['race']}",
+             f"{receipt['case']['conversation']} · {mode} · write-back check {receipt['race']}",
              f"Drill duration {receipt['drill_duration_ms']} ms"]
     samples = receipt.get("answer_sampling")
     if samples:
