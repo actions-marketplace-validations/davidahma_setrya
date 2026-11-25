@@ -58,6 +58,7 @@ if (values.vectors) {
     } else {
       const result = await scope.verifyBundle(files, trust, pins);
       assert.ok(result.detail.includes("Issuer's result: " + test.verdict), test.name);
+      for (const detail of test.detail ?? []) assert.ok(result.detail.includes(detail), test.name);
       assert.equal(result.checks["Verdict replayed"], "not checked", test.name);
     }
   }

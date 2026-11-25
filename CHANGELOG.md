@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.13.0
+
+- Compare separately signed vendor runs by verdict and surface. A disagreement requires review before accepting the newer result. Check the fixture version before starting a linked rerun.
+- Pack vendor results as signed attestations for offline verification and governance handoff. Ticket records identify the verifying key and UTC verification time.
+- Run local conformance fixtures for CrewAI memory, Cognee ingestion, and SQLite session history in Google ADK and OpenAI Agents. The workflow verifies the signed results without network access.
+
 ## 1.12.0
 
 - Record who operated a conformance fixture. Review the signer and replayed evidence separately, or verify a linked rerun under a separate signer policy.

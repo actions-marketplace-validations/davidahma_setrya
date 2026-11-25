@@ -570,6 +570,10 @@
             "pgvector",
             "langgraph-store",
             "mem0",
+            "crewai-memory",
+            "cognee-dataset",
+            "google-adk-session",
+            "openai-agents-session",
             "openai-conversations",
             "openai-conversation-items",
             "openai-responses",
@@ -675,7 +679,10 @@
         "certification"
       ],
       "if": {
-        "properties": { "target": { "enum": ["pgvector", "langgraph-store", "mem0"] } }
+        "properties": {
+          "target": { "enum": ["pgvector", "langgraph-store", "mem0", "crewai-memory", "cognee-dataset",
+            "google-adk-session", "openai-agents-session"] }
+        }
       },
       "then": { "not": { "required": ["readback"] } },
       "else": { "required": ["readback"], "not": { "required": ["execution"] } },

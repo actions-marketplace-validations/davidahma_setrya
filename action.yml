@@ -16,7 +16,7 @@ inputs:
     description: New directory for the receipt and evidence.
     default: setrya-receipt
   conformance-target:
-    description: Disposable backend to check (pgvector, langgraph-store, or mem0).
+    description: Local backend fixture to check. See docs/vendor-conformance.md for supported targets and extras.
   conformance-operator:
     description: Optional operator identifier recorded with a conformance self-check.
   conformance-key:

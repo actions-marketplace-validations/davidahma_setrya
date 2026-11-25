@@ -19,10 +19,23 @@ The exchange directory contains four regular files.
 | --- | --- | --- |
 | `read-only-observation` | Completed ticket ID, exact request-export fingerprint, completion times of both recorded reads, declared stores, and `observation-evidence.json`. | Synthetic drill duration, endpoint route, live HTTP deployment, and drill evidence. |
 | `synthetic-drill` | Recorded end time, duration, declared stores and route, and `erasure-evidence.json`. Split HTTP drills carry the observed deployment projection. | Completed ticket, first read-only observation time, and read-only observation evidence. |
+| `vendor-attestation` | Vendor conformance target, fixture or API readback kind, recorded versions and per-surface results, recorded execution metadata when available, and `observation-evidence.json`. | Completed ticket, person scope, HTTP deployment, and drill evidence. |
 
-For a read-only observation, the second journal snapshot must follow the first completed observation whenever that snapshot is available. A retained control shows that the observer could see the journalled store. A **vendor attestation** can appear as an `attested` external open item in a synthetic drill, with its owner and follow-up date when recorded. It contributes an obligation and carries no independent deletion verdict.
+For a read-only observation, the second journal snapshot must follow the first completed observation whenever that snapshot is available. A retained control shows that the observer could see the journalled store. A synthetic drill can also record an external assertion as an `attested` open item with an owner and follow-up date. That open item remains an obligation on the original drill.
 
-The system label, version and declared surfaces describe the issuer's scope. The original evidence shows which reads occurred. The signature authenticates the receipt issuer against the verifier's own trust policy. The observer still determines what could be seen. Use the original bundle only with reviewers authorized to see potentially linkable subject, ticket and store identifiers. Synthetic evidence can also contain configured answer excerpts. Public examples use fictional data.
+The system label, version and declared surfaces describe the issuer's scope. The original evidence shows which reads occurred. The signature authenticates the exchange issuer against the verifier's own trust policy. The observer still determines what could be seen. Use the original bundle only with reviewers authorized to see potentially linkable subject, ticket and store identifiers. Synthetic evidence can also contain configured answer excerpts. Public examples use fictional data.
+
+## Attach a vendor result to a governance ticket
+
+Pack an existing conformance result. Setrya identifies it from the v3 receipt and replays its original observations before signing the exchange. The exchange keeps surface outcomes such as `FAIL · history` and coverage gaps such as `NOT TESTED · backups` visible.
+
+```sh
+setrya receipt pack ./vendor-result --output ./vendor-exchange \
+  --system mem0 --system-version 2.2.1 --key issuer.key
+setrya receipt verify-exchange ./vendor-exchange --key independently-trusted.pub
+```
+
+The exchange signer vouches for the exact attached receipt and evidence. The recorded operator is a claim from the fixture. To authenticate the original conformance signature and review a paired rerun, keep the original conformance bundle and use `setrya conformance review` with the appropriate issuer trust. A vendor exchange carries an engineering result for the tested version and surfaces. A governance ticket can reference its digest as supporting evidence. A completed-deletion ticket or app pin requires evidence from a case that actually binds it. [Vendor conformance](vendor-conformance.md) · [Governance handoff example](governance-handoff.md)
 
 ## How an independent reviewer verifies it
 
@@ -37,7 +50,7 @@ Get the expected ticket ID and frame digest from the originating ticket system. 
 
 For a split HTTP drill, `--expect-deployment record.json` pins the environment and build to the reviewer's independently sourced deployment record. `--expect-app-commit` pins a clean checkout and committed fixture files for a local starter. The two options check different observations. [HTTP case configuration](http-cases.md)
 
-An independent implementation verifies the signature over the exact bytes of `exchange.json`, validates the schema, and checks the SHA-256 of the exact companion bytes. Python also replays the original v3 evidence and compares the resulting state, surfaces, timing, ticket binding, and open items to the manifest. The browser reports the issuer's result alongside a separate check status for verdict replay. JSON Pointer fragments in open items address fields in the original receipt.
+An independent implementation verifies the signature over the exact bytes of `exchange.json`, validates the schema, and checks the SHA-256 of the exact companion bytes. Python also replays the original v3 evidence and compares the resulting state, surfaces, timing, ticket binding, and open items to the manifest. The browser verifies the signature, digests and receipt claims. It displays the issuer's reported result and marks verdict replay as unchecked. JSON Pointer fragments in open items address fields in the original receipt.
 
 The standalone browser verifier accepts detached and keyless signatures and supports the independent ticket, export, deployment and app pins. [Verify without installing tools](assessment.md#verify-without-installing-tools)
 

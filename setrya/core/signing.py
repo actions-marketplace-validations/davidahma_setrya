@@ -1,6 +1,10 @@
 """Sign exact receipt bytes and check the signer against a caller-supplied policy."""
 
+from base64 import b64decode
+from contextlib import contextmanager
+from hashlib import sha256
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +14,22 @@ from .inputs import MAX_JSON_BYTES, InvalidReport, read_regular_bytes, require
 from .receipt_format import MAX_BUNDLE_FILE_BYTES
 
 MAX_SIGSTORE_BYTES = 32 * 1024 * 1024
+
+
+@contextmanager
+def trusted_public_key(path):
+    """Snapshot a trusted Cosign key and identify it by the SHA-256 of its DER bytes."""
+    pem = read_regular_bytes(path, "trusted verification key")
+    match = re.fullmatch(rb"-----BEGIN PUBLIC KEY-----\s+([A-Za-z0-9+/=\r\n\t ]+)-----END PUBLIC KEY-----", pem.strip())
+    require(match is not None, "Use a trusted public key in Cosign's PUBLIC KEY PEM format.")
+    try:
+        der = b64decode(b"".join(match[1].split()), validate=True)
+    except ValueError:
+        raise InvalidReport("Invalid Cosign public key encoding.") from None
+    with TemporaryDirectory() as folder:
+        snapshot = Path(folder, "trusted.pub")
+        snapshot.write_bytes(pem)
+        yield snapshot, sha256(der).hexdigest()
 
 
 def add_commands(commands, *, local_keys=False, aliases=False, scope=True):
