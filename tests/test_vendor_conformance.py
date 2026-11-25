@@ -312,6 +312,26 @@ def test_rerun_rejects_version_mismatch_before_execution(tmp_path, monkeypatch):
     assert not output.exists()
 
 
+def test_rerun_requires_detached_signing_before_execution(tmp_path, monkeypatch):
+    original, output = (tmp_path / name for name in ("original", "rerun"))
+    execution = {"operator": "vendor-ci", "run_id": str(uuid4()), "setrya_version": setrya.__version__}
+    profiles.issue(profiles.VENDOR, {**observations(), "execution": execution}, original)
+    (original / "sigstore.json").write_text("{}", encoding="utf-8")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("the incompatible signing policy reached fixture execution or signing")
+
+    monkeypatch.setattr(vendor_cli, "_sign_evidence", unexpected)
+    with pytest.raises(InvalidReport, match="original with a detached Cosign signature"):
+        vendor_cli.run_and_sign("langgraph-store", output, key=tmp_path / "rerun.key",
+                                operator="independent-lab", rerun_of=original)
+
+    (original / "conformance.sig").write_text("signature", encoding="utf-8")
+    with pytest.raises(vendor_cli.InputError, match="detached Cosign signing key for a linked rerun"):
+        vendor_cli.run_and_sign("langgraph-store", output, key=None, operator="independent-lab", rerun_of=original)
+    assert not output.exists()
+
+
 def test_signed_conformance_action_and_offline_verification(tmp_path, monkeypatch):
     _require_cosign3()
     pytest.importorskip("langgraph")

@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from setrya.casework import exchange
 from setrya.casework.profiles import VENDOR, issue, snapshot
+from setrya.casework.receipt_summary import receipt_summary
 from setrya.cli import main
 from setrya.core.inputs import InvalidReport
 
@@ -136,6 +137,8 @@ class ReceiptExchangeTests(unittest.TestCase):
         self.assertEqual(manifest["technical_verdict"], "PASS")
         self.assertEqual(manifest["review_status"], "OPEN_ITEMS")
         self.assertEqual(exchange.verify(bundle, key=self.key), manifest)
+        self.assertIn("Provider API readback", receipt_summary(bundle, audience="reviewer"))
+        self.assertIn("declared API surface", receipt_summary(bundle, audience="customer"))
 
     def test_file_bytes_and_signed_manifest_are_both_bound(self):
         bundle, _ = self.pack()

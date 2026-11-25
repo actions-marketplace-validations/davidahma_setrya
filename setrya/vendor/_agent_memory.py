@@ -9,8 +9,15 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from setrya.core.inputs import save
+
 from ._mem0 import observation
-from .report import PHASES, SETUP
+from .report import OBSERVATION_FILE, PHASES, SETUP
+
+
+def record(evidence, phase, readings):
+    evidence["observations"][phase] = readings
+    save(evidence, Path(OBSERVATION_FILE))
 
 
 def crewai(evidence, directory, text, marker):
@@ -36,8 +43,8 @@ def crewai(evidence, directory, text, marker):
         stored = ((record.id, record.content) for record in reader.list_records(scope=scope))
         results = reader.recall(text["target"], scope=scope, depth="shallow")
         indexed = ((match.record.id, match.record.content) for match in results)
-        evidence["observations"][phase] = {"store": observation(stored, ids, text, marker, phase),
-                                           "index": observation(indexed, ids, text, marker, phase)}
+        record(evidence, phase, {"store": observation(stored, ids, text, marker, phase),
+                                 "index": observation(indexed, ids, text, marker, phase)})
 
 
 async def openai_agents(evidence, directory, text, marker):
@@ -55,9 +62,9 @@ async def openai_agents(evidence, directory, text, marker):
         for key in text:
             with closing(SQLiteSession(key, database)) as reader:
                 rows.extend((key, item["content"]) for item in await reader.get_items())
-        evidence["observations"][phase] = {
+        record(evidence, phase, {
             "session-history": observation(rows, {key: key for key in text}, text, marker, phase),
-        }
+        })
 
 
 async def google_adk(evidence, directory, text, marker):
@@ -85,9 +92,9 @@ async def google_adk(evidence, directory, text, marker):
                     if found is not None:
                         rows.extend((found.id, part.text) for event in found.events if event.content
                                     for part in event.content.parts or ())
-                evidence["observations"][phase] = {
+                record(evidence, phase, {
                     "session-history": observation(rows, {key: key for key in text}, text, marker, phase),
-                }
+                })
             finally:
                 await reader.close()
     finally:
@@ -150,8 +157,8 @@ async def cognee(evidence, directory, text, marker):
                 raise ValueError("The fixture exceeded its local text file budget.")
             resolved = local_file(path.as_uri(), data)
             files.append((path_ids.get(resolved), small_text(resolved)))
-        evidence["observations"][phase] = {"dataset-catalog": observation(catalog, ids, text, marker, phase),
-                                           "ingested-text-files": observation(files, ids, text, marker, phase)}
+        record(evidence, phase, {"dataset-catalog": observation(catalog, ids, text, marker, phase),
+                                 "ingested-text-files": observation(files, ids, text, marker, phase)})
 
 
 FIXTURES = {"crewai-memory": crewai, "cognee-dataset": cognee, "google-adk-session": google_adk,
@@ -180,7 +187,7 @@ def main():
         evidence["error"] = "missing-extra" if not evidence["observations"] else "fixture-error"
     except Exception:  # noqa: BLE001 - SDK diagnostics are not included in receipts.
         evidence["error"] = "fixture-error"
-    Path("observations.json").write_text(json.dumps(evidence), encoding="utf-8")
+    save(evidence, Path(OBSERVATION_FILE))
 
 
 if __name__ == "__main__":

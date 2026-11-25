@@ -20,24 +20,25 @@ jobs:
         include:
           - target: crewai-memory
             extra: conformance-crewai
-            version: crewai=1.15.45
+            version: crewai==1.15.45
             surfaces: store index
           - target: cognee-dataset
             extra: conformance-cognee
-            version: cognee=1.6.10
+            version: cognee==1.6.10
             surfaces: dataset-catalog ingested-text-files
           - target: google-adk-session
             extra: conformance-adk
-            version: google-adk=2.15.1
+            version: google-adk==2.15.1
             surfaces: session-history
           - target: openai-agents-session
             extra: agent-openai
-            version: openai-agents=0.25.0
+            version: openai-agents==0.25.0
             surfaces: session-history
     env:
       COSIGN_PASSWORD: ''
       TARGET: ${{ matrix.target }}
       EXTRA: ${{ matrix.extra }}
+      SDK_VERSION: ${{ matrix.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,10 +50,9 @@ jobs:
         with:
           cosign-release: v3.1.4
       - name: Install the candidate and pinned SDK fixture
-        run: python -m pip install ".[$EXTRA]" 'jsonschema>=4,<5'
+        run: python -m pip install ".[$EXTRA]" "$SDK_VERSION" 'jsonschema>=4,<5'
       - name: Sign and replay a real local SDK run offline
         env:
-          SDK_VERSION: ${{ matrix.version }}
           EXPECTED_SURFACES: ${{ matrix.surfaces }}
         run: |
           offline=(sudo -n -- /usr/bin/unshare --net /usr/bin/setpriv --reuid "$(id -u)" \
@@ -75,7 +75,7 @@ jobs:
           from pathlib import Path
 
           receipt = json.loads(Path(sys.argv[1]).read_text())
-          sdk, expected = os.environ["SDK_VERSION"].split("=")
+          sdk, expected = os.environ["SDK_VERSION"].split("==")
           surfaces = {row["surface"] for row in receipt["checks"] if row["status"] == "PASS"}
           if surfaces != set(os.environ["EXPECTED_SURFACES"].split()) or receipt["versions"].get(sdk) != expected:
               raise SystemExit("The signed result does not cover the expected surfaces and SDK version.")

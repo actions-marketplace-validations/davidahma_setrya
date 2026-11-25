@@ -9,8 +9,10 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from setrya.core.inputs import read_json
+
 from ._mem0 import observation
-from .report import LOCAL_AGENT_TARGETS
+from .report import LOCAL_AGENT_TARGETS, OBSERVATION_FILE
 
 MARKER = "iridium-670a"
 TEXT = {"target": f"Setrya synthetic target {MARKER}", "retained": "Setrya synthetic control cobalt-82bb"}
@@ -137,11 +139,16 @@ def agent_memory(evidence):
         # Pin the child to the same checkout or installation as this process.
         launch = ("import runpy, sys; sys.path.insert(0, sys.argv[1]); "
                   "runpy.run_module('setrya.vendor._agent_memory', run_name='__main__')")
-        subprocess.run([sys.executable, "-I", "-c", launch, str(Path(__file__).resolve().parents[2])],
-                       cwd=directory, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       input=json.dumps((evidence["target"], TEXT, MARKER)).encode(), timeout=120, check=True)
-        result = json.loads((Path(directory) / "observations.json").read_bytes())
-    evidence.update({field: result[field] for field in ("versions", "observations", "error")})
+        interrupted = False
+        try:
+            subprocess.run([sys.executable, "-I", "-c", launch, str(Path(__file__).resolve().parents[2])],
+                           cwd=directory, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           input=json.dumps((evidence["target"], TEXT, MARKER)).encode(), timeout=120, check=True)
+        except subprocess.SubprocessError:
+            interrupted = True
+        result, _ = read_json(Path(directory) / OBSERVATION_FILE, "local fixture observations")
+    evidence.update(versions=result["versions"], observations=result["observations"],
+                    error="fixture-error" if interrupted else result["error"])
 
 
 def run_fixture(target):

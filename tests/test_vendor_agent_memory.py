@@ -1,9 +1,12 @@
 import unittest
 from importlib.metadata import PackageNotFoundError
+from pathlib import Path
+from subprocess import TimeoutExpired
 from unittest.mock import patch
 
+from setrya.core.inputs import save
 from setrya.vendor import fixtures
-from setrya.vendor.report import LOCAL_AGENT_TARGETS, PHASES, SETUP, TARGETS, derive
+from setrya.vendor.report import LOCAL_AGENT_TARGETS, OBSERVATION_FILE, PHASES, SETUP, TARGETS, derive
 
 
 class AgentMemoryConformanceTests(unittest.TestCase):
@@ -36,3 +39,16 @@ class AgentMemoryConformanceTests(unittest.TestCase):
         with patch.object(fixtures, "agent_memory", side_effect=PackageNotFoundError("openai-agents")):
             evidence = fixtures.run_fixture("openai-agents-session")
         self.assertEqual(derive(evidence)["technical_verdict"], "NOT TESTED")
+
+    def test_completed_residual_survives_a_retry_timeout(self):
+        def stop_during_retry(command, *, cwd, timeout, **_):
+            present = {"session-history": {"target": True, "retained": True}}
+            save({"versions": {"openai-agents": "0.25.0", "sqlite": "3.50.4"},
+                  "observations": {"baseline": present, "after_delete": present}, "error": None},
+                 Path(cwd) / OBSERVATION_FILE)
+            raise TimeoutExpired(command, timeout)
+
+        with patch.object(fixtures.subprocess, "run", side_effect=stop_during_retry):
+            receipt = derive(fixtures.run_fixture("openai-agents-session"))
+        self.assertEqual(receipt["technical_verdict"], "FAIL")
+        self.assertEqual(receipt["checks"][0]["status"], "FAIL")

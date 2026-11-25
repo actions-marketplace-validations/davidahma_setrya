@@ -16,6 +16,7 @@ TARGETS = {
     "openai-agents-session": ("session-history",),
 }
 LOCAL_AGENT_TARGETS = frozenset(("crewai-memory", "cognee-dataset", "google-adk-session", "openai-agents-session"))
+OBSERVATION_FILE = "observations.json"
 PHASES = ("baseline", "after_delete", "after_retry")
 READBACK_PHASES = ("baseline", "after_delete")
 UNTESTED = {

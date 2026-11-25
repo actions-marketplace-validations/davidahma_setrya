@@ -39,12 +39,16 @@ def _original_execution(receipt):
 def rerun_digest(original, target, operator, *, setrya_version=__version__):
     """Link a new live fixture run to the bytes of an existing self-check."""
     operator_label(operator)
-    raw, receipt = _read_bundle(Path(original))
+    folder = Path(original)
+    raw, receipt = _read_bundle(folder)
     execution = _original_execution(receipt)
     require(receipt["target"] == target, "Run the same target as the original self-check.")
     require(operator != execution["operator"], "Use a different operator for the rerun.")
     require(execution["setrya_version"] == setrya_version,
             f"Use the same Setrya fixture version as the original ({execution['setrya_version']}).")
+    signature = folder / DETACHED_SIGNATURE
+    require(signature.is_file(), "A linked rerun needs an original with a detached Cosign signature.")
+    profiles.snapshot(signature, MAX_JSON_BYTES)
     return sha256(raw).hexdigest()
 
 

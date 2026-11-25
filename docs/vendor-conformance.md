@@ -52,7 +52,7 @@ For the local agent fixtures, use the matching target and extra above. For examp
 
 `setrya replay` and `setrya receipt summary` show the recorded operator and replay scope. Older bundles may leave the operator unrecorded. `setrya conformance review` also verifies the signature and reports the trusted key fingerprint or verified Sigstore identity. A vendor's self-check retains its execution label after an outside reviewer verifies it.
 
-An independent operator can run the same fixture against the same backend versions with their own environment and Cosign key. Send them the original bundle. Share the expected operator ID and trusted public keys through a separate channel.
+An independent operator can run the same fixture against the same backend versions with their own environment and Cosign key. Both results in a paired review use detached signatures. Send the operator the original bundle. Share the expected operator ID and trusted public keys through a separate channel.
 
 For a LangGraph rerun, start a clean virtual environment. Set `SETRYA_VERSION`, `LANGGRAPH_VERSION`, and `LANGGRAPH_CHECKPOINT_VERSION` to the reviewed versions in the original receipt. Install those exact versions and use your own operator ID. Cosign prompts for a password when it creates the signing key.
 

@@ -55,15 +55,19 @@ Keep the control or ticket reference separate from your governance decision. Dec
 
 ## Attach a vendor result
 
-Review the original vendor bundle under its own trusted signer policy first. An evidence issuer can then package the result for a ticket, and the ticket reviewer can open that exchange under the issuer's trusted key. This example uses the signed Mem0 fixture bundle and the public key distributed with the release. Its history check reports `FAIL`.
+Review the original vendor bundle under its own trusted signer policy first. An evidence issuer can then package the result for a ticket, and the ticket reviewer can open that exchange under the issuer's trusted key. Extract `vendor-conformance.zip` into `"$scratch/vendor"` for this example. The Mem0 history check reports `FAIL`. [Download the signed fixture results](https://github.com/davidahma/setrya/releases/download/v1.13.0/vendor-conformance.zip)
 
 ```sh
-setrya conformance review mem0 --key ci-fixture.pub --expect-operator setrya-ci
+"$setrya" conformance review "$scratch/vendor/mem0" --key "$scratch/vendor/ci-fixture.pub" \
+  --expect-operator setrya-ci
 # Exit 1 is the observed residual. Confirm the report before packing it.
-setrya receipt pack mem0 --output vendor-exchange \
-  --system mem0 --system-version local-fixture --key issuer.key
-python -I "$example" review vendor-exchange --key trusted-issuer.pub \
-  --ticket GOV-205 --framework "Support governance" --control ERASURE-08 > vendor-ticket.json
+COSIGN_PASSWORD="" "$setrya" receipt pack "$scratch/vendor/mem0" \
+  --output "$scratch/issuer/vendor-exchange" \
+  --system mem0 --system-version 2.2.1 --key "$scratch/issuer/issuer.key"
+cp -R "$scratch/issuer/vendor-exchange" "$scratch/reviewer/vendor-exchange"
+"$python" -I "$example" review "$scratch/reviewer/vendor-exchange" \
+  --key "$scratch/reviewer/trusted-issuer.pub" \
+  --ticket GOV-205 --framework "Support governance" --control ERASURE-08 > "$scratch/reviewer/vendor-ticket.json"
 ```
 
 The ticket labels the evidence as a vendor attestation and includes its target, versions, operator if recorded, and per-surface results. Its signer identifies the exchange issuer. The control mapping comes from the ticket reviewer. Preserve the original bundle and signer policy if the reviewer also needs to verify who signed the source result. [Vendor report scope](vendor-conformance.md) · [Receipt exchange](receipt-exchange.md)

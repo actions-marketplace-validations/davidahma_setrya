@@ -205,7 +205,7 @@ def receipt_summary(bundle, *, audience="reviewer", output_format="text", case_i
                      "tenant": "Tenant offboarding", "discovery": "Discovery case",
                      "observed-deletion": "Read-only verification", "follow-up": "Open-item follow-up",
                      BRANCHES: "Branch and restore lineage", CRYPTO: "Read-only key-destruction evidence",
-                     VENDOR: "Vendor conformance fixture"}.get(profile, profile)
+                     VENDOR: "Provider API readback" if "readback" in receipt else "Vendor conformance fixture"}.get(profile, profile)
             sections.append(("Scope", [scope, *(["Write-back check " + receipt["race"]] if receipt.get("race") else [])]))
             issues = [*receipt.get("failures", ()), *receipt.get("gaps", ())]
             issues.extend(f"{e['operation']} ({e['error']})" for e in receipt.get("errors", ()))

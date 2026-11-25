@@ -95,6 +95,8 @@ def run_and_sign(target, output, *, key, operator=None, rerun_of=None):
     execution = {"operator": operator, "run_id": str(uuid4()), "setrya_version": __version__}
     if rerun_of is not None:
         execution["rerun_of"] = rerun_digest(rerun_of, target, operator, setrya_version=execution["setrya_version"])
+        if key is None:
+            raise InputError("Use a detached Cosign signing key for a linked rerun.")
     return _sign_evidence(lambda: {**run_fixture(target), "execution": execution}, output, key=key)
 
 
