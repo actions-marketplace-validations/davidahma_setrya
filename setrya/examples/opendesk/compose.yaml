@@ -1,6 +1,6 @@
 services:
   database:
-    image: cgr.dev/chainguard/postgres:latest@sha256:9cc085289d7ef0174f35f2ff1e514624c3305c4a26215d8e89e3e277e3377d03
+    image: cgr.dev/chainguard/postgres:latest@sha256:1ddd2b418d34fc8e078effef72c32fba242df0de407ba2507c7102b34da2ad05
     user: "postgres"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
