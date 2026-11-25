@@ -89,6 +89,12 @@ def write_handoff(task, snapshot):
                             gate.run_id if committed else None, committed or None))
 
 
+@worker.task(name="setrya.tests.writeback.confirm_pause", shared=False)
+def confirm_pause(key):
+    with Redis.from_url(URL, decode_responses=True) as db:
+        db.hset(key, "pause_confirmed", "yes")
+
+
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -176,6 +182,10 @@ class _ErasureApplication:
         if self.gate.writer_type == "resume":
             self._consume(True)
             self._consume(False)
+            # Redis may still have a BRPOP pending from before the cancellation.
+            # A completed delivery on the worker's base queue drains that poll.
+            confirm_pause.apply_async(args=(self.key,), queue=QUEUE)
+            _wait(lambda: self.db.hget(self.key, "pause_confirmed"))
             attempt = self.gate.park(signature, **_capture(snapshot))
         else:
             attempt = self.gate.dispatch(signature)
