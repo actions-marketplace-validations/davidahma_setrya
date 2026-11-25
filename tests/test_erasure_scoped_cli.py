@@ -28,13 +28,14 @@ class ScopedCLI(unittest.TestCase):
                                output=output, mode="deletion", run_id="application-run-id")
                 if output.name == "substituted":
                     shutil.rmtree(output)
-                    shutil.copytree(output.parent / "original", output)
+                    shutil.copytree(Path(__file__).parent / "original", output)
             """))
             args = ["run", "--starter", str(starter), "--output"]
             with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as err:
                 self.assertEqual(main([*args, f"{tmp}/original"]), 0, err.getvalue())
                 self.assertEqual(main([*args, f"{tmp}/substituted"]), 2)
             self.assertIn("does not match evidence issued by this live run", err.getvalue())
+            self.assertFalse((Path(tmp) / "substituted").exists())
 
     def test_tenant_help_names_runnable_public_commands(self):
         for action, legacy in (("run", "gate"), ("replay", "verify-receipt")):

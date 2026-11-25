@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Setrya offline verifier</title>
+<style>
+  :root { color-scheme: light dark; font: 16px/1.6 system-ui, sans-serif; }
+  body { max-width: 45rem; margin: clamp(2rem, 8vw, 6rem) auto; padding: 0 1.25rem; }
+  h1 { line-height: 1.2; letter-spacing: -.03em; }
+  form { border: 1px solid color-mix(in srgb, currentColor 30%, transparent); border-radius: .6rem; padding: 1.25rem; }
+  label, input, select { display: block; }
+  fieldset { border: 0; padding: 0; margin: 0; }
+  legend { font-weight: 650; }
+  #checks { padding-left: 1.3rem; }
+  [hidden] { display: none !important; }
+  label { font-weight: 650; }
+  input, select { margin: .25rem 0 1rem; max-width: 100%; }
+  button { font: inherit; font-weight: 650; padding: .45rem .9rem; cursor: pointer; }
+  #result { margin-top: 1rem; font-weight: 680; }
+  pre { overflow-wrap: anywhere; white-space: pre-wrap; font: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Verify a Setrya handoff offline</h1>
+  <p>Choose your own trust material and take case pins from the original ticket or release record. All files stay on this device.</p>
+  <form id="verify">
+    <label for="bundle">All files from the exchange or assessment folder</label>
+    <input id="bundle" type="file" multiple required>
+    <label for="policy">Signature policy</label>
+    <select id="policy">
+      <option value="cosign-detached">Cosign P-256 public key</option>
+      <option value="sigstore-bundle">Sigstore identity and trust root</option>
+    </select>
+    <fieldset id="detached">
+      <label for="key">Trusted public key</label>
+      <input id="key" type="file">
+    </fieldset>
+    <fieldset id="keyless" hidden>
+      <label for="trust">Trusted root JSON</label>
+      <input id="trust" type="file">
+      <label for="issuer">Expected OIDC issuer</label>
+      <input id="issuer" maxlength="2048" spellcheck="false">
+      <label for="identity">Expected certificate identity</label>
+      <input id="identity" maxlength="2048" spellcheck="false">
+    </fieldset>
+    <fieldset>
+      <legend>Optional receipt pins</legend>
+      <label for="ticket">Expected ticket ID</label>
+      <input id="ticket" maxlength="96" spellcheck="false">
+      <label for="frame">Expected completed export SHA-256</label>
+      <input id="frame" maxlength="64" spellcheck="false">
+      <label for="deployment">Expected deployment record JSON</label>
+      <input id="deployment" type="file">
+      <label for="commit">Expected clean app commit</label>
+      <input id="commit" maxlength="64" spellcheck="false">
+    </fieldset>
+    <button>Verify bundle</button>
+  </form>
+  <p id="result" role="status" aria-live="polite"></p>
+  <ul id="checks" aria-label="Verification checks"></ul>
+  <pre id="detail"></pre>
+  <p>Verdict replay remains a separate step in the Setrya CLI.</p>
+  <!-- SETRYA_BROWSER_LICENSES -->
+</main>
+<!-- SETRYA_BROWSER_ENGINE -->
+<script>
+"use strict";
+
+const manifestLimit = 1024 * 1024;
+const evidenceLimit = 16 * manifestLimit;
+const trustLimit = 32 * manifestLimit;
+const decoder = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true});
+const sha256 = async bytes => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+  octet => octet.toString(16).padStart(2, "0")).join("");
+
+const checkNames = [
+  "Manifest", "Signer and signature", "Companion file set", "Companion digests", "Evidence kind",
+  "Observation order", "Receipt claims", "Ticket ID", "Completed export fingerprint",
+  "Deployment", "App commit", "Verdict replayed"
+];
+
+class VerificationError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+function demand(condition, code, message) {
+  if (!condition) throw new VerificationError(code, message);
+}
+
+function parseJSON(source, code) {
+  let document;
+  try {
+    document = JSON.parse(source);
+  } catch {
+    throw new VerificationError(code, "Expected a valid JSON document.");
+  }
+  // JSON.parse accepts the last value of duplicate properties. Scan only its validated tokens
+  // and compare decoded keys within each object, including escaped spellings of the same key.
+  const lookahead = /"(?:[^"\\]|\\[\s\S])*"|[{}\[\]:]/g;
+  const colon = /\s*:/y;
+  const parents = [];
+  for (const match of source.matchAll(lookahead)) {
+    const token = match[0];
+    if (token === "{" || token === "[") {
+      demand(parents.length < 128, code, "JSON nesting is too deep.");
+      parents.push(token === "{" ? new Set() : null);
+    } else if (token === "}" || token === "]") {
+      parents.pop();
+    } else if (token[0] === '"' && parents.at(-1)) {
+      // A property name is the only string followed by a colon outside its own token.
+      colon.lastIndex = match.index + token.length;
+      if (!colon.test(source)) continue;
+      const key = JSON.parse(token);
+      const keys = parents.at(-1);
+      demand(!keys.has(key), "DUPLICATE_JSON_KEY", "A JSON document repeats a key.");
+      keys.add(key);
+    }
+  }
+  return document;
+}
+
+function same(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== "object" || typeof right !== "object"
+      || Array.isArray(left) !== Array.isArray(right)) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every(key => Object.hasOwn(right, key) && same(left[key], right[key]));
+}
+
+let engine;
+function offlineEngine() {
+  engine ||= (async () => {
+    const source = document.getElementById("offline-wasm")?.textContent;
+    demand(source && globalThis.Go && globalThis.DecompressionStream, "UNAVAILABLE",
+      "Download the standalone verifier from a Setrya release and open it in a current browser.");
+    const compressed = Uint8Array.fromBase64 ? Uint8Array.fromBase64(source)
+      : Uint8Array.from(atob(source), character => character.charCodeAt(0));
+    const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("gzip"));
+    const wasm = await new Response(stream).arrayBuffer();
+    const go = new globalThis.Go();
+    const instance = await WebAssembly.instantiate(wasm, go.importObject);
+    go.run(instance.instance).catch(() => { engine = undefined; });
+    demand(globalThis.setryaCheckSigstore && globalThis.setryaCheckSchema, "UNAVAILABLE",
+      "The offline verification engine could not be started.");
+  })();
+  return engine;
+}
+
+function base64(text) {
+  demand(/^[A-Za-z0-9+/]+={0,2}$/.test(text), "WRONG_SIGNER", "Expected base64 signature or public key.");
+  return Uint8Array.from(atob(text), char => char.charCodeAt(0));
+}
+
+function rawEcdsa(der) {
+  // P-256 DER uses short lengths and two minimally encoded, positive integers.
+  const invalid = "Expected a Cosign P-256 signature.";
+  demand(der.length >= 8 && der.length <= 72 && der[0] === 0x30 && der[1] === der.length - 2, "WRONG_SIGNER", invalid);
+  const result = new Uint8Array(64);
+  let offset = 2;
+  for (const limb of [32, 64]) {
+    const count = der[offset + 1];
+    demand(der[offset] === 2 && count >= 1 && count <= 33 && offset + 2 + count <= der.length, "WRONG_SIGNER", invalid);
+    offset += 2;
+    const pad = der[offset] === 0 && count > 1 ? 1 : 0;
+    demand(der[offset] < 128 && count - pad <= 32 && (!pad || der[offset + 1] >= 128), "WRONG_SIGNER", invalid);
+    result.set(der.subarray(offset + pad, offset + count), limb - count + pad);
+    offset += count;
+  }
+  demand(offset === der.length, "WRONG_SIGNER", invalid);
+  return result;
+}
+
+async function read(file, limit, code = "UNEXPECTED_FILES") {
+  demand(file && file.size > 0 && file.size <= limit, code, "A required file is missing or exceeds the size limit.");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  demand(bytes.length === file.size, code, "The selected file changed while it was being read.");
+  return bytes;
+}
+
+function instant(timestamp) {
+  const iso = typeof timestamp === "string" &&
+    /^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]+))?(Z|[+-][0-9]{2}:[0-9]{2})$/.exec(timestamp);
+  if (!iso) return null;
+  const seconds = Date.parse(iso[1] + iso[3]);
+  const micros = (iso[2] || "").slice(0, 6).padEnd(6, "0");
+  return Number.isFinite(seconds) ? BigInt(seconds) * 1000n + BigInt(micros) : null;
+}
+
+function fileSet(selected, names) {
+  return selected.size === names.length && names.every(name => selected.has(name));
+}
+
+async function verifySignature(raw, signature, document, keyFile, policy) {
+  demand(policy.kind === document.signature_type, "WRONG_SIGNER", "Select the intended signer policy for this bundle.");
+  try {
+    if (policy.kind === "sigstore-bundle") {
+      demand(!keyFile && policy.trust && policy.identity && policy.issuer, "WRONG_SIGNER",
+        "Supply an independent trust root and exact issuer and certificate identity.");
+      const trustedBytes = await read(policy.trust, trustLimit, "WRONG_SIGNER");
+      const trusted = decoder.decode(trustedBytes);
+      const encoded = decoder.decode(signature);
+      // Refuse ambiguous JSON before passing it to the Sigstore protocol decoder.
+      parseJSON(trusted, "WRONG_SIGNER");
+      parseJSON(encoded, "WRONG_SIGNER");
+      await offlineEngine();
+      const authentic = globalThis.setryaCheckSigstore(raw, encoded, trusted, policy.identity, policy.issuer);
+      demand(authentic, "WRONG_SIGNER", "Sigstore could not verify the certificate, signer, log proof, and signature.");
+      return "Sigstore issuer " + policy.issuer + "\nCertificate identity " + policy.identity +
+        "\nTrusted root SHA-256 " + await sha256(trustedBytes);
+    }
+    demand(keyFile && !policy.trust && !policy.identity && !policy.issuer, "WRONG_SIGNER",
+      "Supply one independently trusted P-256 public key.");
+    const pem = decoder.decode(await read(keyFile, 8192, "WRONG_SIGNER")).trim();
+    const match = /^-----BEGIN PUBLIC KEY-----\s+([\s\S]+?)\s+-----END PUBLIC KEY-----$/.exec(pem);
+    demand(match, "WRONG_SIGNER", "Choose a trusted PEM public key.");
+    const publicKey = base64(match[1].replace(/\s+/g, ""));
+    const key = await crypto.subtle.importKey("spki", publicKey, {name: "ECDSA", namedCurve: "P-256"}, false, ["verify"]);
+    const signatureBytes = rawEcdsa(base64(decoder.decode(signature).trim()));
+    const authentic = await crypto.subtle.verify({name: "ECDSA", hash: "SHA-256"}, key, signatureBytes, raw);
+    demand(authentic, "WRONG_SIGNER", "The signature does not match this key and report.");
+    return "Public-key fingerprint (SHA-256)\n" + await sha256(publicKey);
+  } catch (error) {
+    if (error instanceof VerificationError && error.code !== "DUPLICATE_JSON_KEY") throw error;
+    throw new VerificationError("WRONG_SIGNER", "The signer policy or signature could not be verified.");
+  }
+}
+
+const receiptName = "erasure-receipt.json";
+const observedName = "observation-evidence.json";
+const drillName = "erasure-evidence.json";
+
+function evidenceKind(document, receipt, evidence, file) {
+  const observed = document.evidence_kind === "read-only-observation";
+  const observedKind = ["setrya.observed-deletion.v1", "setrya.observed-deletion.v1.1"];
+  const drillKinds = ["setrya.erasure.evidence.v3", "setrya.erasure.evidence.v3.sampled",
+    "setrya.erasure.evidence.v3.1", "setrya.erasure.evidence.v3.2", "setrya.erasure.evidence.v3.3"];
+  const format = evidence?.format;
+  const recordsProducer = ["setrya.observed-deletion.v1.1", "setrya.erasure.evidence.v3.2",
+    "setrya.erasure.evidence.v3.3"].includes(format);
+  demand(receipt?.format === "setrya.erasure.receipt.v3" && receipt.version === 3 && receipt.scope === "person" &&
+    receipt.evidence?.file === file && (recordsProducer ? receipt.evidence_format === format
+      : !Object.hasOwn(receipt, "evidence_format")) &&
+    (observed ? receipt.profile === "observed-deletion" && observedKind.includes(format)
+      : !Object.hasOwn(receipt, "profile") && evidence.scope === "person" && drillKinds.includes(format)),
+  "EVIDENCE_KIND_MISMATCH", "The original receipt or evidence belongs to a different evidence kind.");
+  return observed;
+}
+
+function exactKeys(value, fields) {
+  return value && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value).length === fields.length && fields.every(field => Object.hasOwn(value, field));
+}
+
+function schemaMatches(id, source) {
+  const schema = document.getElementById(id)?.textContent;
+  return schema && globalThis.setryaCheckSchema(schema, source);
+}
+
+function validProducer(producer, observed) {
+  if (!producer || !schemaMatches("producer-schema", JSON.stringify(producer))) return false;
+  const {application: app, test_files: tests, ci} = producer;
+  const unseen = app.execution === "unavailable";
+  if ((app.checkout_state === "unavailable") !== (app.checkout_commit === null)
+      || (observed && !unseen) || (unseen && (app.checkout_commit !== null || app.asserted_deploy_commit !== null))
+      || (tests.length === 0) !== unseen) return false;
+  const printable = /^[\p{L}\p{M}\p{N}\p{P}\p{S} ]+(?![\s\S])/u;
+  const workflow = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml@(?:refs\/[^\s]+|[0-9a-f]{40}|[0-9a-f]{64})(?![\s\S])/;
+  if (ci && (!workflow.test(ci.workflow_ref) || !printable.test(ci.workflow_ref))) return false;
+  let entrypoints = 0;
+  let previous = "";
+  for (const row of tests) {
+    if (!printable.test(row.path) || row.path.includes("\\") ||
+        row.path.split("/").some(part => part === "" || part === "." || part === "..") ||
+        (row.location === "external" && row.path.includes("/")) ||
+        (row.commit_bound && (app.checkout_commit === null || row.location !== "checkout"))) return false;
+    if (row.role === "entrypoint") entrypoints++;
+    // Python sorts labels by Unicode code point. Fixed-width code points preserve that order.
+    const slot = row.location + "/" + Array.from(row.path, character =>
+      character.codePointAt(0).toString(16).padStart(6, "0")).join("");
+    if (slot <= previous) return false;
+    previous = slot;
+  }
+  return entrypoints === Number(tests.length > 0);
+}
+
+function groupedAnswers(stage, spec) {
+  if (stage === null) return [];
+  const questions = spec.questions.length;
+  const callers = spec.callers.length;
+  const samples = spec.sampling.samples;
+  const groups = stage.answers;
+  demand(questions > 0 && callers > 0 && Number.isSafeInteger(samples) && samples > 0 &&
+    Array.isArray(groups) && groups.length === callers * questions &&
+    groups.every(rows => Array.isArray(rows) && rows.length === samples),
+  "CLAIMS_MISMATCH", "The grouped answers do not match the requested sampling.");
+  const answers = [];
+  // Evidence groups by caller/question. HTTP observations are in request order.
+  for (let caller = 0; caller < callers; caller++) {
+    for (let sample = 0; sample < samples; sample++) {
+      for (let question = 0; question < questions; question++) {
+        answers.push(groups[caller * questions + question][sample]);
+      }
+    }
+  }
+  return answers;
+}
+
+function canonicalOrigin(value) {
+  if (typeof value !== "string" || value.length > 270 || !/^https:\/\/[!-~]+(?![\s\S])/.test(value)) return false;
+  try {
+    const url = new URL(value);
+    if (url.origin !== value || url.port === "0") return false;
+    const host = url.hostname;
+    if (host.startsWith("[") || /^[0-9]+(?:\.[0-9]+){3}$/.test(host)) return true;
+    const labels = host.split(".");
+    return host.length <= 253 && !/^[0-9]+$/.test(labels.at(-1)) &&
+      labels.every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
+  } catch {
+    return false;
+  }
+}
+
+function deploymentProjection(evidence) {
+  const observed = evidence.deployment;
+  const required = evidence.format === "setrya.erasure.evidence.v3.3";
+  demand(required === Object.hasOwn(evidence, "deployment"), "CLAIMS_MISMATCH",
+    "The evidence format and deployment observations do not match.");
+  if (!required) return;
+  demand(exactKeys(observed, ["record", "behavior_sha256", "deployment_sha256", "reads", "erase"]),
+    "CLAIMS_MISMATCH", "The evidence lacks the required deployment observations.");
+  const {record, behavior_sha256, deployment_sha256, reads, erase} = observed;
+  const source = evidence.provenance;
+  demand(evidence.mode === "deletion" && evidence.baseline && evidence.final
+    && (evidence.erased === null || typeof evidence.erased === "boolean")
+    && ((evidence.immediate === null) === (evidence.erased === null))
+    && source?.application?.execution === "http-case" && evidence.case.sampling?.source === "answer-text"
+    && source.test_files.some(row => row.role === "entrypoint" && row.sha256 === behavior_sha256)
+    && source.test_files.some(row => row.role === "test" && row.sha256 === deployment_sha256),
+  "CLAIMS_MISMATCH", "The evidence does not bind the two deployment inputs.");
+  const baseline = groupedAnswers(evidence.baseline, evidence.case);
+  const answers = [...baseline, ...groupedAnswers(evidence.immediate, evidence.case),
+    ...groupedAnswers(evidence.final, evidence.case)];
+  const signals = ["origin", "tls_sha256", "build_id"];
+  const validSignal = observation => exactKeys(observation, signals) && canonicalOrigin(observation.origin) &&
+    (observation.tls_sha256 === null || (typeof observation.tls_sha256 === "string" &&
+      /^[0-9a-f]{64}(?![\s\S])/.test(observation.tls_sha256))) &&
+    (observation.build_id === null || (observation.tls_sha256 !== null && typeof observation.build_id === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}(?![\s\S])/.test(observation.build_id)));
+  const matches = observation => observation !== null && signals.every(field => observation[field] === record[field]);
+  demand(canonicalOrigin(record.origin) && Array.isArray(reads) && reads.length === answers.length
+    && reads.every((read, index) => validSignal(read) && (matches(read) || answers[index] === null))
+    && (erase === null || validSignal(erase))
+    && (evidence.erased !== true || matches(erase))
+    && ((evidence.erased === null && erase === null)
+      || reads.slice(0, baseline.length).every(matches)),
+  "CLAIMS_MISMATCH", "The HTTP deployment observations differ from the recorded reads and erasure.");
+  const status = reads.every(matches) && (erase === null || matches(erase)) ? "verified" : "unverified";
+  return {record, behavior_sha256, deployment_sha256, status};
+}
+
+function projection(document, receipt, evidence, observed) {
+  const last = instant(document.observation.last_checked_at);
+  demand(last !== null && last === instant(receipt.observed_at), "CLAIMS_MISMATCH",
+    "The last observation differs from the original receipt.");
+  const produced = Object.hasOwn(receipt, "evidence_format");
+  demand(produced === Object.hasOwn(receipt, "provenance") && produced === Object.hasOwn(evidence, "provenance")
+    && (!produced || (same(receipt.provenance, evidence.provenance) && validProducer(receipt.provenance, observed))),
+  "CLAIMS_MISMATCH", "The original receipt has missing or invalid producer provenance.");
+  let stores;
+  let routes;
+  if (observed) {
+    stores = [...evidence.request.stores].sort();
+    routes = [];
+    demand(instant(document.observation.first_checked_at) === instant(evidence.find.checked_at) &&
+      last === instant(evidence.verify_absent.checked_at) && receipt.request_id === evidence.request.id &&
+      receipt.frame_sha256 === evidence.frame_sha256 && same(document.ticket, {id: receipt.request_id, frame_sha256: receipt.frame_sha256}),
+    "CLAIMS_MISMATCH", "The observed ticket, frame, or timing differs from the original evidence.");
+  } else {
+    demand(same(evidence.case, receipt.case) && last === instant(evidence.observed_at) &&
+      document.observation.drill_duration_ms === receipt.drill_duration_ms && evidence.drill_duration_ms === receipt.drill_duration_ms,
+    "CLAIMS_MISMATCH", "The declared case, timing, or duration differs from the original evidence.");
+    stores = Array.from(new Set([...receipt.case.scan_stores, ...receipt.case.artifacts.map(row => row.store)])).sort();
+    routes = [receipt.case.route];
+  }
+  const items = receipt.open_items.map((item, index) => ({
+    kind: item.kind, surface: item.store, evidence: receiptName + "#/open_items/" + index,
+    ...(item.owner == null ? {} : {owner: item.owner}), ...(item.follow_up == null ? {} : {follow_up: item.follow_up})
+  }));
+  const deployment = deploymentProjection(evidence);
+  demand(same(document.surfaces, {stores, routes}) && same(document.open_items, items)
+    && same(document.deployment, receipt.deployment) && same(receipt.deployment, deployment),
+  "CLAIMS_MISMATCH",
+  "The declared surfaces, open items, provenance, or deployment differs from the original evidence.");
+  demand(deployment?.status !== "unverified" || document.technical_verdict !== "PASS", "VERDICT_MISMATCH",
+    "A receipt with unverified deployment observations cannot claim PASS.");
+}
+
+async function verifyBundle(files, keyFile, pins = {}) {
+  const checks = Object.fromEntries(checkNames.map(name => [name, "not checked"]));
+  let active = "Manifest";
+  const step = name => { active = name; };
+  const passed = () => { checks[active] = "passed"; };
+  try {
+    demand(globalThis.crypto?.subtle, "UNAVAILABLE", "Open this file in a browser with Web Crypto.");
+    const selected = new Map(Array.from(files, file => [file.name, file]));
+    demand(selected.size === files.length, "UNEXPECTED_FILES", "Choose one copy of each bundle file.");
+    const assessment = selected.has("assessment.json");
+    const manifestName = assessment ? "assessment.json" : "exchange.json";
+    const signatureName = assessment ? "assessment.sig" : "exchange.sig";
+    const raw = await read(selected.get(manifestName), manifestLimit);
+    const source = decoder.decode(raw);
+    const manifest = parseJSON(source, "INVALID_MANIFEST");
+    if (assessment) {
+      demand(["setrya.assessment.v1", "setrya.assessment.v2"].includes(manifest?.format) &&
+        ["cosign-detached", "sigstore-bundle"].includes(manifest.signature_type),
+        "INVALID_MANIFEST", "Expected a signed Setrya assessment.");
+    } else {
+      await offlineEngine();
+      demand(schemaMatches("exchange-schema", source), "INVALID_MANIFEST",
+        "The manifest does not match the Deletion Receipt v1 exchange schema.");
+    }
+    passed();
+
+    step("Signer and signature");
+    const policy = pins.policy || {kind: "cosign-detached"};
+    const signature = await read(selected.get(signatureName), policy.kind === "sigstore-bundle" ? trustLimit : 1024);
+    const signer = await verifySignature(raw, signature, manifest, keyFile, policy);
+    passed();
+
+    step("Companion file set");
+    const name = manifest.evidence_kind === "read-only-observation" ? observedName : drillName;
+    const companionNames = assessment ? ["summary.md"] : [receiptName, name];
+    const selectedNames = [manifestName, signatureName, ...companionNames];
+    if (!assessment) {
+      const other = name === observedName ? drillName : observedName;
+      demand(!fileSet(selected, [manifestName, signatureName, receiptName, other]),
+        "EVIDENCE_KIND_MISMATCH", "The selected evidence file belongs to a different evidence kind.");
+    }
+    demand(fileSet(selected, selectedNames) && manifest.files &&
+      Object.keys(manifest.files).length === companionNames.length, "UNEXPECTED_FILES", "The bundle file set differs from the manifest.");
+    passed();
+
+    step("Companion digests");
+    const companions = Object.create(null);
+    for (const filename of companionNames) {
+      companions[filename] = await read(selected.get(filename), assessment ? manifestLimit : evidenceLimit);
+      demand(manifest.files[filename] === await sha256(companions[filename]), "EVIDENCE_DIGEST_MISMATCH",
+        "A companion file differs from its signed digest.");
+    }
+    passed();
+    if (assessment) {
+      demand(!pins.ticket && !pins.frame && !pins.deployment && !pins.commit, "INVALID_MANIFEST",
+        "Use receipt pins with a receipt exchange. This bundle is an assessment.");
+      return {checks, detail: signer + "\n\n" + decoder.decode(companions["summary.md"])};
+    }
+
+    step("Evidence kind");
+    const receipt = parseJSON(decoder.decode(companions[receiptName]), "EVIDENCE_KIND_MISMATCH");
+    const evidence = parseJSON(decoder.decode(companions[name]), "EVIDENCE_KIND_MISMATCH");
+    const observed = evidenceKind(manifest, receipt, evidence, name);
+    passed();
+    step("Companion digests");
+    demand(receipt.evidence.sha256 === manifest.files[name], "EVIDENCE_DIGEST_MISMATCH",
+      "The original receipt's evidence digest differs from the signed files.");
+    passed();
+
+    if (observed) {
+      step("Observation order");
+      const firstEnd = instant(evidence.find?.checked_at);
+      const nextRead = evidence.verify_absent?.journal_read_at;
+      const snapshot = instant(nextRead);
+      demand(firstEnd !== null && (nextRead === null || (snapshot !== null && firstEnd <= snapshot)),
+        "SNAPSHOT_ORDER", "The second journal snapshot must follow the first completed observation.");
+      passed();
+    }
+
+    step("Receipt claims");
+    demand(manifest.technical_verdict === receipt.technical_verdict && manifest.review_status === receipt.review_status,
+      "VERDICT_MISMATCH", "The issuer's verdict differs from the original receipt.");
+    try {
+      projection(manifest, receipt, evidence, observed);
+    } catch (error) {
+      if (error instanceof VerificationError) throw error;
+      throw new VerificationError("CLAIMS_MISMATCH", "The original evidence lacks the fields needed to check the claims.");
+    }
+    passed();
+
+    if (pins.ticket) {
+      step("Ticket ID");
+      demand(manifest.ticket?.id === pins.ticket, "TICKET_ID_MISMATCH", "The exchange does not match the expected ticket ID.");
+      passed();
+    }
+    if (pins.frame) {
+      step("Completed export fingerprint");
+      demand(manifest.ticket?.frame_sha256 === pins.frame, "EXPORT_DIGEST_MISMATCH",
+        "The exchange does not match the expected completed export fingerprint.");
+      passed();
+    }
+    if (pins.deployment) {
+      step("Deployment");
+      const expected = parseJSON(decoder.decode(await read(pins.deployment, manifestLimit, "DEPLOYMENT_MISMATCH")),
+        "DEPLOYMENT_MISMATCH");
+      demand(manifest.deployment?.status === "verified" && same(manifest.deployment.record, expected),
+        "DEPLOYMENT_MISMATCH", "The observations do not bind the expected deployment record.");
+      passed();
+    }
+    if (pins.commit) {
+      step("App commit");
+      const app = receipt.provenance?.application;
+      const tests = receipt.provenance?.test_files;
+      demand(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(pins.commit) && app?.checkout_commit === pins.commit &&
+        app.checkout_state === "clean" && app.execution === "local-starter" && app.asserted_deploy_commit === null &&
+        Array.isArray(tests) && tests.length > 0 && tests.every(row => row.commit_bound === true),
+      "APP_COMMIT_MISMATCH", "The receipt does not bind a clean checkout and committed tests for the expected app commit.");
+      passed();
+    }
+
+    let detail = signer + "\n\nIssuer's result: " + manifest.technical_verdict + " · " + manifest.review_status;
+    if (manifest.ticket) detail += "\nTicket " + manifest.ticket.id;
+    if (manifest.deployment) detail += "\nRecorded deployment " + manifest.deployment.record.environment +
+      " · build " + manifest.deployment.record.build_id + " · " + manifest.deployment.status;
+    return {checks, detail: detail + "\nVerdict replayed: no, this is the issuer's result."};
+  } catch (error) {
+    checks[active] = "failed";
+    const failure = error instanceof VerificationError ? error : new VerificationError("INVALID_MANIFEST",
+      "The selected files could not be verified.");
+    failure.checks = checks;
+    throw failure;
+  }
+}
+
+const form = document.getElementById("verify");
+const result = document.getElementById("result");
+const detail = document.getElementById("detail");
+const checks = document.getElementById("checks");
+const ids = ["bundle", "policy", "key", "trust", "issuer", "identity", "ticket", "frame", "deployment", "commit"];
+const inputs = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
+function clear() {
+  result.textContent = "";
+  detail.textContent = "";
+  checks.textContent = "";
+}
+function updatePolicy() {
+  const keyless = inputs.policy.value === "sigstore-bundle";
+  document.getElementById("detached").hidden = keyless;
+  document.getElementById("keyless").hidden = !keyless;
+}
+function showChecks(values) {
+  for (const [name, state] of Object.entries(values)) {
+    const item = document.createElement("li");
+    item.textContent = name + " · " + state;
+    checks.append(item);
+  }
+}
+for (const input of Object.values(inputs)) {
+  input.addEventListener("change", clear);
+  input.addEventListener("input", clear);
+}
+inputs.policy.addEventListener("change", () => { clear(); updatePolicy(); });
+form.addEventListener("submit", async event => {
+  event.preventDefault();
+  const button = form.querySelector("button");
+  button.disabled = true;
+  for (const input of Object.values(inputs)) input.disabled = true;
+  clear();
+  result.textContent = "Checking bundle…";
+  try {
+    const kind = inputs.policy.value;
+    const key = kind === "cosign-detached" ? inputs.key.files[0] : undefined;
+    const policy = kind === "sigstore-bundle" ? {kind, trust: inputs.trust.files[0],
+      issuer: inputs.issuer.value.trim(), identity: inputs.identity.value.trim()} : {kind};
+    const checked = await verifyBundle(inputs.bundle.files, key, {policy, ticket: inputs.ticket.value.trim(),
+      frame: inputs.frame.value.trim(), deployment: inputs.deployment.files[0], commit: inputs.commit.value.trim()});
+    detail.textContent = checked.detail;
+    showChecks(checked.checks);
+    result.textContent = "Bundle checks passed.";
+  } catch (error) {
+    result.textContent = "Verification failed.";
+    detail.textContent = error.code + " · " + error.message;
+    showChecks(error.checks || {});
+  } finally {
+    button.disabled = false;
+    for (const input of Object.values(inputs)) input.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

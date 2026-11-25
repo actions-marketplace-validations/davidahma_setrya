@@ -146,14 +146,20 @@ class PublicCLI(unittest.TestCase):
                 "    app.read = read\n"
                 "    run_shared(subject, case=SIMPLE, application=app, mode='deletion', "
                 "output=sys.argv[-1])\nraise SystemExit(2)\n")
+            extra = root / "supporting fixture.py"
+            extra.write_text("# Supporting fixture for the Action.\n")
             for name, status in (("original", "OPEN_ITEMS"), ("copy", "UNAVAILABLE")):
                 output = root / name
                 log = root / (name + ".outputs")
                 env = {"SETRYA_STARTER": str(starter), "SETRYA_MODE": "deletion", "SETRYA_OUTPUT": str(output),
+                       "SETRYA_TEST_FILES": f"\n{extra}\n",
                        "GITHUB_OUTPUT": str(log), "GITHUB_STEP_SUMMARY": str(root / "summary")}
                 with patch.dict(os.environ, env), patch.object(action, "require_version"), contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()):
                     self.assertEqual(action.run(), 2)
                     self.assertIn("review-status=" + status, log.read_text())
+                if name == "original":
+                    receipt = json.loads((output / "erasure-receipt.json").read_bytes())
+                    self.assertIn(extra.name, [row["path"] for row in receipt["provenance"]["test_files"]])
                 starter.write_text("import shutil, sys\nfrom pathlib import Path\n"
                                    "shutil.copytree(Path(__file__).parent / 'original', sys.argv[-1])\n"
                                    "raise SystemExit(2)\n")
@@ -163,7 +169,7 @@ class PublicCLI(unittest.TestCase):
             main(["--help"])
         help_text = out.getvalue()
         self.assertIn(POSITIONING, help_text)
-        self.assertIn("{init,run,doctor,replay,demo,journal,branches,conformance,crypto-erasure,mcp,receipt,recheck,discovery,route-coverage,coverage-drift,observe,verify}", help_text)
+        self.assertIn("{init,run,doctor,replay,demo,journal,branches,conformance,crypto-erasure,mcp,receipt,recheck,discovery,route-coverage,coverage-drift,assess,observe,verify}", help_text)
         self.assertIn("doctor", help_text)
         self.assertIn("scan Python PDF writes", help_text)
         self.assertNotIn("qualify", help_text)

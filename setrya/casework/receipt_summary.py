@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import re
 
-from setrya.core.receipt_v3 import answer_slots, attribution_lines, human_issue, post_erasure_findings, sample_rows, EVIDENCE_FORMAT
+from setrya.core.receipt_v3 import answer_slots, attribution_lines, human_issue, post_erasure_findings, sample_rows, GROUPED_EVIDENCE_FORMATS
 from setrya.offboarding.inputs import read_regular_bytes, require, unique_fields
 from setrya.receipt_format import FORMAT_V3, MAX_BUNDLE_FILE_BYTES
 from setrya.receipts import replay, replay_bytes, summary as technical_summary
@@ -50,7 +50,7 @@ def _stage_outcome(observed, key, label):
         return [f"{label}, no observations were recorded."]
     case = observed["case"]
     answers = [(role, row) for (_, _, role, _), (_, row) in
-               zip(answer_slots(case), sample_rows(stage, case, grouped=observed["format"] == EVIDENCE_FORMAT),
+               zip(answer_slots(case), sample_rows(stage, case, grouped=observed["format"] in GROUPED_EVIDENCE_FORMATS),
                    strict=True)]
     stored = stage["stored"] + stage["discovered"]
     if key == "final":
@@ -83,6 +83,13 @@ def _linked(folder, filename, digest):
     raw = read_regular_bytes(folder / filename, "linked receipt", MAX_BUNDLE_FILE_BYTES)
     require(sha256(raw).hexdigest() == digest, "Linked receipt changed after replay.")
     return replay_bytes(folder, raw)
+
+
+def _read_drill_evidence(folder, receipt):
+    evidence = receipt["evidence"]
+    raw = read_regular_bytes(folder / evidence["file"], "summary evidence", MAX_BUNDLE_FILE_BYTES)
+    require(sha256(raw).hexdigest() == evidence["sha256"], "Summary evidence changed after replay.")
+    return json.loads(raw.decode(), object_pairs_hook=unique_fields)
 
 
 def _outcome(bundle, receipt, *, audience):
@@ -148,11 +155,8 @@ def _outcome(bundle, receipt, *, audience):
         if "after_control_absent" in reasons:
             kinds.add("control-loss")
         return kinds, ["Recorded results: " + ", ".join(f"{n} {label}" for label, n in sorted(counts.items())) + "."]
-    evidence = receipt["evidence"]
-    raw = read_regular_bytes(folder / evidence["file"], "summary evidence", MAX_BUNDLE_FILE_BYTES)
-    require(sha256(raw).hexdigest() == evidence["sha256"], "Summary evidence changed after replay.")
-    observed = json.loads(raw.decode(), object_pairs_hook=unique_fields)
-    findings, _ = post_erasure_findings(observed, grouped=observed["format"] == EVIDENCE_FORMAT)
+    observed = _read_drill_evidence(folder, receipt)
+    findings, _ = post_erasure_findings(observed, grouped=observed["format"] in GROUPED_EVIDENCE_FORMATS)
     return findings.kinds, [line for key, label in (("immediate", "After erasure"), ("final", "At the final read"))
                             for line in _stage_outcome(observed, key, label)]
 

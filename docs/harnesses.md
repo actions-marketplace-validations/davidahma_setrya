@@ -13,6 +13,8 @@ Install only the integrations your fixture uses.
 
 The integrations use local Python objects. The base package imports without an agent SDK. For provider calls, the journal stores opaque pointers, model and configured settings. Supplying a private fingerprint key also records a keyed digest. Setrya does not copy prompts into the journal.
 
+For hosted resources, take a separate [provider API readback](provider-readback.md). It compares synthetic records through the selected public API and leaves provider-internal retention and tracing open.
+
 ## Wire a scanner into a case
 
 For example, an app writes answer text to a pgvector table with `workspace`, `id` and `body` columns. Supply a dedicated observer connection with `autocommit=True`. Register `"passages"` in the case's `scan_stores` and use the case's disposable workspace for both reads.

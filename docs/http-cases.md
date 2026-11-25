@@ -64,6 +64,72 @@ setrya replay receipt
 
 In the Action's `starter` input, use the path to the YAML file and install the same extras in the drill job. A YAML case covers deletion. Use the Python fixture when the application can expose a worker hold, checkpoint and release for a late-write test.
 
+## Run the same behavior against two deployments
+
+Keep the synthetic facts, answer judgments, questions, sampling and desired artifact actions in one file. Use one deployment file per disposable application. Each deployment can supply a different answer route, authorization bindings, conversation and storage namespace while using the same behavior.
+
+```yaml
+# behavior.yml
+format: setrya.http-behavior.v1
+samples: 3
+artifacts:
+  memory:
+    note: delete
+    dispatch: preserve
+facts:
+  target:
+    marker: Harbor-17
+    questions: ["What was the customer's depot code?"]
+    answers: {present: ["Harbor-17"], absent: ["Thursday", "No matching note."]}
+  control:
+    marker: Thursday
+    questions: ["When is dispatch?"]
+    answers: {present: ["Thursday"], absent: ["Harbor-17", "No matching note."]}
+```
+
+```yaml
+# deployments/acme.yml
+format: setrya.http-deployment.v1
+record:
+  format: setrya.deployment-record.v1
+  environment: acme-fixture
+  origin: https://test.acme.example
+  build_id: acme-2026.11.24
+  tls_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+conversation: ticket-204
+subject_ref_env: ACME_TEST_SUBJECT
+read_route: /api/answer
+erase_route: /api/erase
+caller_tokens: {duty-agent: ACME_READER_TOKEN}
+erase_token_env: ACME_ERASER_TOKEN
+stores:
+  memory:
+    kind: sqlite
+    connection_env: ACME_FIXTURE_DB
+    scope: ticket-204
+    table: notes
+    key_column: id
+    content_column: body
+    scope_column: ticket
+    keys: {note: imported-note-204, dispatch: imported-dispatch-204}
+retention_exceptions:
+  - {store: backup, key: ticket-204, owner: operations, evidence: retention-register, expires_on: "2027-01-01"}
+```
+
+Map every behavior store in the deployment. The optional `keys` mapping binds every logical artifact in its store, and it defaults to using the logical names as physical keys. Each retained exception names a separate store, an owner and an expiry date. It remains an open item, including after expiry until follow-up evidence resolves it. An exception cannot replace a required store check. Use `--case-review` to keep a technically passing run with an open item out of the approval gate.
+
+Use the exact canonical HTTPS origin and the SHA-256 fingerprint of the serving leaf certificate in DER form. Setrya validates the certificate chain and hostname using the local trust store, then checks the leaf fingerprint on the actual connection before sending a bearer token. Return an `X-Setrya-Build` response header with the running build for every answer and deletion acknowledgement. For the split case, the erasure route must compare `If-Match: "<build-id>"` to the running build before applying deletion and respond `412` on a mismatch. Keep credentials in the named environment variables.
+
+```sh
+setrya doctor --case behavior.yml --deployment deployments/acme.yml
+setrya run --case behavior.yml --deployment deployments/acme.yml --output receipt
+setrya replay receipt --expect-deployment trusted-acme.json --case-review
+```
+
+Obtain `trusted-acme.json` separately from the reviewer's change ticket or trusted deployment pipeline. Its content matches the shape of the `record` object. Setrya records both input file hashes and the origin, certificate fingerprint and build ID for each read attempt in receipt evidence. Missing or different signals prevent a technical PASS. The verifier also rejects evidence when the independently expected deployment differs. The build ID is reported by the serving application. Reviewer trust comes from the independent deployment record and its source. A local checkout hash provides separate provenance.
+
+Use `--expect-deployment` with `verify`, `receipt verify-exchange` or `assess` for signed review. Single-file HTTP cases remain usable for synthetic local drills.
+
 ## Try a Node.js application
 
 The [SQLite case](examples/http-case/case.yml) runs against a [small Node.js help desk](examples/http-case/fixture.mjs). It deletes the customer note and checks whether the authenticated reader still gets the team dispatch day. From a checkout with Node.js 22.13+ and the YAML extra installed, run this in a POSIX shell.

@@ -14,6 +14,8 @@ These results apply to the stated configurations. The [Vendor conformance workfl
 
 The pgvector case checks the query plan for the HNSW index. The LangGraph case exercises the in-process Store API. The Mem0 case uses public read and delete APIs, a direct read of SQLite history, and deterministic embeddings. It covers that OSS setup with `infer=False`. The retry calls the delete API again, even when Mem0 signals that the target ID is already missing. Hosted services, parallel worker races, and shared-record rewrites need separate fixtures.
 
+The signed [Graphiti comparison](graphiti-trial.md) covers episode removal and shared-node summaries against Neo4j for two pinned OSS revisions. The [provider readback commands](provider-readback.md) cover Letta archival memory and hosted Mem0 as separate test-project surfaces. Hosted results remain unmeasured for this release.
+
 ## Run and replay
 
 Install the matching Setrya release and Cosign 3. Use a signing key provisioned by the organization that will issue the result, or choose `--keyless` when an authorized OIDC identity is available.

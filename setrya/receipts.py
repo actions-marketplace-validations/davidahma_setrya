@@ -3,6 +3,8 @@ import json
 import os
 from pathlib import Path
 
+from setrya.core.deployment import read_pin as read_deployment_pin, verify_pin as verify_deployment_pin
+from setrya.core.provenance import describe, read_pin, verify_pins
 from setrya.drill import InputError
 from setrya.evidence import bundle_manifest
 from setrya.erasure import receipt as v2
@@ -10,8 +12,15 @@ from setrya.erasure import v3_receipt as v3
 from setrya.offboarding.inputs import MAX_JSON_BYTES, read_regular_bytes, require, unique_fields
 
 
-def replay_bytes(directory, raw, *, expected_request=None, expected_job=None):
-    """Recompute the decision for an exact receipt byte snapshot and its companion evidence."""
+def replay_bytes(directory, raw, *, expected_request=None, expected_job=None,
+                 expected_provenance=None, expected_app_commit=None, expected_deployment=None):
+    """Recompute the decision for exact receipt bytes, then check independent pins."""
+    result = _replay_bytes(directory, raw, expected_request=expected_request, expected_job=expected_job)
+    verify_pins(result, expected_provenance=expected_provenance, expected_app_commit=expected_app_commit)
+    return verify_deployment_pin(result, expected_deployment)
+
+
+def _replay_bytes(directory, raw, *, expected_request, expected_job):
     from setrya.discovery import case as discovery
     folder = Path(directory)
     name = bundle_manifest(folder)
@@ -35,8 +44,15 @@ def replay_bytes(directory, raw, *, expected_request=None, expected_job=None):
     return v2.replay_bytes(folder, raw)
 
 
-def replay(directory, *, expected_request=None, expected_job=None, records=None):
-    """Offline replay. Tenant callers may independently pin the request digest and job ID."""
+def replay(directory, *, expected_request=None, expected_job=None, records=None,
+           expected_provenance=None, expected_app_commit=None, expected_deployment=None):
+    """Offline replay with optional request, job or producer-provenance pins."""
+    result = _replay(directory, expected_request=expected_request, expected_job=expected_job, records=records)
+    verify_pins(result, expected_provenance=expected_provenance, expected_app_commit=expected_app_commit)
+    return verify_deployment_pin(result, expected_deployment)
+
+
+def _replay(directory, *, expected_request, expected_job, records):
     folder = Path(directory)
     if folder.is_file():
         path, folder = folder, folder.parent
@@ -48,7 +64,7 @@ def replay(directory, *, expected_request=None, expected_job=None, records=None)
     require(records is None, "Explicit --record inputs apply only to archived v1 receipts.")
     require(name in (v2.RECEIPT, "case-result.json"), "Expected one erasure receipt with its evidence.")
     raw = read_regular_bytes(folder / name, "receipt", v2.MAX_BUNDLE_FILE_BYTES)
-    return replay_bytes(folder, raw, expected_request=expected_request, expected_job=expected_job)
+    return _replay_bytes(folder, raw, expected_request=expected_request, expected_job=expected_job)
 
 
 def _replay_legacy(path, expected_request, expected_job, records):
@@ -81,7 +97,18 @@ def check_scope(receipt, expected_scope):
 
 
 def summary(receipt):
-    """Render an evaluated receipt, including its engineering verdict and any case obligations."""
+    """Render the verdict, case obligations and recorded producer details."""
+    text = _summary(receipt)
+    producer = receipt.get("provenance")
+    lines = [text, *(describe(producer) if producer is not None else [])]
+    if observed := receipt.get("deployment"):
+        record = observed["record"]
+        lines.append(f"Deployment {observed['status']} · {record['environment']} · {record['origin']} · "
+                     f"expected build {record['build_id']}")
+    return "\n".join(lines)
+
+
+def _summary(receipt):
     from .casework import profiles
     if receipt.get("profile") in profiles.PROFILES:
         return profiles.summary(receipt)
@@ -120,6 +147,10 @@ def signature_command(args):
     from setrya.offboarding import signature
     from setrya.offboarding.receipt_schema import validate_receipt
 
+    expected_provenance = read_pin(getattr(args, "expect_provenance", None))
+    expected_app_commit = getattr(args, "expect_app_commit", None)
+    expected_deployment = read_deployment_pin(getattr(args, "expect_deployment", None))
+
     def validate(raw):
         header = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_fields)
         if isinstance(header, dict) and header.get("version") == 1 and "format" not in header:
@@ -128,11 +159,14 @@ def signature_command(args):
             require(len(raw) <= MAX_JSON_BYTES, "The v1 receipt exceeds the 1 MiB limit.")
             validate_receipt(header)
             check_scope(header, args.scope)
+            verify_pins(header, expected_provenance=expected_provenance, expected_app_commit=expected_app_commit)
+            verify_deployment_pin(header, expected_deployment)
             return
         require(not os.path.lexists(args.receipt.parent / "receipt.json")
                 and args.receipt.name == bundle_manifest(args.receipt.parent),
                 "Choose the manifest from the original evidence bundle.")
-        receipt = replay_bytes(args.receipt.parent, raw)
+        receipt = replay_bytes(args.receipt.parent, raw, expected_provenance=expected_provenance,
+                               expected_app_commit=expected_app_commit, expected_deployment=expected_deployment)
         check_scope(receipt, args.scope)
 
     return signature.run(args, receipt_limit=v2.MAX_BUNDLE_FILE_BYTES, validate=validate)

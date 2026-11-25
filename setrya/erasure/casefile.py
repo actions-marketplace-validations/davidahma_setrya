@@ -1,6 +1,6 @@
 """Run a trusted YAML case against synthetic data in a disposable application."""
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 from ipaddress import ip_address
 import json
@@ -11,17 +11,24 @@ import re
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from setrya.core.deployment import validate_record
+from setrya.core.receipt_v3 import check_external
 from setrya.drill import InputError
 from setrya.offboarding.inputs import read_regular_bytes, unique_fields
 from .case_stores import STORE_OPTIONS, StoredFact, content_bytes, open_observer
+from .https_case import DeploymentHTTP
 from .journal import CopyJournal, identifier
 from .judges import AnswerJudges, Marker, ReviewedAnswers, TextAnswer
 from .model import route_id
 from .subject import Subject
-from .v3 import Artifact, SharedCase
+from .v3 import Artifact, ExternalItem, SharedCase
 
 
 FORMAT = "setrya.http-case.v1"
+BEHAVIOR_FORMAT = "setrya.http-behavior.v1"
+DEPLOYMENT_FORMAT = "setrya.http-deployment.v1"
+_YAML_LIMIT = 64 * 1024
+_BINDINGS = ("conversation", "subject_ref_env", "read_route", "erase_route", "caller_tokens", "erase_token_env", "stores")
 
 
 def fields(obj, required, optional=()):
@@ -42,12 +49,11 @@ def envname(value):
     return value
 
 
-def yaml_document(path, locations=None):
+def yaml_document(raw, locations=None):
     try:
         import yaml
     except ImportError:
         raise InputError("install setrya[case-yaml] to read YAML cases") from None
-    raw = read_regular_bytes(path, "YAML case", 64 * 1024)
     try:
         depth = count = 0
         for event in yaml.parse(raw, Loader=yaml.SafeLoader):
@@ -110,6 +116,25 @@ class HttpCase:
     bindings: list
     locations: dict
     path: Path
+    deployment: dict | None = None
+    deployment_path: Path | None = None
+    deployment_locations: dict | None = None
+    exceptions: tuple = ()
+
+    def position(self, keys):
+        """Locate a behavior rule or deployment binding in its own source."""
+        path, locations = self.path, self.locations
+        if self.deployment_path is not None and keys and keys[0] not in ("facts", "artifacts", "samples", "controls"):
+            path, locations = self.deployment_path, self.deployment_locations
+        while keys and keys not in locations:
+            keys = keys[:-1]
+        return f"{path}:{locations.get(keys, 1)}"
+
+    def source_digests(self):
+        if self.deployment is None:
+            return {}
+        return {self.path: self.deployment["behavior_sha256"],
+                self.deployment_path: self.deployment["deployment_sha256"]}
 
     def missing_bindings(self, *, stores_only=False):
         return [(f"{hook} ({name})", path) for hook, name, path in self.bindings if not os.environ.get(name)
@@ -145,7 +170,8 @@ class HttpCase:
             else:
                 directory = stack.enter_context(TemporaryDirectory(prefix="setrya-recipe-journal-"))
                 location = Path(directory) / "copies.sqlite"
-            yield subject, StoreApplication(self, observers, CopyJournal(location)), ()
+            items = tuple(replace(item, subject_ref=subject.ref) for item in self.exceptions)
+            yield subject, StoreApplication(self, observers, CopyJournal(location)), items
 
     @contextmanager
     def open_fixture(self, *, on_unavailable=None):
@@ -188,27 +214,39 @@ class HttpApplication(StoreApplication):
     def __init__(self, spec, observers, subject, journal):
         super().__init__(spec, observers, journal)
         self.subject = subject
-        self.base = origin(os.environ[spec.settings["origin_env"]])
-        self.http = build_opener(ProxyHandler({}), NoRedirect())
+        self.deployment = DeploymentHTTP(spec.deployment) if spec.deployment is not None else None
+        if self.deployment is None:
+            self.base = origin(os.environ[spec.settings["origin_env"]])
+            self.http = build_opener(ProxyHandler({}), NoRedirect())
 
-    def request(self, method, route, token_env, payload):
+    @staticmethod
+    def headers(token_env):
         token = os.environ[token_env]
         if len(token) > 8192 or not token.isascii() or not token.isprintable() or any(ch.isspace() for ch in token):
             raise InputError("expected a bearer token in the configured environment variable")
-        request = Request(self.base + route, method=method, data=json.dumps(payload).encode(), headers={
-            "Authorization": "Bearer " + token, "Content-Type": "application/json",
-            "Accept": "application/json",
-        })
+        return {"Authorization": "Bearer " + token, "Content-Type": "application/json", "Accept": "application/json"}
+
+    def request(self, method, route, token_env, payload):
+        request = Request(self.base + route, method=method, data=json.dumps(payload).encode(),
+                          headers=self.headers(token_env))
         return self.http.open(request, timeout=10)
 
     def read(self, subject, caller, conversation, question):
-        with self.request("POST", self.spec.case.route, self.spec.settings["caller_tokens"][caller],
-                          {"conversation": conversation, "question": question}) as reply:
-            body = reply.read(131073)
-            if (reply.status != 200 or reply.headers.get_content_type() != "application/json"
-                    or len(body) > 131072):
-                raise InputError("answer route must return a bounded JSON response with status 200")
-            data = json.loads(body, object_pairs_hook=unique_fields)
+        token = self.spec.settings["caller_tokens"][caller]
+        payload = {"conversation": conversation, "question": question}
+        if self.deployment is not None:
+            request = self.deployment.request("POST", self.spec.case.route, payload, lambda: self.headers(token))
+            with request as (reply, _):
+                return self.answer(reply) if reply is not None else None
+        with self.request("POST", self.spec.case.route, token, payload) as reply:
+            return self.answer(reply)
+
+    @staticmethod
+    def answer(reply):
+        body = reply.read(131073)
+        if reply.status != 200 or reply.headers.get_content_type() != "application/json" or len(body) > 131072:
+            raise InputError("answer route must return a bounded JSON response with status 200")
+        data = json.loads(body, object_pairs_hook=unique_fields)
         fields(data, ("caller", "conversation", "route", "question", "text"))
         return TextAnswer(**data)
 
@@ -219,6 +257,19 @@ class HttpApplication(StoreApplication):
                           {"subject_ref": subject.ref, "conversation": self.spec.case.conversation}) as reply:
             if reply.status != 204:
                 raise InputError("expected 204 after the disposable app applied erasure")
+
+    def erase_bound(self, subject):
+        if subject != self.subject:
+            raise InputError("unexpected erase subject")
+        payload = {"subject_ref": subject.ref, "conversation": self.spec.case.conversation}
+        request = self.deployment.request("DELETE", self.spec.settings["erase_route"], payload,
+                                          lambda: self.headers(self.spec.settings["erase_token_env"]))
+        with request as (reply, sent):
+            if not sent or reply is not None and reply.status == 412:
+                return False
+            if reply is None or reply.status != 204:
+                raise InputError("The deployment did not acknowledge a verified erasure.")
+            return True
 
 
 def stored_fact(marker, reviewed, settings):
@@ -239,18 +290,67 @@ def stored_fact(marker, reviewed, settings):
     return StoredFact(present, digests.union(reviewed_digests))
 
 
-def load_case(path, *, locate=False):
+def split_settings(behavior, config):
+    fields(behavior, ("format", "facts", "artifacts"), ("samples", "controls"))
+    fields(config, ("format", "record", *_BINDINGS), ("retention_exceptions",))
+    if behavior["format"] != BEHAVIOR_FORMAT or config["format"] != DEPLOYMENT_FORMAT:
+        raise InputError("Expected matching HTTP behavior and deployment file formats.")
+    artifacts, stores = behavior["artifacts"], config["stores"]
+    if not isinstance(artifacts, dict) or not isinstance(stores, dict) or stores.keys() != artifacts.keys():
+        raise InputError("Deployment stores must bind every logical store from the behavior file.")
+    bound = {}
+    for store, keys in artifacts.items():
+        entry = stores[store]
+        if (not isinstance(keys, dict) or not keys or not isinstance(entry, dict)
+                or not isinstance(entry.get("kind"), str) or entry["kind"] not in STORE_OPTIONS):
+            raise InputError("Expected artifact actions and a supported adapter for every behavior store.")
+        fields(entry, {"kind", "connection_env", "scope"} | STORE_OPTIONS[entry["kind"]], ("keys",))
+        mapping = entry.get("keys", {key: key for key in keys})
+        if not isinstance(mapping, dict) or mapping.keys() != keys.keys():
+            raise InputError("Deployment key mappings must bind every logical artifact in their store.")
+        physical = {identifier(mapping[key], "deployment artifact key"): action for key, action in keys.items()}
+        if len(physical) != len(keys):
+            raise InputError("Deployment artifact keys must remain distinct within each store.")
+        bound[store] = {key: value for key, value in entry.items() if key != "keys"} | {"artifacts": physical}
+    exceptions = config.get("retention_exceptions", [])
+    if not isinstance(exceptions, list) or len(exceptions) > 128:
+        raise InputError("Expected a bounded list of retention exceptions.")
+    items = []
+    for item in exceptions:
+        fields(item, ("store", "key", "owner", "evidence", "expires_on"))
+        items.append(ExternalItem(item["store"], item["key"], item["owner"], "retained",
+                                  item["evidence"], follow_up=item["expires_on"]))
+    settings = {key: config[key] for key in _BINDINGS} | {
+        key: behavior[key] for key in ("facts", "samples", "controls") if key in behavior
+    }
+    return {**settings, "stores": bound}, tuple(items)
+
+
+def load_case(path, *, deployment_path=None, locate=False):
     locations = {}
-    settings = yaml_document(path, locations if locate else None)
-    fields(settings, ("format", "conversation", "subject_ref_env", "origin_env", "read_route", "erase_route",
-                      "caller_tokens", "erase_token_env", "facts", "stores"), ("samples", "controls"))
+    source = Path(path).resolve()
+    raw = read_regular_bytes(source, "YAML case", _YAML_LIMIT)
+    settings = yaml_document(raw, locations if locate else None)
+    deployment, deployment_locations, exceptions = None, {}, ()
+    environment = ("subject", "subject_ref_env"), ("erase authorization", "erase_token_env")
+    if deployment_path is None:
+        fields(settings, ("format", "origin_env", "facts", *_BINDINGS), ("samples", "controls"))
+        if settings["format"] != FORMAT:
+            raise InputError("Use --deployment with a split HTTP behavior file.")
+        environment += (("read/erase origin", "origin_env"),)
+    else:
+        deployment_path = Path(deployment_path).resolve()
+        if deployment_path == source or deployment_path.suffix.lower() not in (".yml", ".yaml"):
+            raise InputError("Supply a separate YAML deployment file.")
+        contents = read_regular_bytes(deployment_path, "YAML deployment", _YAML_LIMIT)
+        binding = yaml_document(contents, deployment_locations if locate else None)
+        settings, exceptions = split_settings(settings, binding)
+        deployment = {"record": validate_record(binding["record"]), "behavior_sha256": sha256(raw).hexdigest(),
+                      "deployment_sha256": sha256(contents).hexdigest()}
     if "controls" in settings:
         from setrya.control_references import validate_controls
         validate_controls(settings["controls"])
-    if settings["format"] != FORMAT:
-        raise InputError("unknown HTTP case format")
-    bindings = [(hook, envname(settings[name]), (name,)) for hook, name in (
-        ("subject", "subject_ref_env"), ("read/erase origin", "origin_env"), ("erase authorization", "erase_token_env"))]
+    bindings = [(hook, envname(settings[name]), (name,)) for hook, name in environment]
     callers = settings["caller_tokens"]
     if not isinstance(callers, dict) or not 1 <= len(callers) <= 16:
         raise InputError("declare 1–16 caller token bindings")
@@ -296,6 +396,7 @@ def load_case(path, *, locate=False):
                       artifacts=tuple(artifacts), scan_stores=tuple(stores), judges=judges,
                       samples=settings.get("samples", 3), target_variants=questions["target"][1:],
                       control_variants=questions["control"][1:], controls=tuple(settings.get("controls", ())))
-    case.spec()
+    check_external([asdict(item) for item in exceptions], case.spec(), None)
     return HttpCase(case, stores, (markers["target"], markers["control"]),
-                    (store_facts["target"], store_facts["control"]), settings, bindings, locations, Path(path).resolve())
+                    (store_facts["target"], store_facts["control"]), settings, bindings, locations, source,
+                    deployment, deployment_path, deployment_locations, exceptions)

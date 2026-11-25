@@ -36,6 +36,9 @@ def command(argv):
         verify.add_argument("--trusted-root", type=Path, help="independently provisioned Sigstore root JSON")
         verify.add_argument("--expect-ticket", help="expected completed ticket ID from the originating case")
         verify.add_argument("--expect-frame", help="expected SHA-256 of the completed request export")
+        verify.add_argument("--expect-provenance", type=Path, help="independent provenance JSON record")
+        verify.add_argument("--expect-app-commit", help="expected clean local application checkout Git commit")
+        verify.add_argument("--expect-deployment", type=Path, help="independent HTTP deployment identity JSON")
         verify.add_argument("--case-review", action="store_true", help="treat outstanding obligations as exit 3")
 
         args = parser.parse_args(tail)
@@ -46,12 +49,17 @@ def command(argv):
             print(f"Signed draft receipt exchange in {args.output}")
             return 0
         if args.action == "verify-exchange":
+            from setrya.core.deployment import read_pin as read_deployment
+            from setrya.core.provenance import read_pin
             from setrya.receipts import exit_code
 
             from . import exchange
             result = exchange.verify(args.bundle, key=args.key, identity=args.identity, issuer=args.issuer,
                                      trusted_root=args.trusted_root, expect_ticket=args.expect_ticket,
-                                     expect_frame=args.expect_frame)
+                                     expect_frame=args.expect_frame,
+                                     expected_provenance=read_pin(args.expect_provenance),
+                                     expected_app_commit=args.expect_app_commit,
+                                     expected_deployment=read_deployment(args.expect_deployment))
             print(exchange.summary(result))
             return exit_code(result, case_review=args.case_review)
         print(receipt_summary(args.bundle, audience=args.audience, output_format=args.output_format, case_id=args.case_id))

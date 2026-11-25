@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.10.0
+
+- Reuse HTTP drill behavior across deployments. Capture the endpoint's TLS certificate fingerprint and application-reported build, with an independent deployment pin for review.
+- Compare two signed client assessments to show gained and lost observations, residuals, build changes, and open items. Attach the signed approval and customer summaries to an existing review.
+- Give the draft receipt exchange independent verification in Python and the browser, with shared error codes and an offline keyless verifier.
+
+## 1.9.0
+
+- Capture v3.2 tool, test file, Git checkout and CI provenance for deletion drills and allow independent replay pins.
+- Scan supported Python copy sites before writing a fixture. Report new PR coverage gaps with file, line and starter mapping.
+- Use a shorter first-run guide and a two-week release cadence. Setrya 2.0 is targeted for February 2, 2027.
+- Capture direct provider API baselines and readbacks, and replay the recorded results separately from unmeasured retention.
+- Sign a multi-repository assessment and verify detached-key signatures in an offline browser reviewer.
+
 ## 1.8.0
 
 - Pack a v3 person receipt and its original evidence into a signed draft v1 exchange with `setrya receipt pack`. A reviewer can authenticate the issuer, pin the completed ticket and replay the evidence offline with `setrya receipt verify-exchange`.

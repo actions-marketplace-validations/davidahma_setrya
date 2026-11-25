@@ -140,10 +140,12 @@ class SampledAnswers(unittest.TestCase):
         sampled_format = e["format"]
         e["format"] = "setrya.erasure.evidence.v3"
         chain = e.pop("journal_chain")
+        producer = e.pop("provenance")
         with self.assertRaisesRegex(InvalidReport, "evidence format"):
             derive(e, "0" * 64)
         e["format"] = sampled_format
         e["journal_chain"] = chain
+        e["provenance"] = producer
         rows = e["final"]["answers"]
         rows[1][1]["sample"] = 1
         with self.assertRaisesRegex(InvalidReport, "ordinal"):

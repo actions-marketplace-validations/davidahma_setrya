@@ -2,6 +2,8 @@
 from pathlib import Path
 import re
 
+from setrya.core.provenance import validate as validate_provenance
+from setrya.provenance import producer_only
 from setrya.erasure.journal import identifier
 from setrya.offboarding.inputs import require
 from setrya.control_references import validate_controls
@@ -9,6 +11,9 @@ from .observe import check_request
 from .profiles import OBSERVED, day, fields, issue, new_bundle, sha, stamp
 from .sampling import load_population
 from .stores import observer_config
+
+LEGACY_FORMAT = "setrya.observed-deletion.v1"
+FORMAT = "setrya.observed-deletion.v1.1"
 
 GAPS = {"journal-unavailable", "journal-producer-coverage-incomplete", "key-limit", "unmapped-journal-store", "store-or-control-unavailable",
         "external-or-shared-key", "key-read-unavailable", "control-is-subject-key", "expected-store-missing-from-journal"}
@@ -41,8 +46,8 @@ def observe_deletion(*, frame, request, journal, inventory_file, output, control
     row = rows[request]
     policies = {name: {k: spec[k] for k in ("owner", "follow_up") if k in spec}
                 for name, spec in observer._stores.items() if name in row["stores"]}
-    evidence = {"format": "setrya.observed-deletion.v1", "request": row, "frame_sha256": digest,
-                "policy": policies}
+    evidence = {"format": FORMAT, "request": row, "frame_sha256": digest,
+                "policy": policies, "provenance": producer_only()}
     if controls is not None:
         evidence["controls"] = validate_controls(controls)
     with new_bundle(output) as folder:
@@ -86,8 +91,14 @@ def evidence_ids(row):
 
 
 def derive_observed(e):
-    fields(e, "format request frame_sha256 policy find verify_absent", ("controls",))
-    require(e["format"] == "setrya.observed-deletion.v1", "Invalid read-only observation format.")
+    fmt = e.get("format") if isinstance(e, dict) else None
+    provenanced = fmt == FORMAT
+    fields(e, "format request frame_sha256 policy find verify_absent" + (" provenance" if provenanced else ""),
+           ("controls",))
+    require(fmt in (FORMAT, LEGACY_FORMAT), "Invalid read-only observation format.")
+    producer = validate_provenance(e["provenance"]) if provenanced else None
+    require(producer is None or producer["application"]["execution"] == "unavailable",
+            "Direct observation cannot establish an application checkout or executed test files.")
     req = e["request"]
     fields(req, "id subject_ref completed_at stores")
     sha(e["frame_sha256"])
@@ -135,7 +146,8 @@ def derive_observed(e):
                            **policy.get(store, {})})
     states = {c["status"] for c in checks}
     verdict = "FAIL" if "PRESENT" in states else "NOT TESTED" if gaps or states != {"ABSENT"} else "PASS"
-    return {"scope": "person", "request_id": req["id"], "subject": {"ref": req["subject_ref"]},
+    return {**({"provenance": producer, "evidence_format": fmt} if provenanced else {}),
+            "scope": "person", "request_id": req["id"], "subject": {"ref": req["subject_ref"]},
             "frame_sha256": e["frame_sha256"], "observed_at": e["verify_absent"]["checked_at"],
             "technical_verdict": verdict, "review_status": {"FAIL": "RESIDUAL_FOUND", "PASS": "READY_FOR_REVIEW",
                                                            "NOT TESTED": "OPEN_ITEMS"}[verdict],

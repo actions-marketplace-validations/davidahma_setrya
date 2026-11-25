@@ -1,11 +1,21 @@
 # Check selective deletion on two Graphiti revisions
 
-Graphiti links source episodes to entity nodes and keeps summaries on those nodes. This trial asks whether removing one episode updates a node shared with a second episode. It seeds two fictional findings into a disposable Neo4j database, links both to the same investigation, and calls Graphiti’s native `remove_episode`. Setrya records the episode rows, the shared summary, their revision hashes and four reads per stage through a small two-user ASGI application.
+Graphiti links source episodes to entity nodes and keeps summaries on those nodes. This trial asks whether removing one episode updates a node shared with a second episode. It seeds two fictional findings into a disposable Neo4j database, links both to the same investigation, and calls Graphiti’s native `remove_episode`. Setrya records the episode rows, the shared summary, their revision hashes and twelve reads per stage through a small two-user ASGI application.
 
 | Graphiti source revision | Target episode after deletion | Shared summary when reopened | Technical verdict |
 | --- | --- | --- | --- |
 | [0.31.1 / 5961293](https://github.com/getzep/graphiti/commit/5961293865a57844fe13d4eb061deb3501971fb2) | Absent | Both analysts could still recover the quarantined laptop. The retained credential reset also remained. | `FAIL` |
 | [0.31.2 / d72407d](https://github.com/getzep/graphiti/commit/d72407dcedac911e1be9fc15b55e8c05a3efcc36) | Absent | Both analysts lost the laptop finding and could still recover the credential reset from the same node. | `PASS` |
+
+The **Subject erasure** workflow signs both receipts and the version-specific native records on `main` and verifies a fresh download against the pinned workflow identity. Download `graphiti-comparison.zip` from the Setrya release. Verify each receipt using the independent trust root and identity described in [signature verification](receipt-exchange.md#how-an-independent-reviewer-verifies-it), then replay the bundle. Each native record carries the exact receipt digest and the installed Graphiti commit. Each receipt records the captured test and launcher files.
+
+```sh
+setrya verify --receipt graphiti-run/0.31.2.receipt/erasure-receipt.json \
+  --bundle graphiti-run/0.31.2.receipt/receipt.sigstore.json \
+  --identity https://github.com/davidahma/setrya/.github/workflows/erasure.yml@refs/heads/main \
+  --issuer https://token.actions.githubusercontent.com --trusted-root "$TRUSTED_ROOT"
+setrya replay graphiti-run/0.31.2.receipt
+```
 
 ## Reproduce from the checkout
 

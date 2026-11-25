@@ -274,6 +274,9 @@ def main(argv=None) -> int:
     replay.add_argument("--scope", choices=("person", "tenant"), help="require the selected receipt scope")
     replay.add_argument("--expect-request", help="independent tenant request SHA-256 digest")
     replay.add_argument("--expect-job", help="expected tenant job ID")
+    replay.add_argument("--expect-provenance", type=Path, help="independent provenance JSON record")
+    replay.add_argument("--expect-app-commit", help="expected clean local application checkout Git commit")
+    replay.add_argument("--expect-deployment", type=Path, help="independent expected HTTPS deployment record")
     replay.add_argument("--case-review", action="store_true", help="also gate on open case items")
     diagnose = commands.add_parser("diagnose", help="show the verdict and the first missing observation")
     diagnose.add_argument("report")
@@ -314,16 +317,25 @@ def main(argv=None) -> int:
             receipt_file = directory.is_file() and directory.name in receipt_names
             historical = directory.is_dir() and manifest is None and (directory / "receipt.json").is_file()
             if manifest in receipt_names or receipt_file or historical:
+                from .core.deployment import read_pin as read_deployment_pin
+                from .core.provenance import read_pin
                 from .receipts import check_scope, replay as replay_receipt, report as receipt_report
 
                 receipt = replay_receipt(directory, expected_request=getattr(args, "expect_request", None),
-                                        expected_job=getattr(args, "expect_job", None))
+                                        expected_job=getattr(args, "expect_job", None),
+                                        expected_provenance=read_pin(getattr(args, "expect_provenance", None)),
+                                        expected_app_commit=getattr(args, "expect_app_commit", None),
+                                        expected_deployment=read_deployment_pin(getattr(args, "expect_deployment", None)))
                 check_scope(receipt, getattr(args, "scope", None))
                 return receipt_report(receipt, case_review=getattr(args, "case_review", False))
             if getattr(args, "scope", None):
                 raise InputError("--scope requires a deletion receipt.")
             if getattr(args, "expect_request", None) or getattr(args, "expect_job", None):
                 raise InputError("Tenant pins require a tenant receipt.")
+            if getattr(args, "expect_provenance", None) or getattr(args, "expect_app_commit", None):
+                raise InputError("Provenance pins require a receipt that records provenance.")
+            if getattr(args, "expect_deployment", None):
+                raise InputError("Deployment pins require a receipt that records deployment evidence.")
             if getattr(args, "case_review", False):
                 raise InputError("--case-review requires a deletion receipt.")
             if manifest == "endpoint-reads.json":
