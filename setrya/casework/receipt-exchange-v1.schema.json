@@ -23,7 +23,7 @@
   "properties": {
     "format": { "const": "setrya.deletion-receipt-exchange.v1" },
     "status": { "const": "draft" },
-    "evidence_kind": { "enum": ["read-only-observation", "synthetic-drill"] },
+    "evidence_kind": { "enum": ["read-only-observation", "synthetic-drill", "vendor-attestation"] },
     "system": {
       "description": "System labels supplied by the issuer.",
       "type": "object",
@@ -34,9 +34,10 @@
         "version": { "$ref": "#/$defs/systemLabel" }
       }
     },
-    "scope": { "const": "person" },
+    "scope": { "enum": ["person", "vendor"] },
     "signature_type": { "enum": ["cosign-detached", "sigstore-bundle"] },
     "deployment": { "$ref": "#/$defs/deployment" },
+    "vendor": { "$ref": "#/$defs/vendor" },
     "observation": {
       "type": "object",
       "required": ["last_checked_at"],
@@ -63,7 +64,6 @@
       "properties": {
         "stores": {
           "type": "array",
-          "minItems": 1,
           "maxItems": 640,
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/opaqueIdentifier" }
@@ -115,8 +115,9 @@
   },
   "if": { "properties": { "evidence_kind": { "const": "read-only-observation" } } },
   "then": {
-    "not": { "required": ["deployment"] },
+    "not": { "anyOf": [{ "required": ["deployment"] }, { "required": ["vendor"] }] },
     "properties": {
+      "scope": { "const": "person" },
       "observation": {
         "required": ["first_checked_at"],
         "not": { "required": ["drill_duration_ms"] }
@@ -125,6 +126,7 @@
       "surfaces": {
         "properties": {
           "stores": {
+            "minItems": 1,
             "maxItems": 64,
             "items": { "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}(?![\\s\\S])" }
           },
@@ -141,24 +143,108 @@
     }
   },
   "else": {
-    "properties": {
-      "observation": {
-        "required": ["drill_duration_ms"],
-        "not": { "required": ["first_checked_at"] }
-      },
-      "ticket": { "type": "null" },
-      "surfaces": { "properties": { "routes": { "minItems": 1 } } },
-      "open_items": {
-        "maxItems": 640,
-        "items": { "properties": { "kind": { "enum": ["configuration", "attested", "retained"] } } }
-      },
-      "files": {
-        "required": ["erasure-evidence.json"],
-        "not": { "required": ["observation-evidence.json"] }
+    "if": { "properties": { "evidence_kind": { "const": "synthetic-drill" } } },
+    "then": {
+      "not": { "required": ["vendor"] },
+      "properties": {
+        "scope": { "const": "person" },
+        "observation": {
+          "required": ["drill_duration_ms"],
+          "not": { "required": ["first_checked_at"] }
+        },
+        "ticket": { "type": "null" },
+        "surfaces": { "properties": { "stores": { "minItems": 1 }, "routes": { "minItems": 1 } } },
+        "open_items": {
+          "maxItems": 640,
+          "items": { "properties": { "kind": { "enum": ["configuration", "attested", "retained"] } } }
+        },
+        "files": {
+          "required": ["erasure-evidence.json"],
+          "not": { "required": ["observation-evidence.json"] }
+        }
+      }
+    },
+    "else": {
+      "required": ["vendor"],
+      "not": { "required": ["deployment"] },
+      "properties": {
+        "scope": { "const": "vendor" },
+        "observation": { "maxProperties": 1 },
+        "ticket": { "type": "null" },
+        "surfaces": {
+          "properties": {
+            "stores": { "maxItems": 0 },
+            "routes": { "maxItems": 0 }
+          }
+        },
+        "open_items": {
+          "items": { "properties": { "kind": { "const": "coverage" } } }
+        },
+        "files": {
+          "required": ["observation-evidence.json"],
+          "not": { "required": ["erasure-evidence.json"] }
+        }
       }
     }
   },
   "$defs": {
+    "vendor": {
+      "description": "Projection of vendor conformance results. The operator is recorded by the fixture; attestation authenticates the exchange issuer.",
+      "type": "object",
+      "required": ["kind", "target", "versions", "checks"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["fixture", "api-readback"] },
+        "target": { "$ref": "#/$defs/vendorLabel" },
+        "versions": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": { "$ref": "#/$defs/vendorLabel" },
+          "additionalProperties": { "$ref": "#/$defs/vendorVersion" }
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "required": ["surface", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "surface": { "$ref": "#/$defs/vendorLabel" },
+              "status": { "enum": ["PASS", "FAIL", "NOT TESTED"] }
+            }
+          }
+        },
+        "execution": { "$ref": "#/$defs/vendorExecution" }
+      },
+      "if": { "properties": { "kind": { "const": "api-readback" } } },
+      "then": { "not": { "required": ["execution"] } }
+    },
+    "vendorLabel": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_.-]{0,79}(?![\\s\\S])"
+    },
+    "vendorVersion": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9.+_-]{1,80}(?![\\s\\S])"
+    },
+    "vendorExecution": {
+      "type": "object",
+      "required": ["operator", "run_id", "setrya_version"],
+      "additionalProperties": false,
+      "properties": {
+        "operator": { "type": ["string", "null"], "pattern": "^[a-z0-9][a-z0-9_.@/+-]{0,79}(?![\\s\\S])" },
+        "run_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+        },
+        "setrya_version": { "$ref": "#/$defs/vendorVersion" },
+        "rerun_of": { "$ref": "#/$defs/sha256" }
+      },
+      "if": { "required": ["rerun_of"] },
+      "then": { "properties": { "operator": { "type": "string" } } }
+    },
     "deployment": {
       "description": "Projection of the HTTPS deployment evidence in the original drill receipt.",
       "type": "object",

@@ -40,7 +40,7 @@ cp "$scratch/issuer/issuer.pub" "$scratch/reviewer/trusted-issuer.pub"
 )
 ```
 
-Attach `exchange/`, `ticket.json`, and `approval.md` to the governance ticket. `ticket.json` names `GOV-204`, the control reference, the exchange attachment, and the SHA-256 of the exact `erasure-receipt.json` bytes. It records the technical and review states and keeps the provider item with its owner, follow-up date, and JSON Pointer into the signed receipt. The index is for the ticket system. Use the signed exchange to recreate it when reviewing a case.
+Attach `exchange/`, `ticket.json`, and `approval.md` to the governance ticket. `ticket.json` names `GOV-204`, the control reference, the exchange attachment, and the SHA-256 of the exact `erasure-receipt.json` bytes. It records the verifying key's SHA-256 fingerprint, the reviewer's UTC verification time, the technical and review states, and the provider item with its owner, follow-up date, and pointer into the signed receipt. Use the signed exchange when reviewing a case. A later verification will have its own timestamp.
 
 The reviewer authenticates the signer against the supplied key and replays the recorded evidence. The run remains the issuer's execution. `GOV-204` is the governance review location. For a completed deletion request, an originating ticket and request-export digest can also be checked using independent `--expect-ticket` and `--expect-frame` pins. [Completed-ticket handoff](receipt-handoff.md)
 
@@ -52,3 +52,18 @@ Treat a successfully generated attachment as evidence ready to review. Use the s
 ```
 
 Keep the control or ticket reference separate from your governance decision. Decide whether the observed stores, answers, and writer satisfy the external control, and route the remaining item to its recorded owner. [Receipt exchange](receipt-exchange.md)
+
+## Attach a vendor result
+
+Review the original vendor bundle under its own trusted signer policy first. An evidence issuer can then package the result for a ticket, and the ticket reviewer can open that exchange under the issuer's trusted key. This example uses the signed Mem0 fixture bundle and the public key distributed with the release. Its history check reports `FAIL`.
+
+```sh
+setrya conformance review mem0 --key ci-fixture.pub --expect-operator setrya-ci
+# Exit 1 is the observed residual. Confirm the report before packing it.
+setrya receipt pack mem0 --output vendor-exchange \
+  --system mem0 --system-version local-fixture --key issuer.key
+python -I "$example" review vendor-exchange --key trusted-issuer.pub \
+  --ticket GOV-205 --framework "Support governance" --control ERASURE-08 > vendor-ticket.json
+```
+
+The ticket labels the evidence as a vendor attestation and includes its target, versions, operator if recorded, and per-surface results. Its signer identifies the exchange issuer. The control mapping comes from the ticket reviewer. Preserve the original bundle and signer policy if the reviewer also needs to verify who signed the source result. [Vendor report scope](vendor-conformance.md) · [Receipt exchange](receipt-exchange.md)

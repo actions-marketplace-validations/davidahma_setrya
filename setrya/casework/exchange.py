@@ -1,4 +1,4 @@
-"""Draft portable manifest for replaying an original v3 person receipt."""
+"""Draft portable manifest for replaying original person and vendor receipts."""
 
 import json
 import re
@@ -23,7 +23,7 @@ from setrya.receipt_format import EVIDENCE as DRILL_EVIDENCE
 from setrya.receipt_format import FORMAT_V3, MAX_BUNDLE_FILE_BYTES, RECEIPT
 
 from .profiles import EVIDENCE as OBSERVED_EVIDENCE
-from .profiles import OBSERVED, derive, new_bundle, snapshot, stamp
+from .profiles import OBSERVED, VENDOR, derive, new_bundle, snapshot, stamp
 
 FORMAT = "setrya.deletion-receipt-exchange.v1"
 MANIFEST = "exchange.json"
@@ -31,7 +31,8 @@ SIGNATURE = "exchange.sig"
 _SYSTEM_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+:-]{0,95}")
 _OBSERVED = "read-only-observation"
 _SYNTHETIC = "synthetic-drill"
-_COMPANIONS = {_OBSERVED: OBSERVED_EVIDENCE, _SYNTHETIC: DRILL_EVIDENCE}
+_VENDOR = "vendor-attestation"
+_COMPANIONS = {_OBSERVED: OBSERVED_EVIDENCE, _SYNTHETIC: DRILL_EVIDENCE, _VENDOR: OBSERVED_EVIDENCE}
 _DIGEST = re.compile(r"[a-f0-9]{64}")
 _MANIFEST_FIELDS = {
     "format", "status", "evidence_kind", "scope", "system", "signature_type", "observation", "ticket", "surfaces",
@@ -90,15 +91,18 @@ def _signature_type(key):
 
 
 def _receipt_kind(header):
-    _check(header.get("format") == FORMAT_V3 and header.get("version") == 3 and header.get("scope") == "person"
-           and (header.get("profile") == OBSERVED or "profile" not in header),
-           "EVIDENCE_KIND_MISMATCH", "The exchange needs an original v3 person drill or read-only observation.")
-    return _OBSERVED if header.get("profile") == OBSERVED else _SYNTHETIC
+    message = "The exchange needs an original v3 person drill, read-only observation or vendor conformance receipt."
+    _check(header.get("format") == FORMAT_V3 and header.get("version") == 3, "EVIDENCE_KIND_MISMATCH", message)
+    scope, profile = header.get("scope"), header.get("profile")
+    if scope == "vendor" and profile == VENDOR:
+        return _VENDOR
+    _check(scope == "person" and (profile == OBSERVED or "profile" not in header), "EVIDENCE_KIND_MISMATCH", message)
+    return _OBSERVED if profile == OBSERVED else _SYNTHETIC
 
 
 def _source(directory):
     require(directory.is_dir() and not directory.is_symlink() and bundle_manifest(directory) == RECEIPT,
-            "Supply a v3 person receipt directory.")
+            "Supply a v3 receipt directory.")
     raw = _bundle_bytes(directory / RECEIPT)
     evidence_name = _COMPANIONS[_receipt_kind(_decode(raw, "CLAIMS_MISMATCH"))]
     return raw, evidence_name, _bundle_bytes(directory / evidence_name)
@@ -121,14 +125,18 @@ def _utc(value):
     return stamp(value).astimezone(UTC).isoformat()
 
 
-def _replay(source):
+def _replay(source, *, declared_kind=None):
     raw, evidence_name, evidence = source
     header = _decode(raw, "CLAIMS_MISMATCH")
     data = _decode(evidence, "CLAIMS_MISMATCH")
-    expected_kind = _OBSERVED if evidence_name == OBSERVED_EVIDENCE else _SYNTHETIC
-    evidence_format = data.get("format")
-    prefix = "setrya.observed-deletion." if expected_kind == _OBSERVED else "setrya.erasure.evidence.v3"
-    _check(_receipt_kind(header) == expected_kind and isinstance(evidence_format, str) and evidence_format.startswith(prefix),
+    kind = _receipt_kind(header)
+    if kind == _VENDOR:
+        format_matches = "format" not in data
+    else:
+        prefix = "setrya.observed-deletion." if kind == _OBSERVED else "setrya.erasure.evidence.v3"
+        evidence_format = data.get("format")
+        format_matches = isinstance(evidence_format, str) and evidence_format.startswith(prefix)
+    _check(format_matches and evidence_name == _COMPANIONS[kind] and declared_kind in (None, kind),
            "EVIDENCE_KIND_MISMATCH", "The original receipt, evidence and declared kind must describe the same observation.")
     bound = header.get("evidence")
     _check(isinstance(bound, dict) and bound.get("file") == evidence_name,
@@ -136,12 +144,14 @@ def _replay(source):
     digest = _digest(evidence)
     _check(bound.get("sha256") == digest, "EVIDENCE_DIGEST_MISMATCH", "The evidence differs from the original receipt digest.")
     try:
-        if expected_kind == _OBSERVED:
+        if kind == _OBSERVED:
             first_end = stamp(data["find"]["checked_at"])
             next_snapshot = data["verify_absent"]["journal_read_at"]
             _check(next_snapshot is None or first_end <= stamp(next_snapshot), "SNAPSHOT_ORDER",
                    "The second journal snapshot must follow the first completed observation.")
             receipt = derive(OBSERVED, data, digest, None)
+        elif kind == _VENDOR:
+            receipt = derive(VENDOR, data, digest, None)
         else:
             receipt = derive_drill(data, digest)
     except ExchangeError:
@@ -163,28 +173,36 @@ def _equal(left, right):
 
 
 def _project(source, system, signature_type, receipt, data):
-    _, evidence_name, _ = source
-
+    kind = _receipt_kind(receipt)
     ticket = None
+    vendor = {}
     observation = {"last_checked_at": _utc(receipt["observed_at"])}
-    if evidence_name == OBSERVED_EVIDENCE:
+    if kind == _OBSERVED:
         observation["first_checked_at"] = _utc(data["find"]["checked_at"])
         ticket = {"id": receipt["request_id"], "frame_sha256": receipt["frame_sha256"]}
         stores, routes = sorted(data["request"]["stores"]), []
-        kind = _OBSERVED
+    elif kind == _VENDOR:
+        stores, routes = [], []
+        vendor["vendor"] = {
+            "kind": "api-readback" if "readback" in receipt else "fixture",
+            "target": receipt["target"],
+            "versions": receipt["versions"],
+            "checks": [{"surface": row["surface"], "status": row["status"]} for row in receipt["checks"]],
+            **({"execution": receipt["execution"]} if "execution" in receipt else {}),
+        }
     else:
         case = receipt["case"]
         observation["drill_duration_ms"] = receipt["drill_duration_ms"]
         stores = sorted(set(case["scan_stores"]) | {row["store"] for row in case["artifacts"]})
         routes = [case["route"]]
-        kind = _SYNTHETIC
     return {
-        "format": FORMAT, "status": "draft", "evidence_kind": kind, "scope": "person", "system": system,
+        "format": FORMAT, "status": "draft", "evidence_kind": kind, "scope": receipt["scope"], "system": system,
         "signature_type": signature_type, "observation": observation, "ticket": ticket,
         "surfaces": {"stores": stores, "routes": routes},
         "technical_verdict": receipt["technical_verdict"], "review_status": receipt["review_status"],
         "open_items": _open_items(receipt),
         "files": _file_digests(source),
+        **vendor,
         **({"deployment": receipt["deployment"]} if "deployment" in receipt else {}),
     }
 
@@ -209,17 +227,24 @@ def pack(directory, *, output, system, version, key=None, synthetic=False):
 def _manifest(raw):
     manifest = _decode(raw, "INVALID_MANIFEST")
     kind = manifest.get("evidence_kind")
-    _check(_MANIFEST_FIELDS <= manifest.keys() <= _MANIFEST_FIELDS | {"deployment"}
-           and manifest["format"] == FORMAT and manifest["status"] == "draft" and manifest["scope"] == "person"
-           and kind in (_OBSERVED, _SYNTHETIC) and manifest["signature_type"] in ("cosign-detached", "sigstore-bundle")
+    is_vendor = kind == _VENDOR
+    required = _MANIFEST_FIELDS | ({"vendor"} if is_vendor else set())
+    optional = {"deployment"} if kind == _SYNTHETIC else set()
+    _check(required <= manifest.keys() <= required | optional
+           and manifest["format"] == FORMAT and manifest["status"] == "draft"
+           and manifest["scope"] == ("vendor" if is_vendor else "person")
+           and kind in (_OBSERVED, _SYNTHETIC, _VENDOR)
+           and manifest["signature_type"] in ("cosign-detached", "sigstore-bundle")
            and manifest["technical_verdict"] in _VERDICTS and manifest["review_status"] in _REVIEWS,
            "INVALID_MANIFEST", "Unsupported receipt exchange manifest.")
     observation, ticket = manifest["observation"], manifest["ticket"]
     is_observed = kind == _OBSERVED
-    timing = "first_checked_at" if is_observed else "drill_duration_ms"
+    timing = {"last_checked_at"}
+    if not is_vendor:
+        timing.add("first_checked_at" if is_observed else "drill_duration_ms")
     evidence_name = _COMPANIONS[kind]
-    _check(isinstance(observation, dict) and set(observation) == {"last_checked_at", timing}
-           and ((isinstance(ticket, dict) and set(ticket) == {"id", "frame_sha256"} and "deployment" not in manifest)
+    _check(isinstance(observation, dict) and set(observation) == timing
+           and ((isinstance(ticket, dict) and set(ticket) == {"id", "frame_sha256"})
                 if is_observed else ticket is None), "INVALID_MANIFEST", "The evidence kind and claim fields disagree.")
     _check(isinstance(manifest["files"], dict) and set(manifest["files"]) == {RECEIPT, evidence_name}
            and all(isinstance(value, str) and _DIGEST.fullmatch(value) for value in manifest["files"].values()),
@@ -283,7 +308,7 @@ def verify(directory, *, key=None, identity=None, issuer=None, trusted_root=None
     _check(actual_files == expected_files, "UNEXPECTED_FILES", "Expected exactly the manifest, signature, original receipt and original evidence.")
     source = _bundle_bytes(folder / RECEIPT), evidence_name, _bundle_bytes(folder / evidence_name)
     _check(manifest["files"] == _file_digests(source), "EVIDENCE_DIGEST_MISMATCH", "Exchange file digests differ from the signed manifest.")
-    receipt, data = _replay(source)
+    receipt, data = _replay(source, declared_kind=manifest["evidence_kind"])
     result = _project(source, manifest["system"], signature_type, receipt, data)
     _verdict_matches(manifest, result)
     _check(_equal(manifest, result), "CLAIMS_MISMATCH", "Exchange claims differ from the original evidence.")
@@ -304,7 +329,18 @@ def summary(manifest):
     ]
     if manifest["ticket"]:
         lines.append(f"Completed ticket {manifest['ticket']['id']}")
-    lines.append("Declared stores " + ", ".join(manifest["surfaces"]["stores"]))
+    vendor = manifest.get("vendor")
+    if vendor:
+        origin = "Provider API readback" if vendor["kind"] == "api-readback" else "Conformance fixture"
+        operator = (vendor.get("execution") or {}).get("operator") or "unrecorded"
+        lines.extend((f"{origin} · {vendor['target']} · recorded operator {operator}",
+                      "Authentication applies to the exchange issuer."))
+        versions = ", ".join(f"{name} {version}" for name, version in sorted(vendor["versions"].items()))
+        if versions:
+            lines.append(f"Recorded versions {versions}")
+        lines.extend(f"{row['status']} · {row['surface']}" for row in vendor["checks"])
+    else:
+        lines.append("Declared stores " + ", ".join(manifest["surfaces"]["stores"]))
     lines.extend(f"Declared route {route}" for route in manifest["surfaces"]["routes"])
     for item in manifest["open_items"]:
         owner = f" · owner {item['owner']}" if "owner" in item else ""

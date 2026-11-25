@@ -10,6 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from ._mem0 import observation
+from .report import LOCAL_AGENT_TARGETS
 
 MARKER = "iridium-670a"
 TEXT = {"target": f"Setrya synthetic target {MARKER}", "retained": "Setrya synthetic control cobalt-82bb"}
@@ -124,8 +125,29 @@ def mem0(evidence):
     evidence.update({field: result[field] for field in ("versions", "observations", "error")})
 
 
+def agent_memory(evidence):
+    with TemporaryDirectory(prefix="setrya-agent-memory-") as directory:
+        env = {name: os.environ[name] for name in ("PATH", "SYSTEMROOT") if name in os.environ}
+        env.update(HOME=directory, USERPROFILE=directory, OTEL_SDK_DISABLED="true",
+                   CREWAI_DISABLE_TELEMETRY="true", TELEMETRY_DISABLED="true", HF_HUB_OFFLINE="1",
+                   LITELLM_LOCAL_MODEL_COST_MAP="true", COGNEE_SKIP_CONNECTION_TEST="true",
+                   SYSTEM_ROOT_DIRECTORY=str(Path(directory) / "system"),
+                   DATA_ROOT_DIRECTORY=str(Path(directory) / "data"), MOCK_EMBEDDING="true",
+                   EMBEDDING_PROVIDER="openai", EMBEDDING_MODEL="text-embedding-3-small", EMBEDDING_DIMENSIONS="1536")
+        # Pin the child to the same checkout or installation as this process.
+        launch = ("import runpy, sys; sys.path.insert(0, sys.argv[1]); "
+                  "runpy.run_module('setrya.vendor._agent_memory', run_name='__main__')")
+        subprocess.run([sys.executable, "-I", "-c", launch, str(Path(__file__).resolve().parents[2])],
+                       cwd=directory, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       input=json.dumps((evidence["target"], TEXT, MARKER)).encode(), timeout=120, check=True)
+        result = json.loads((Path(directory) / "observations.json").read_bytes())
+    evidence.update({field: result[field] for field in ("versions", "observations", "error")})
+
+
 def run_fixture(target):
-    fixture = {"pgvector": pgvector, "langgraph-store": langgraph_store, "mem0": mem0}[target]
+    fixture = agent_memory if target in LOCAL_AGENT_TARGETS else {
+        "pgvector": pgvector, "langgraph-store": langgraph_store, "mem0": mem0,
+    }[target]
     evidence = {"target": target, "versions": {}, "observations": {}, "error": None}
     try:
         fixture(evidence)

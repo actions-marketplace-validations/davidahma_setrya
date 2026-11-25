@@ -10,7 +10,12 @@ TARGETS = {
     "pgvector": ("store", "index"),
     "langgraph-store": ("store", "index"),
     "mem0": ("store", "index", "history"),
+    "crewai-memory": ("store", "index"),
+    "cognee-dataset": ("dataset-catalog", "ingested-text-files"),
+    "google-adk-session": ("session-history",),
+    "openai-agents-session": ("session-history",),
 }
+LOCAL_AGENT_TARGETS = frozenset(("crewai-memory", "cognee-dataset", "google-adk-session", "openai-agents-session"))
 PHASES = ("baseline", "after_delete", "after_retry")
 READBACK_PHASES = ("baseline", "after_delete")
 UNTESTED = {
@@ -23,6 +28,10 @@ SETUP = {
     "pgvector": ("psycopg", "postgresql", "vector"),
     "langgraph-store": ("langgraph", "langgraph-checkpoint"),
     "mem0": ("mem0ai", "qdrant-client"),
+    "crewai-memory": ("crewai", "lancedb"),
+    "cognee-dataset": ("cognee", "sqlalchemy", "aiosqlite", "sqlite"),
+    "google-adk-session": ("google-adk", "sqlalchemy", "aiosqlite", "sqlite"),
+    "openai-agents-session": ("openai-agents", "sqlite"),
 }
 ERRORS = {
     None: None,
@@ -126,6 +135,9 @@ def derive(evidence):
     if hosted:
         checks.append({"surface": "provider-internals", "status": "NOT TESTED",
                        "reason": "The API readback did not inspect provider-internal storage or retention."})
+    elif target in LOCAL_AGENT_TARGETS:
+        checks.append({"surface": "provider-internals", "status": "NOT TESTED",
+                       "reason": "The local fixture did not inspect hosted storage or provider retention."})
     checks.extend({"surface": name, "status": "NOT TESTED", "reason": reason} for name, reason in UNTESTED.items())
 
     failures = [f"{row['surface']}: {row['reason']}" for row in checks if row["status"] == "FAIL"]

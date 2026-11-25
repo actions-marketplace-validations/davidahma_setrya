@@ -96,7 +96,7 @@ jobs:
           setrya conformance review "$rerun" --key "$RUNNER_TEMP/rerun-key.pub" \
             --against "$original" --against-key "$RUNNER_TEMP/vendor-key.pub" \
             --expect-operator synthetic-reviewer > "$RUNNER_TEMP/linked-review.txt"
-          grep -qF 'Independent rerun verified' "$RUNNER_TEMP/linked-review.txt"
+          grep -qxF 'Rerun matches original' "$RUNNER_TEMP/linked-review.txt"
       - name: Attach verified evidence to the sample governance ticket
         run: |
           example="$GITHUB_WORKSPACE/docs/examples/governance-handoff/handoff.py"
@@ -111,10 +111,14 @@ jobs:
           cp "$sample/issuer/issuer.pub" "$sample/reviewer/trusted-issuer.pub"
           cd "$sample/reviewer"
           python -I "$example" review exchange --key trusted-issuer.pub > ticket.json
+          fingerprint=$(openssl pkey -pubin -in trusted-issuer.pub -outform DER | sha256sum | cut -d ' ' -f 1)
           jq -e '.governance_ticket == "GOV-204" and .control_reference.reference == "ERASURE-07" and
+            .control_reference_source == "receipt" and .evidence_kind == "synthetic-drill" and
+            .signer.type == "cosign-public-key" and .signer.sha256 == $fingerprint and
+            (.verified_at | endswith("+00:00")) and
             .technical_verdict == "PASS" and .review_status == "OPEN_ITEMS" and
             .open_items[0].owner == "platform-team" and .open_items[0].follow_up and
-            .open_items[0].evidence == "erasure-receipt.json#/open_items/0"' ticket.json
+            .open_items[0].evidence == "erasure-receipt.json#/open_items/0"' --arg fingerprint "$fingerprint" ticket.json
           test "$(jq -r .receipt_sha256 ticket.json)" = "$(sha256sum exchange/erasure-receipt.json | cut -d ' ' -f 1)"
           code=0
           setrya receipt verify-exchange exchange --key trusted-issuer.pub --case-review || code=$?
@@ -123,6 +127,16 @@ jobs:
           python -I "$example" review exchange --key "$RUNNER_TEMP/rerun-key.pub" > rejected.json || code=$?
           test "$code" -eq 2
           test ! -s rejected.json
+          setrya receipt pack "$RUNNER_TEMP/vendor-reports/mem0" --output vendor-exchange \
+            --system mem0 --system-version local-fixture --key "$sample/issuer/issuer.key"
+          python -I "$example" review vendor-exchange --key trusted-issuer.pub \
+            --ticket GOV-205 --framework "Support governance" --control ERASURE-08 > vendor-ticket.json
+          jq -e '.governance_ticket == "GOV-205" and .control_reference.reference == "ERASURE-08" and
+            .control_reference_source == "reviewer" and .evidence_kind == "vendor-attestation" and
+            .signer.sha256 == $fingerprint and .technical_verdict == "FAIL" and
+            .vendor.target == "mem0" and .vendor.execution.operator == "setrya-ci" and
+            any(.vendor.checks[]; .surface == "history" and .status == "FAIL")' \
+            --arg fingerprint "$fingerprint" vendor-ticket.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: ${{ !cancelled() }}
         with:

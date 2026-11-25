@@ -15,7 +15,7 @@ from setrya.receipts import exit_code, replay
 from . import hosted
 from .fixtures import run_fixture
 from .report import TARGETS, operator_label, summary
-from .review import DETACHED_SIGNATURE, KEYLESS_SIGNATURE, rerun_digest, review as review_result
+from .review import DETACHED_SIGNATURE, KEYLESS_SIGNATURE, assess_review, rerun_digest
 
 
 def command(argv):
@@ -35,6 +35,8 @@ def command(argv):
     review.add_argument("--expect-operator", help="expected operator from your review policy")
     review.add_argument("--against", type=Path, help="original self-check for a linked rerun")
     review.add_argument("--against-key", type=Path, help="separate trusted Cosign key for the original self-check")
+    review.add_argument("--accept-rerun", action="store_true",
+                        help="use the rerun's technical exit code even if the linked results differ")
     baseline = commands.add_parser("baseline", help="record a read-only baseline in an authorized test project")
     baseline.add_argument("--target", choices=tuple(hosted.SURFACES), required=True)
     baseline.add_argument("--synthetic", action="store_true", required=True, help="use only synthetic target and control records")
@@ -54,11 +56,20 @@ def command(argv):
 
     args = parser.parse_args(argv)
     if args.operation == "review":
-        result, details = review_result(args.directory, key=args.key, identity=args.identity, issuer=args.issuer,
-                                        trusted_root=args.trusted_root, expect_operator=args.expect_operator,
-                                        against=args.against, against_key=args.against_key)
-        print(summary(result, execution_review=details))
-        return exit_code(result)
+        if args.accept_rerun and args.against is None:
+            raise InputError("--accept-rerun requires a paired review with --against.")
+        result = assess_review(args.directory, key=args.key, identity=args.identity, issuer=args.issuer,
+                               trusted_root=args.trusted_root, expect_operator=args.expect_operator,
+                               against=args.against, against_key=args.against_key)
+        if result.headline is not None:
+            print(result.headline)
+        print(summary(result.receipt, execution_review=result.details))
+        if result.agrees is False:
+            if not args.accept_rerun:
+                print("Review exit 3: the linked results disagree.")
+                return 3
+            print("Review uses the rerun's technical exit code (--accept-rerun).")
+        return exit_code(result.receipt)
     if args.operation == "baseline":
         observation = hosted.capture(args.target, args.scope, args.record, args.retain, args.output)
         if observation == {"target": True, "retained": True}:
@@ -83,7 +94,7 @@ def run_and_sign(target, output, *, key, operator=None, rerun_of=None):
         operator_label(operator)
     execution = {"operator": operator, "run_id": str(uuid4()), "setrya_version": __version__}
     if rerun_of is not None:
-        execution["rerun_of"] = rerun_digest(rerun_of, target, operator)
+        execution["rerun_of"] = rerun_digest(rerun_of, target, operator, setrya_version=execution["setrya_version"])
     return _sign_evidence(lambda: {**run_fixture(target), "execution": execution}, output, key=key)
 
 

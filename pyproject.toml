@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "setrya"
-version = "1.12.0"
+version = "1.13.0"
 description = "Find where your app and AI agents copy customer data, and prove deletion reaches the copies you test, including stale copies a background job writes back."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,6 +34,9 @@ pytest = ["pytest>=8"]
 answer-cache = ["celery>=5.7,<6", "langchain-core>=1.8.3,<2", "psycopg[binary]>=3.3,<4"]
 pgvector = ["psycopg[binary]>=3.3,<4"]
 conformance-mem0 = ["mem0ai>=2.2.1,<2.3"]
+conformance-crewai = ["crewai==1.15.45"]
+conformance-cognee = ["cognee==1.6.10"]
+conformance-adk = ["google-adk==2.15.1", "sqlalchemy[asyncio]>=2,<3", "aiosqlite>=0.22,<0.23"]
 
 [project.scripts]
 setrya = "setrya.cli:console_main"
