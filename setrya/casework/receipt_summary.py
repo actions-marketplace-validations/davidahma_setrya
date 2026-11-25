@@ -9,7 +9,7 @@ import re
 from setrya.core.receipt_v3 import answer_slots, attribution_lines, human_issue, post_erasure_findings, sample_rows, GROUPED_EVIDENCE_FORMATS
 from setrya.offboarding.inputs import read_regular_bytes, require, unique_fields
 from setrya.receipt_format import FORMAT_V3, MAX_BUNDLE_FILE_BYTES
-from setrya.receipts import replay, replay_bytes, summary as technical_summary
+from setrya.receipts import replay, replay_bytes, summary as technical_summary, write_back_lead
 from .customer import customer_text
 from .profiles import BRANCHES, CRYPTO, VENDOR
 
@@ -206,11 +206,11 @@ def receipt_summary(bundle, *, audience="reviewer", output_format="text", case_i
                      "observed-deletion": "Read-only verification", "follow-up": "Open-item follow-up",
                      BRANCHES: "Branch and restore lineage", CRYPTO: "Read-only key-destruction evidence",
                      VENDOR: "Vendor conformance fixture"}.get(profile, profile)
-            sections.append(("Scope", [scope, *(["Worker race " + receipt["race"]] if receipt.get("race") else [])]))
+            sections.append(("Scope", [scope, *(["Write-back check " + receipt["race"]] if receipt.get("race") else [])]))
             issues = [*receipt.get("failures", ()), *receipt.get("gaps", ())]
             issues.extend(f"{e['operation']} ({e['error']})" for e in receipt.get("errors", ()))
             sections.append(("Findings", ["- " + human_issue(issue) for issue in issues]))
-            sections.append(("Late writes", ["- " + row for row in attribution_lines(receipt)]))
+            sections.append(("Write attribution", ["- " + row for row in attribution_lines(receipt)]))
         sections.append(("Recorded observations", outcomes))
         sections.append(("Scan coverage", _scan_coverage(receipt)))
         sections.append(("Evidence", anchors))
@@ -227,4 +227,8 @@ def receipt_summary(bundle, *, audience="reviewer", output_format="text", case_i
         sections.append(("Open items", items or ["No open items recorded."]))
     if controls:
         sections.append(("Customer control references", ["The case owner supplied these references.", *controls]))
-    return _format(title, sections, output_format in ("md", "markdown"))
+    markdown = output_format in ("md", "markdown")
+    formatted = _format(title, sections, markdown)
+    if lead := write_back_lead(receipt, bundle):
+        return lead + "\n\n" + formatted
+    return formatted

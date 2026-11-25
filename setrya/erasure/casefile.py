@@ -116,6 +116,7 @@ class HttpCase:
     bindings: list
     locations: dict
     path: Path
+    source_sha256: str
     deployment: dict | None = None
     deployment_path: Path | None = None
     deployment_locations: dict | None = None
@@ -129,12 +130,6 @@ class HttpCase:
         while keys and keys not in locations:
             keys = keys[:-1]
         return f"{path}:{locations.get(keys, 1)}"
-
-    def source_digests(self):
-        if self.deployment is None:
-            return {}
-        return {self.path: self.deployment["behavior_sha256"],
-                self.deployment_path: self.deployment["deployment_sha256"]}
 
     def missing_bindings(self, *, stores_only=False):
         return [(f"{hook} ({name})", path) for hook, name, path in self.bindings if not os.environ.get(name)
@@ -330,6 +325,7 @@ def load_case(path, *, deployment_path=None, locate=False):
     locations = {}
     source = Path(path).resolve()
     raw = read_regular_bytes(source, "YAML case", _YAML_LIMIT)
+    source_sha256 = sha256(raw).hexdigest()
     settings = yaml_document(raw, locations if locate else None)
     deployment, deployment_locations, exceptions = None, {}, ()
     environment = ("subject", "subject_ref_env"), ("erase authorization", "erase_token_env")
@@ -345,7 +341,7 @@ def load_case(path, *, deployment_path=None, locate=False):
         contents = read_regular_bytes(deployment_path, "YAML deployment", _YAML_LIMIT)
         binding = yaml_document(contents, deployment_locations if locate else None)
         settings, exceptions = split_settings(settings, binding)
-        deployment = {"record": validate_record(binding["record"]), "behavior_sha256": sha256(raw).hexdigest(),
+        deployment = {"record": validate_record(binding["record"]), "behavior_sha256": source_sha256,
                       "deployment_sha256": sha256(contents).hexdigest()}
     if "controls" in settings:
         from setrya.control_references import validate_controls
@@ -399,4 +395,4 @@ def load_case(path, *, deployment_path=None, locate=False):
     check_external([asdict(item) for item in exceptions], case.spec(), None)
     return HttpCase(case, stores, (markers["target"], markers["control"]),
                     (store_facts["target"], store_facts["control"]), settings, bindings, locations, source,
-                    deployment, deployment_path, deployment_locations, exceptions)
+                    source_sha256, deployment, deployment_path, deployment_locations, exceptions)

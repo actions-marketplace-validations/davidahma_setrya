@@ -43,11 +43,11 @@ with subject.activate(), (received.activate() if received else nullcontext()):
 
 When a turn is active, `subject.langgraph_config()` includes the same fields in graph metadata and `subject.otel_context()` includes them in baggage. Restore them explicitly with `Turn.from_metadata(config["metadata"])` or `Turn.from_baggage(extracted_context)`. Use intentional trust boundaries for these labels. Start a fresh turn with `parent=turn.id` when a separate agent invocation should have its own identity. Journal observations retain turn metadata and older rows can still be read. The read set belongs to one local activation.
 
-### Attribute a residual to a late write
+### Attribute a residual to a write
 
 For a local SQLite `CopyJournal`, the runner brackets the released worker with two verified journal positions. The reviewer summary names a turn when a directly read revision reappears and one completed write in that interval matches the store, key and revision exactly. The receipt points to the journal event. For a new location found only in the final scan, Setrya attempts an exact revision read. Attribution requires a clean earlier scan of the same recorded scope. A marker alone still establishes a residual without naming an actor. Unversioned, competing or pre-existing writes stay unattributed.
 
-Use `CopyHooks.record_copy` with a `VersionRef` at the completed write boundary, or supply the revision in `details={"revision": ...}` when recording a custom write. Keep these revision IDs consistent with the direct inspection. Internal turn and actor IDs appear in engineer and reviewer summaries. Customer summaries give check results and follow-up ownership.
+Use `CopyHooks.record_copy` with a `VersionRef` at the completed write boundary, or supply the revision in `details={"revision": ...}` when recording a custom write. Keep these revision IDs consistent with the direct inspection. To identify a stale write-back, hold the writer after it captures its inputs and use the held attempt ID as its `Turn.id`. The shared finding points to the corresponding journal entry. Engineer and reviewer summaries also show the recorded turn and actor IDs. [Why deleted data comes back](write-back.md)
 
 ## Infer lineage from the versions a turn reads
 

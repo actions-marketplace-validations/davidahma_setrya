@@ -7,6 +7,7 @@ import sys
 
 from . import POSITIONING, __version__
 from .drill import InputError
+from .erasure.modes import CLI_MODES, evidence_mode
 from .offboarding.inputs import InvalidReport
 
 
@@ -49,7 +50,7 @@ def _start(command, args):
     parser.add_argument("--output", type=Path, help="fresh output directory")
     if is_demo:
         parser.add_argument("example", choices=("workspace", "analyst", "memory-files", "branches", "northline", "northline-source"), nargs="?", help="person example (default: workspace)")
-        parser.add_argument("--mode", choices=("deletion", "late-write"), help="person drill mode (default: late-write)")
+        parser.add_argument("--mode", type=evidence_mode, choices=CLI_MODES, help="person drill mode (default: write-back)")
     else:
         from .erasure.case_starters import STACKS
         parser.add_argument("--stack", choices=STACKS, help="connect a store and an HTTP application fixture")

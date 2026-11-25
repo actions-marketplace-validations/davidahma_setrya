@@ -62,7 +62,7 @@ setrya run setrya-case/case.yml --output receipt
 setrya replay receipt
 ```
 
-In the Action's `starter` input, use the path to the YAML file and install the same extras in the drill job. A YAML case covers deletion. Use the Python fixture when the application can expose a worker hold, checkpoint and release for a late-write test.
+In the Action's `starter` input, use the path to the YAML file and install the same extras in the drill job. A YAML case covers deletion. Use a Python fixture to hold a deferred writer at a checkpoint and release it for a write-back check.
 
 ## Run the same behavior against two deployments
 

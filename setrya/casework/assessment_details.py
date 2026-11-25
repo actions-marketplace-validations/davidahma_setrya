@@ -14,7 +14,7 @@ from .customer import customer_text
 from .profiles import day, fields, sha
 from .receipt_summary import _read_drill_evidence
 
-_SURFACES = {"copy": 4, "query": 5, "scan": 2, "observed-copy": 3, "worker": 3}
+_SURFACES = {"copy": (4,), "query": (5, 6), "scan": (2,), "observed-copy": (3,), "worker": (3,)}
 
 
 def details(receipt, path):
@@ -55,7 +55,7 @@ def _drill_surfaces(receipt, evidence):
     seen = Counter()
     all_reads = [answer_records(evidence, phase) for phase in phases]
     for (caller, question, role, _), baseline, *after in zip(answer_slots(case), *all_reads, strict=True):
-        surface = ("query", case["route"], caller, question)
+        surface = ("query", case["route"], caller, question, role)
         if (baseline is not None and baseline[role + "_present"] is True and
                 all(row is not None and row["target_present"] is not None
                     and (role == "target" or row["control_present"] is not None) for row in after)):
@@ -77,18 +77,23 @@ def validate_details(value):
     fields(value, "observed failures residual open_items customer_summary deployment")
     require(type(value["residual"]) is bool, "Invalid comparison residual state.")
     surfaces = _rows(value["observed"], 2048)
+    query_widths = set()
     for row in surfaces:
         require(isinstance(row, list) and row and isinstance(row[0], str)
-                and len(row) == _SURFACES.get(row[0]), "Invalid observed surface.")
+                and len(row) in _SURFACES.get(row[0], ()), "Invalid observed surface.")
         parts = row[1:]
         if row[0] == "query":
+            query_widths.add(len(row))
             *parts, count = parts
             require(type(count) is int and 1 <= count <= 32, "Invalid observed query sample count.")
-            sha(parts[-1])
+            sha(parts[2])
+            if len(parts) == 4:
+                require(parts[3] in ("target", "control"), "Invalid observed query role.")
         for part in parts:
             _text(part, 1024)
         if row[0] == "observed-copy":
             sha(row[2])
+    require(len(query_widths) <= 1, "Inconsistent observed query roles.")
     require(list(map(tuple, surfaces)) == sorted({tuple(row) for row in surfaces}),
             "Duplicate or unordered observed surface.")
     for line in _rows(value["failures"], 640):

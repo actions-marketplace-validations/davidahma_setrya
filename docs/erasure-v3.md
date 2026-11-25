@@ -22,8 +22,8 @@ A scanner searches a disposable scope for the exact synthetic marker and returns
 
 With `require_lineage=True`, the app supplies the source revisions and reachable derivations. The checker binds every affected version to a baseline observation or a declared external item. An affected version outside the observed scope remains a gap. The evidence includes co-parent versions used to build a shared artifact. Coverage depends on the graph and source registrations the application actually supplies.
 
-* `deletion` samples each question as every declared caller, runs the app's erase operation, then repeats endpoint reads, direct inspections and scans twice. It reports **worker race not exercised**.
-* `late-write` first holds a worker after it captured the original inputs. Setrya checks the attempt before erasure and after the immediate observations, releases and drains that same attempt, then repeats all reads. A missing checkpoint or mismatched drain prevents a technical PASS. Implement `cancel_and_drain(subject, attempt)` to discard the paused write when erasure is withheld or the pre-release checkpoint disappears. Fixtures with only a release hook use it for cleanup.
+* `deletion` samples each question as every declared caller, runs the app's erase operation, then repeats endpoint reads, direct inspections, and scans twice.
+* `write-back` first holds a deferred writer after it captured the original inputs. Setrya checks the attempt before erasure and after the immediate observations, releases and drains that same attempt, then repeats all reads. A missing checkpoint or mismatched drain prevents a technical PASS. Implement `cancel_and_drain(subject, attempt)` to discard the paused write when erasure is withheld or the pre-release checkpoint disappears. Fixtures with only a release hook use it for cleanup. The CLI also accepts the `late-write` spelling in 1.x. Evidence and the Python runner use `late-write`.
 
 Both modes record drill duration in milliseconds. Installation, fixture wiring, signing and human review are separate measurements.
 
@@ -37,7 +37,7 @@ Import `Artifact`, `SharedCase`, `Stored`, `Answer`, `ExternalItem` and `run_sha
 | `scan(subject, store)` | Set of opaque keys found in that scoped text search. |
 | `read(subject, caller, conversation, question)` | `Answer(caller, conversation, route, question, target_present, control_present)` using the actual response, or a `TextAnswer` for the configured judges. |
 | `erase(subject)` | Complete the app's scoped deletion and rewrite. Wait for relevant refreshes. |
-| `hold`, `checkpoint`, `release_and_drain` | Same attempt-bound `Hold` and `Drain` observations as the subject drill. Only the late-write mode dispatches a worker. |
+| `hold`, `checkpoint`, `release_and_drain` | Attempt-bound `Hold` and `Drain` observations for the deferred writer. The write-back mode invokes these hooks. |
 | `lineage(subject)` | Optional mapping with `roots` and `derivations`. Every version is a `store`, `key`, `revision` triple. Each derivation identifies an `artifact` and its `inputs`. |
 | `collect_journals(subject)` | Optional hook after final reads to seal and import durable worker packets before coverage is evaluated. |
 

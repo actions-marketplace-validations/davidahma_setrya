@@ -8,11 +8,13 @@ from pathlib import Path
 import secrets
 from socketserver import TCPServer
 import sqlite3
+from tempfile import TemporaryDirectory
 from threading import RLock, Thread
 from uuid import uuid4
 
 from setrya.erasure import AnswerJudges, Marker, ReviewedAnswers, TextAnswer
-from setrya.erasure.subject import Subject
+from setrya.erasure.journal import CopyJournal
+from setrya.erasure.subject import Subject, Turn
 from setrya.erasure.v3 import Artifact, ExternalItem, SharedCase, Stored, run_shared
 from setrya.erasure.worker_fixture import WorkerFixture
 
@@ -23,6 +25,7 @@ PRIVATE, RETAINED = "cobalt-bridge.example", "October 18"
 QUESTIONS = ("Which hostname did the customer use?", "When is the team's next launch?")
 SOURCES = (("customer-note", PRIVATE), ("team-calendar", RETAINED))
 NO_NOTE = "No matching note."
+WRITER = "handoff-refresh"
 JUDGES = AnswerJudges(
     (Marker(PRIVATE), ReviewedAnswers((PRIVATE, "cobalt bridge dot example"), (NO_NOTE, RETAINED))),
     (Marker(RETAINED), ReviewedAnswers((RETAINED,), (NO_NOTE, PRIVATE, "cobalt bridge dot example"))),
@@ -36,9 +39,10 @@ SIMPLE = SharedCase(WORKSPACE, ROUTE, CALLERS[:1], *QUESTIONS,
 
 
 class Workspace:
-    def __init__(self, connection, subject, *, guarded, shared):
+    def __init__(self, connection, subject, *, guarded, shared, journal=None):
         self.db, self.subject = connection, subject
         self.guarded, self.shared = guarded, shared
+        self.journal = journal
         self.lock = RLock()
         self.sessions = {secrets.token_urlsafe(32): caller for caller in CALLERS}
         self.db.executescript("""
@@ -49,14 +53,16 @@ class Workspace:
             self.db.executemany("INSERT INTO notes VALUES (?, '1', ?)", SOURCES)
             if self.shared:
                 self._save(self._sources())
-        self.worker = WorkerFixture(self._job, self.read)
+        self.worker = WorkerFixture(self._job, self.read, attempt=WRITER if journal is not None else None)
 
     def _sources(self):
         return tuple(self.db.execute("SELECT key,revision,body FROM notes ORDER BY key"))
 
     def _save(self, sources):
+        revision = uuid4().hex
         self.db.execute("INSERT OR REPLACE INTO handoffs VALUES (?,?,?)",
-                        (WORKSPACE, uuid4().hex, json.dumps({key: body for key, _, body in sources})))
+                        (WORKSPACE, revision, json.dumps({key: body for key, _, body in sources})))
+        return revision
 
     def _check(self, subject):
         if subject != self.subject:
@@ -67,13 +73,19 @@ class Workspace:
         with self.lock:
             snapshot = self._sources()
         before_write()
-        with self.lock, self.db:
+        with self.lock:
             if self.guarded and snapshot != self._sources():
                 return
-            if self.shared:
-                self._save(snapshot)
-            else:
-                self.db.executemany("INSERT OR REPLACE INTO notes VALUES (?,?,?)", snapshot)
+            revision = None
+            with self.db:
+                if self.shared:
+                    revision = self._save(snapshot)
+                else:
+                    self.db.executemany("INSERT OR REPLACE INTO notes VALUES (?,?,?)", snapshot)
+            if self.journal is not None and revision is not None:
+                with Turn(WRITER, "scheduled-job", "handoff-worker").activate():
+                    self.journal.record(subject, store="handoffs", key=WORKSPACE, source="customer-note", action="derived",
+                                        details={"revision": revision, "stage": "committed"})
 
     def erase(self, subject):
         self._check(subject)
@@ -158,12 +170,16 @@ class Endpoint(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def open_fixture(*, shared=False, guarded=True):
+def open_fixture(*, shared=False, guarded=True, record_writes=False):
     """Yield a fresh subject, application and external obligations; all data are synthetic."""
     subject = Subject.derive(secrets.token_bytes(32), WORKSPACE, "customer-17", "private")
     with ExitStack() as stack:
         db = stack.enter_context(closing(sqlite3.connect(":memory:", check_same_thread=False)))
-        app = Workspace(db, subject, guarded=guarded, shared=shared)
+        journal = None
+        if record_writes:
+            folder = Path(stack.enter_context(TemporaryDirectory(prefix="setrya-handoff-")))
+            journal = CopyJournal(folder / "copies.sqlite")
+        app = Workspace(db, subject, guarded=guarded, shared=shared, journal=journal)
         # The fixture serves a numeric loopback address, so bind it without a DNS lookup.
         server = stack.enter_context(TCPServer(("127.0.0.1", 0), Endpoint))
         server.application = app
@@ -180,15 +196,18 @@ def open_fixture(*, shared=False, guarded=True):
 
 def demo(output, mode):
     from shlex import join
+    from setrya.receipts import write_back_lead
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     print("A customer asked for deletion. Two teammates reopen the same workspace handoff.")
     lanes = (("broken", "FAIL"), ("guarded", "PASS")) if mode == "late-write" else (("guarded", "PASS"),)
     for lane, expected in lanes:
         directory = output / lane
-        with open_fixture(shared=True, guarded=lane == "guarded") as (subject, app, items):
+        with open_fixture(shared=True, guarded=lane == "guarded", record_writes=True) as (subject, app, items):
             receipt = run_shared(subject, case=CASE, application=app, external_items=items, output=directory,
-                                 mode=mode, cancel_hold=app.cancel_and_drain)
+                                 mode=mode, journal=app.journal, cancel_hold=app.cancel_and_drain)
+        if lead := write_back_lead(receipt, directory):
+            print(lead)
         print(f"{receipt['technical_verdict']}  {lane} · {receipt['review_status']}")
         from setrya.core.receipt_v3 import answer_records
         evidence = json.loads((directory / "erasure-evidence.json").read_text())

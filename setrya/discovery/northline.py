@@ -8,8 +8,9 @@ from setrya.casework.profiles import new_bundle
 from setrya.drill import InputError
 from setrya.examples import northline_app
 from setrya.offboarding.inputs import publish_new
+from setrya.receipts import summary
 
-from .case import exit_code, replay, run_case, summary
+from .case import exit_code, replay, run_case
 from .macie import load_finding
 from .mapping import bind_finding, load_mapping
 
@@ -73,6 +74,6 @@ def demo(output):
             checked = replay(bundle, expected_binding=binding)
             if reported != checked or exit_code(checked) != expected:
                 raise InputError(f"The {lane} Northline fixture produced an unexpected verdict.")
-            lines.extend(("", lane, summary(checked), join(["setrya", "replay", str(output / lane)])))
+            lines.extend(("", lane, summary(checked, bundle=bundle), join(["setrya", "replay", str(output / lane)])))
     print("\n".join(lines))
     return 0

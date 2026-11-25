@@ -53,7 +53,8 @@ def _matches_commit(root, commit, path, raw):
     return blob == recorded.hexdigest().encode("ascii")
 
 
-def capture(starter, test_files=(), *, deployed_commit=None, executed_copy=None, expected_hashes=None):
+def capture(starter, test_files=(), *, deployed_commit=None, executed_copy=None, expected_hashes=None,
+            expected_entrypoint_sha256=None):
     """Fingerprint the executing entrypoint and explicitly declared local test code."""
     files = [starter, *test_files]
     require(len(files) <= _MAX_TEST_FILES, "Declare at most 32 test files including the entrypoint.")
@@ -63,19 +64,24 @@ def capture(starter, test_files=(), *, deployed_commit=None, executed_copy=None,
     execution = "http-case" if Path(starter).suffix.lower() in (".yaml", ".yml") else "local-starter"
     result["application"].update(checkout_commit=commit, checkout_state=state, asserted_deploy_commit=deployed_commit,
                                  execution=execution)
+    parsed_sources = set(expected_hashes or ())
     for index, file in enumerate(files):
         source = Path(file).resolve()
         inside = commit is not None and source.is_relative_to(root)
         label = source.relative_to(root).as_posix() if inside else source.name
         raw = read_regular_bytes(source, "test provenance file", _MAX_TEST_BYTES)
         digest = sha256(raw).hexdigest()
+        if index == 0 and expected_entrypoint_sha256 is not None:
+            require(digest == expected_entrypoint_sha256, "The parsed HTTP entrypoint changed before this run.")
         if expected_hashes is not None and source in expected_hashes:
             require(digest == expected_hashes[source], "The parsed HTTP test inputs changed before this run.")
+            parsed_sources.discard(source)
         result["test_files"].append({
             "path": label, "location": "checkout" if inside else "external",
             "role": "test" if index else "entrypoint", "sha256": digest,
             "commit_bound": inside and _matches_commit(root, commit, label, raw),
         })
+    require(not parsed_sources, "The parsed HTTP test inputs changed before this run.")
     if executed_copy is not None:
         original, copy = Path(starter).resolve(), Path(executed_copy).resolve()
         require(original.parent == copy.parent and original.suffix == copy.suffix,

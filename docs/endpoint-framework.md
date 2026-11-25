@@ -59,6 +59,15 @@ if gate is not None:
 
 The test observes the captured caller, question, answer and ordered source IDs before it changes access. Redis stores fingerprints for the synthetic question and answer. A Redis key expiry limits the hold. If the hold expires or the test closes a held gate, the waiting task exits before the write. Redis serializes the release and expiry, so containers and clients do not compare their host clocks. An ordinary delivery without the test header receives no gate.
 
+## Test retry and resume after deletion
+
+Use the same checkpoint with your disposable erasure fixture. Reserve the expected writer type with `RedisCeleryCheckpoint.create(..., writer_type="retry")` or `writer_type="resume"`. The default `held` type supports the starter above.
+
+- **Retry.** Pass the source snapshot in the task's JSON arguments. The original delivery calls `hold()` after capture. Once Setrya releases it, call `gate.retry(self)` before the write. Celery resubmits the original arguments. Only the first retry of that task ID, with the same payload fingerprint, can write through this checkpoint. [Celery retry behavior](https://docs.celeryq.dev/en/stable/userguide/tasks.html#retrying)
+- **Resume.** Pause a dedicated test queue consumer. Use `gate.park(signature, ...)` to enqueue the captured snapshot while the consumer is paused. Confirm the message is still queued before the fixture releases it. Release the checkpoint after deletion, resume the consumer, and wait for the exact delivery's terminal receipt. Both the old payload and the retained control travel through the app's normal write path.
+
+The [native test](../tests/test_celery_langchain.py) deletes the synthetic primary record, updates the shared handoff, then releases each writer. Two signed-in callers read the app's real HTTP endpoint. Both writers can return the erased fact on the broken build. The guarded build checks the current source revision before publishing and both callers keep the unrelated fact. The test replays the resulting erasure receipts after fixture teardown. Set `SETRYA_REDIS_URL` to disposable Redis and run `python -m pytest -q tests/test_celery_langchain.py` with `setrya[celery-langchain]` installed.
+
 ## Keep evidence fields out of the public response
 
 In the test deployment’s serving path, call `record_served` after cache lookup or generation, using the actual authenticated caller, executed question, returned answer and dependencies. The public response can still contain just the answer text. For a hit, read the sources and writer ID from the entry that supplied that answer.

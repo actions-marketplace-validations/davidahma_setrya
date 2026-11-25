@@ -9,10 +9,10 @@ from shutil import copytree
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from setrya.casework import assessment, assessment_comparison
+from setrya.casework import assessment, assessment_comparison, assessment_details
 from setrya.core.inputs import InvalidReport
-from setrya.erasure import Artifact, run_shared
-from setrya.examples.workspace import CASE, PRIVATE, WORKSPACE, demo, open_fixture
+from setrya.erasure import Answer, Artifact, run_shared
+from setrya.examples.workspace import CASE, PRIVATE, RETAINED, WORKSPACE, demo, open_fixture
 
 
 class AssessmentTests(unittest.TestCase):
@@ -209,3 +209,99 @@ class AssessmentTests(unittest.TestCase):
                     self.assertIn("No journal boundaries were observed", review)
                 else:
                     self.assertIn("READY FOR APPROVAL", review)
+
+    def _build_client(self, label, bundle):
+        self.source["client"] = "northline"
+        self.source["repositories"] = self.source["repositories"][:1]
+        self.source["repositories"][0].update(receipts=[bundle.name], checks=[])
+        self.plan.write_text(json.dumps(self.source))
+        output = self.root / label
+        assessment.build(self.plan, output, key=self.key)
+        return output
+
+    def _compare(self, approved, candidate, **kwargs):
+        output = self.root / f"review-{candidate.name}"
+        review = assessment_comparison.compare(
+            approved, candidate, client="northline",
+            approved_sha256=sha256((approved / assessment.REPORT).read_bytes()).hexdigest(),
+            output=output, trust={"key": self.key}, key=self.key, **kwargs,
+        )
+        self.assertEqual(assessment_comparison.verify(output, key=self.key), review)
+        return review
+
+    def test_comparison_treats_query_role_as_observed_coverage(self):
+        variant = "What was recorded in the shared handoff?"
+        for label, role in (("approved", "control"), ("candidate", "target")):
+            bundle = self.root / f"receipt-{label}"
+            with open_fixture(shared=True) as (subject, app, _):
+                read = app.read
+
+                def observe(target, caller, conversation, question):
+                    requested = CASE.questions() if question == variant else (question,)
+                    answers = [read(target, caller, conversation, text).text for text in requested]
+                    return Answer(caller, conversation, CASE.route, question, PRIVATE in answers, RETAINED in answers)
+
+                app.read = observe
+                case = replace(CASE, judges=None, **{role + "_variants": (variant,)})
+                self.assertEqual(run_shared(subject, case=case, application=app, mode="deletion", output=bundle)
+                                 ["technical_verdict"], "PASS")
+            self._build_client(label, bundle)
+
+        review = self._compare(self.root / "approved", self.root / "candidate")
+        self.assertIn("SEND BACK FOR REVIEW", review)
+        new, lost = review.split("### Lost observed coverage")
+        digest = sha256(variant.encode()).hexdigest()[:12]
+        self.assertIn(f"question {digest}, erased target · 0 → 3 samples", new)
+        self.assertIn(f"question {digest}, retained control · 3 → 0 samples", lost)
+
+    def test_legacy_assessment_verifies_but_query_roles_need_review(self):
+        bundle = self.root / "receipt"
+        with open_fixture(shared=True) as (subject, app, _):
+            run_shared(subject, case=CASE, application=app, mode="deletion", output=bundle)
+
+        original = assessment_details._drill_surfaces
+
+        def legacy_surfaces(*args):
+            return {(*row[:-2], row[-1]) if row[0] == "query" else row for row in original(*args)}
+
+        with patch.object(assessment_details, "_drill_surfaces", side_effect=legacy_surfaces):
+            previous = self._build_client("approved", bundle)
+        self.assertIn("1 PASS", assessment.verify(previous, key=self.key))
+
+        candidate = self._build_client("candidate", bundle)
+        result = self._compare(previous, candidate)
+        self.assertIn("SEND BACK FOR REVIEW", result)
+        self.assertIn("A supplied assessment lacks query roles.", result)
+
+    def test_comparison_requires_review_for_changed_http_behavior_even_with_a_pin(self):
+        pin = {"format": "setrya.deployment-record.v1", "environment": "staging", "origin": "https://app.example",
+               "tls_sha256": "a" * 64, "build_id": "same-build"}
+        project = assessment._receipt
+        approved = None
+        for label, digest in (("approved", "a" * 64), ("unchanged", "a" * 64), ("changed", "b" * 64)):
+            with self.subTest(label=label):
+                bundle = self.root / f"receipt-{label}"
+                with open_fixture(shared=True) as (subject, app, _):
+                    receipt = run_shared(subject, case=CASE, application=app, mode="deletion", output=bundle)
+                self.assertEqual(receipt["technical_verdict"], "PASS")
+
+                def record_deployment(*args, **kwargs):
+                    row = project(*args, **kwargs)
+                    row["details"]["deployment"] = {"record": pin, "behavior_sha256": digest,
+                                                     "deployment_sha256": "c" * 64, "status": "verified"}
+                    return row
+
+                with patch.object(assessment, "_receipt", side_effect=record_deployment):
+                    directory = self._build_client(label, bundle)
+                if approved is None:
+                    approved = directory
+                    continue
+                review = self._compare(approved, directory, expected_deployment=pin)
+                if label == "unchanged":
+                    self.assertIn("READY FOR APPROVAL", review)
+                    self.assertNotIn("Changed deployment observations", review)
+                else:
+                    self.assertIn("SEND BACK FOR REVIEW", review)
+                    self.assertIn("The HTTP behavior SHA-256 changed.", review)
+                    self.assertIn("Behavior SHA-256 " + "a" * 64, review)
+                    self.assertIn("Behavior SHA-256 " + "b" * 64, review)

@@ -1,5 +1,5 @@
 name: Setrya erasure drill
-description: Catch deleted data resurfacing in AI answers after a background job finishes. Get a PR verdict and replayable receipt.
+description: Catch deleted customer data that a background job writes back into AI answers. PR verdict with a replayable receipt.
 inputs:
   operation:
     description: Run or comment on an erasure drill, inspect changed copy sites or comment on them, or run conformance.
@@ -10,7 +10,7 @@ inputs:
   test-files:
     description: Additional trusted test files to fingerprint, one path per line.
   mode:
-    description: deletion or late-write.
+    description: deletion or write-back. late-write remains accepted in 1.x.
     default: deletion
   output:
     description: New directory for the receipt and evidence.

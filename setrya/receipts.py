@@ -1,4 +1,5 @@
 """Replay erasure receipts using the evidence rules under which each was issued."""
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,8 @@ from setrya.evidence import bundle_manifest
 from setrya.erasure import receipt as v2
 from setrya.erasure import v3_receipt as v3
 from setrya.offboarding.inputs import MAX_JSON_BYTES, read_regular_bytes, require, unique_fields
+
+STALE_WRITE_BACK_LEAD = "Stale write-back: the worker turn at journal entry {entry} wrote a copy captured before deletion."
 
 
 def replay_bytes(directory, raw, *, expected_request=None, expected_job=None,
@@ -96,7 +99,49 @@ def check_scope(receipt, expected_scope):
     require(scope == expected_scope, f"Expected a {expected_scope} receipt.")
 
 
-def summary(receipt):
+def stale_write_back_entry(receipt, bundle):
+    """Return the journal index of the first replayed residual from the held snapshot attempt."""
+    if receipt.get("technical_verdict") != "FAIL":
+        return None
+    folder = Path(bundle)
+    if folder.is_file():
+        folder = folder.parent
+    if receipt.get("profile") == "discovery" and receipt.get("erasure_receipt"):
+        from setrya.discovery.case import DRILL
+        from setrya.receipt_format import RECEIPT
+
+        linked = folder / DRILL
+        raw = read_regular_bytes(linked / RECEIPT, "linked receipt", v2.MAX_BUNDLE_FILE_BYTES)
+        require(sha256(raw).hexdigest() == receipt["erasure_receipt"]["sha256"],
+                "Linked receipt changed after replay.")
+        return stale_write_back_entry(replay_bytes(linked, raw), linked)
+    attribution = receipt.get("write_attribution")
+    if not attribution or receipt.get("race") != "exercised":
+        return None
+    evidence = receipt["evidence"]
+    raw = read_regular_bytes(folder / evidence["file"], "write-back evidence", v2.MAX_BUNDLE_FILE_BYTES)
+    require(sha256(raw).hexdigest() == evidence["sha256"], "Write-back evidence changed after replay.")
+    observed = json.loads(raw, object_pairs_hook=unique_fields)
+    # Hold confirms that this attempt captured its input and paused before writing.
+    attempt = observed["worker"]["held"]
+    immediately, final = observed["immediate"], observed["final"]
+    before_release = {(row["store"], row["key"], row["revision"])
+                      for row in immediately["stored"] + immediately["discovered"] if row and row["exists"]}
+    # A separate canary scan can prove a residual without proving which revision contained it.
+    confirmed = {(row["store"], row["key"], row["revision"])
+                 for row in final["stored"] + final["discovered"] + observed.get("late_residuals", [])
+                 if row and row["target_present"] is True}
+    new_residuals = confirmed - before_release
+    return next((row["journal_entry"] for row in attribution
+                 if row["turn"] == attempt and (row["store"], row["key"], row["revision"]) in new_residuals), None)
+
+
+def write_back_lead(receipt, bundle):
+    entry = stale_write_back_entry(receipt, bundle)
+    return STALE_WRITE_BACK_LEAD.format(entry=entry) if entry is not None else None
+
+
+def summary(receipt, *, bundle=None):
     """Render the verdict, case obligations and recorded producer details."""
     text = _summary(receipt)
     producer = receipt.get("provenance")
@@ -105,6 +150,8 @@ def summary(receipt):
         record = observed["record"]
         lines.append(f"Deployment {observed['status']} · {record['environment']} · {record['origin']} · "
                      f"expected build {record['build_id']}")
+    if bundle is not None and (lead := write_back_lead(receipt, bundle)):
+        lines.insert(0, lead)
     return "\n".join(lines)
 
 
@@ -137,8 +184,8 @@ def exit_code(receipt, *, case_review=False):
     return v2.EXIT[receipt["verdict"]]
 
 
-def report(receipt, *, case_review=False):
-    print(summary(receipt))
+def report(receipt, *, case_review=False, bundle=None):
+    print(summary(receipt, bundle=bundle))
     return exit_code(receipt, case_review=case_review)
 
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.11.0
+
+- Explain stale write-back in the README, root Action description, troubleshooting guide, and glossary.
+- Recognize supported deferred writes in Python copy scans and suggest a write-back drill in PR review.
+- Label a failure as stale write-back when the receipt ties the returned copy to a deferred writer's captured input and recorded write.
+- Test original Celery input delivered by a retry or resumed consumer across deletion.
+- Accept `--mode write-back` in the CLI. The existing `late-write` spelling and evidence stay compatible throughout 1.x.
+- Replace a prior copy scan comment when the latest scan fails. Bind YAML run provenance to the bytes parsed for the case.
+- Send release comparisons back for review when a retained-control probe or pinned HTTP behavior changes.
+
 ## 1.10.0
 
 - Reuse HTTP drill behavior across deployments. Capture the endpoint's TLS certificate fingerprint and application-reported build, with an independent deployment pin for review.

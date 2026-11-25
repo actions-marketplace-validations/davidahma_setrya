@@ -12,7 +12,7 @@ These results apply to the stated configurations. The [Vendor conformance workfl
 | LangGraph 1.2.24, Python `InMemoryStore` with a scored vector index | PASS | PASS | Outside this fixture | Not tested | Unqualified |
 | Mem0 OSS 2.2.1, local Qdrant and SQLite history | PASS | PASS | **FAIL**. The deleted record’s original text remained readable through `Memory.history`. | Not tested | Unqualified |
 
-The pgvector case checks the query plan for the HNSW index. The LangGraph case exercises the in-process Store API. The Mem0 case uses public read and delete APIs, a direct read of SQLite history, and deterministic embeddings. It covers that OSS setup with `infer=False`. The retry calls the delete API again, even when Mem0 signals that the target ID is already missing. Hosted services, parallel worker races, and shared-record rewrites need separate fixtures.
+The pgvector case checks the query plan for the HNSW index. The LangGraph case exercises the in-process Store API. The Mem0 case uses public read and delete APIs, a direct read of SQLite history, and deterministic embeddings. It covers that OSS setup with `infer=False`. The retry calls the delete API again, even when Mem0 signals that the target ID is already missing. Hosted services, stale write-backs, and shared-record rewrites need separate fixtures.
 
 The signed [Graphiti comparison](graphiti-trial.md) covers episode removal and shared-node summaries against Neo4j for two pinned OSS revisions. The [provider readback commands](provider-readback.md) cover Letta archival memory and hosted Mem0 as separate test-project surfaces. Hosted results remain unmeasured for this release.
 

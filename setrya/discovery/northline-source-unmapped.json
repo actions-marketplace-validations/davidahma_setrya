@@ -15,7 +15,7 @@
   "subject_ref": "559eee908aa8dc42c31df411ec000e0fd34027d7e1469b015987f6a24cd35173",
   "classification": "restricted",
   "environment": "northline-fixture",
-  "revision": "82a1f4e75a3c5e24e463544e8bd2751858891072",
+  "revision": "5de8922f7bcaad7484d89b4d6ddd98a638d61f00",
   "conversation": "case-F42",
   "route": "/investigations/case-F42/ask",
   "callers": [

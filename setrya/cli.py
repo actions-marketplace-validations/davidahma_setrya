@@ -327,7 +327,7 @@ def main(argv=None) -> int:
                                         expected_app_commit=getattr(args, "expect_app_commit", None),
                                         expected_deployment=read_deployment_pin(getattr(args, "expect_deployment", None)))
                 check_scope(receipt, getattr(args, "scope", None))
-                return receipt_report(receipt, case_review=getattr(args, "case_review", False))
+                return receipt_report(receipt, case_review=getattr(args, "case_review", False), bundle=directory)
             if getattr(args, "scope", None):
                 raise InputError("--scope requires a deletion receipt.")
             if getattr(args, "expect_request", None) or getattr(args, "expect_job", None):
