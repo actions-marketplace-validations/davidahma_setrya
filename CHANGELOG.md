@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.12.0
+
+- Record who operated a conformance fixture. Review the signer and replayed evidence separately, or verify a linked rerun under a separate signer policy.
+- Walk through attaching a signed deletion receipt, its control reference, and open items to a governance ticket.
+
 ## 1.11.0
 
 - Explain stale write-back in the README, root Action description, troubleshooting guide, and glossary.

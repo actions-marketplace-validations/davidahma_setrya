@@ -225,6 +225,10 @@ def receipt_summary(bundle, *, audience="reviewer", output_format="text", case_i
             else:
                 items.append(f"- {label} ({kind})  owner {owner}  follow-up {date}")
         sections.append(("Open items", items or ["No open items recorded."]))
+    if receipt.get("profile") == VENDOR and audience != "engineer":
+        from ..vendor.report import execution_lines
+
+        sections.append(("Execution and review", execution_lines(receipt)))
     if controls:
         sections.append(("Customer control references", ["The case owner supplied these references.", *controls]))
     markdown = output_format in ("md", "markdown")

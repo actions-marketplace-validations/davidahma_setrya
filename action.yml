@@ -17,6 +17,8 @@ inputs:
     default: setrya-receipt
   conformance-target:
     description: Disposable backend to check (pgvector, langgraph-store, or mem0).
+  conformance-operator:
+    description: Optional operator identifier recorded with a conformance self-check.
   conformance-key:
     description: Path to a Cosign 3 signing key on the runner. Leave empty only when using keyless signing.
   conformance-keyless:
@@ -73,6 +75,7 @@ runs:
         SETRYA_MODE: ${{ inputs.mode }}
         SETRYA_OUTPUT: ${{ inputs.output }}
         SETRYA_CONFORMANCE_TARGET: ${{ inputs.conformance-target }}
+        SETRYA_CONFORMANCE_OPERATOR: ${{ inputs.conformance-operator }}
         SETRYA_CONFORMANCE_KEY: ${{ inputs.conformance-key }}
         SETRYA_CONFORMANCE_KEYLESS: ${{ inputs.conformance-keyless }}
       run: python -I "$GITHUB_ACTION_PATH/scripts/action.py" "$SETRYA_OPERATION"

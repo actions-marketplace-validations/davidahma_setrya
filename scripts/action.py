@@ -178,7 +178,8 @@ def conformance():
         if target not in TARGETS or keyless not in ("true", "false") or bool(key) == (keyless == "true"):
             raise ValueError("choose a supported conformance target and one signing policy")
         receipt = run_and_sign(target, Path(os.environ["SETRYA_OUTPUT"]).absolute(),
-                               key=Path(key) if key else None)
+                               key=Path(key) if key else None,
+                               operator=os.getenv("SETRYA_CONFORMANCE_OPERATOR") or None)
         if receipt is not None:
             code, review = exit_code(receipt), receipt["review_status"]
             details = vendor_summary(receipt)

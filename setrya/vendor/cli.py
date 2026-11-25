@@ -3,7 +3,9 @@
 import argparse
 from pathlib import Path
 from shlex import join
+from uuid import uuid4
 
+from setrya import __version__
 from setrya.casework import profiles
 from setrya.core import signing
 from setrya.drill import InputError
@@ -12,7 +14,8 @@ from setrya.receipts import exit_code, replay
 
 from . import hosted
 from .fixtures import run_fixture
-from .report import TARGETS, summary
+from .report import TARGETS, operator_label, summary
+from .review import DETACHED_SIGNATURE, KEYLESS_SIGNATURE, rerun_digest, review as review_result
 
 
 def command(argv):
@@ -21,6 +24,17 @@ def command(argv):
     run = commands.add_parser("run", help="check a disposable backend and sign its evidence", allow_abbrev=False)
     run.add_argument("--target", choices=TARGETS, required=True)
     run.add_argument("--output", type=Path, default=Path("setrya-conformance"))
+    run.add_argument("--operator", help="record the test operator as a lowercase identifier")
+    run.add_argument("--rerun-of", type=Path, help="run the fixture again and link to an original self-check")
+    review = commands.add_parser("review", help="authenticate and replay one result or a linked rerun", allow_abbrev=False)
+    review.add_argument("directory", type=Path)
+    review.add_argument("--key", type=Path, help="independently trusted Cosign public key")
+    review.add_argument("--identity", help="exact trusted Sigstore certificate identity")
+    review.add_argument("--issuer", help="exact trusted Sigstore OIDC issuer")
+    review.add_argument("--trusted-root", type=Path, help="independently provisioned Sigstore root JSON")
+    review.add_argument("--expect-operator", help="expected operator from your review policy")
+    review.add_argument("--against", type=Path, help="original self-check for a linked rerun")
+    review.add_argument("--against-key", type=Path, help="separate trusted Cosign key for the original self-check")
     baseline = commands.add_parser("baseline", help="record a read-only baseline in an authorized test project")
     baseline.add_argument("--target", choices=tuple(hosted.SURFACES), required=True)
     baseline.add_argument("--synthetic", action="store_true", required=True, help="use only synthetic target and control records")
@@ -39,6 +53,12 @@ def command(argv):
         signer.add_argument("--keyless", action="store_true", help="sign online with Cosign and an OIDC identity")
 
     args = parser.parse_args(argv)
+    if args.operation == "review":
+        result, details = review_result(args.directory, key=args.key, identity=args.identity, issuer=args.issuer,
+                                        trusted_root=args.trusted_root, expect_operator=args.expect_operator,
+                                        against=args.against, against_key=args.against_key)
+        print(summary(result, execution_review=details))
+        return exit_code(result)
     if args.operation == "baseline":
         observation = hosted.capture(args.target, args.scope, args.record, args.retain, args.output)
         if observation == {"target": True, "retained": True}:
@@ -50,7 +70,7 @@ def command(argv):
         result = _sign_evidence(lambda: hosted.follow(args.baseline, args.scope, args.record, args.retain),
                                 args.output, key=args.key)
     else:
-        result = run_and_sign(args.target, args.output, key=args.key)
+        result = run_and_sign(args.target, args.output, key=args.key, operator=args.operator, rerun_of=args.rerun_of)
     if result is None:
         return 2
     print(summary(result))
@@ -58,8 +78,13 @@ def command(argv):
     return exit_code(result)
 
 
-def run_and_sign(target, output, *, key):
-    return _sign_evidence(lambda: run_fixture(target), output, key=key)
+def run_and_sign(target, output, *, key, operator=None, rerun_of=None):
+    if operator is not None:
+        operator_label(operator)
+    execution = {"operator": operator, "run_id": str(uuid4()), "setrya_version": __version__}
+    if rerun_of is not None:
+        execution["rerun_of"] = rerun_digest(rerun_of, target, operator)
+    return _sign_evidence(lambda: {**run_fixture(target), "execution": execution}, output, key=key)
 
 
 def _sign_evidence(observe, output, *, key):
@@ -68,7 +93,7 @@ def _sign_evidence(observe, output, *, key):
     with profiles.new_bundle(output) as folder:
         result = profiles.issue("vendor-conformance", observe(), folder)
         manifest = folder / RECEIPT
-        args = argparse.Namespace(receipt=manifest, bundle=folder / ("conformance.sig" if key else "sigstore.json"),
+        args = argparse.Namespace(receipt=manifest, bundle=folder / (DETACHED_SIGNATURE if key else KEYLESS_SIGNATURE),
                                   key=key, offboarding_action="sign-receipt")
         code = signing.run(args, validate=lambda raw: profiles.replay_bytes(folder, raw))
         if code == 0:

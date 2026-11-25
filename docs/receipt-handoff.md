@@ -2,6 +2,8 @@
 
 A support app has erased a customer's note. Its customer success team needs evidence that the note and its derived summary are absent. The issuer checks the mapped PostgreSQL keys. A separate reviewer verifies the signed receipt without connecting to PostgreSQL.
 
+For an example of attaching signed evidence to a governance ticket with a control reference and follow-up owner, use the [governance handoff](governance-handoff.md).
+
 ## Run the synthetic PostgreSQL handoff
 
 Use Bash, Python 3.11 or later, Docker, OpenSSL and Cosign 3. Use a clean directory and install Setrya with the PostgreSQL extra. The example uses a new loopback-only database and removes it once the original observations have been saved.
