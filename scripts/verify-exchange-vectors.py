@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from setrya.casework import exchange, observe_deletion
 from setrya.casework.observed import LEGACY_FORMAT
-from setrya.casework.profiles import OBSERVED, issue
+from setrya.casework.profiles import OBSERVED, VENDOR, issue
 from setrya.core import receipt_v3
 from setrya.erasure.journal import CopyJournal
 from setrya.erasure.subject import Subject
@@ -155,6 +155,23 @@ def _historical_examples(scratch):
     yield folder.name, False
 
 
+def _vendor_example(scratch):
+    folder = scratch / "vendor-residual"
+    folder.mkdir()
+    issue(VENDOR, {
+        "target": "mem0", "observed_at": "2026-11-25T10:00:00+00:00",
+        "versions": {"mem0ai": "1", "qdrant-client": "1"}, "error": None,
+        "observations": {
+            phase: {surface: {"target": phase == "baseline" or surface == "history", "retained": True}
+                    for surface in ("store", "index", "history")}
+            for phase in ("baseline", "after_delete", "after_retry")
+        },
+        "execution": {"operator": "vector-fixture", "run_id": "0b2f88b1-47ad-4723-a8fe-0eab52bc995e",
+                      "setrya_version": "1.12.0"},
+    }, folder)
+    return folder
+
+
 def build(output, scratch):
     output.mkdir()
     key, public_key = _key(scratch / "signer")
@@ -176,6 +193,12 @@ def build(output, scratch):
                       system="synthetic-support", version="1", synthetic=synthetic)
         cases.append({"name": name, "code": None, "verdict": "PASS",
                       **({} if synthetic else {"ticket": "EXCHANGE-42", "frame": frame_digest})})
+    vendor = _vendor_example(scratch)
+    exchange.pack(vendor, output=output / vendor.name, key=key, system="mem0", version="1")
+    cases.append({"name": vendor.name, "code": None, "verdict": "FAIL",
+                  "detail": ["Conformance fixture · mem0 · recorded operator vector-fixture",
+                             "Authentication applies to the exchange issuer.",
+                             "Recorded versions mem0ai 1, qdrant-client 1", "FAIL · history"]})
     record = _deployment_example(scratch)
     exchange.pack(scratch / "deployed", output=output / "deployed", key=key,
                   system="synthetic-support", version="1", synthetic=True)
@@ -222,6 +245,14 @@ def build(output, scratch):
     swapped = variant("swapped-evidence-bytes", "EVIDENCE_KIND_MISMATCH")
     (swapped / exchange.OBSERVED_EVIDENCE).write_bytes((output / "open-items" / exchange.DRILL_EVIDENCE).read_bytes())
     resign(swapped, rebind(swapped))
+    swapped = variant("vendor-declared-with-observed-profile", "EVIDENCE_KIND_MISMATCH", source=vendor.name)
+    (swapped / exchange.OBSERVED_EVIDENCE).write_bytes((output / "passed" / exchange.OBSERVED_EVIDENCE).read_bytes())
+    resign(swapped, rebind(swapped, original=document(output / "passed" / exchange.RECEIPT)))
+    altered = variant("vendor-outcome-claim", "CLAIMS_MISMATCH", source=vendor.name)
+    manifest = document(altered / exchange.MANIFEST)
+    manifest["vendor"]["checks"][2]["status"] = "PASS"
+    resign(altered, manifest)
+    variant("vendor-ticket-pin", "TICKET_ID_MISMATCH", source=vendor.name, ticket="EXCHANGE-42")
     changed = variant("evidence-digest", "EVIDENCE_DIGEST_MISMATCH")
     with (changed / exchange.OBSERVED_EVIDENCE).open("ab") as stream:
         stream.write(b"\n")

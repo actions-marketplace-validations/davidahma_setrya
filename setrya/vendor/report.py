@@ -10,7 +10,13 @@ TARGETS = {
     "pgvector": ("store", "index"),
     "langgraph-store": ("store", "index"),
     "mem0": ("store", "index", "history"),
+    "crewai-memory": ("store", "index"),
+    "cognee-dataset": ("dataset-catalog", "ingested-text-files"),
+    "google-adk-session": ("session-history",),
+    "openai-agents-session": ("session-history",),
 }
+LOCAL_AGENT_TARGETS = frozenset(("crewai-memory", "cognee-dataset", "google-adk-session", "openai-agents-session"))
+OBSERVATION_FILE = "observations.json"
 PHASES = ("baseline", "after_delete", "after_retry")
 READBACK_PHASES = ("baseline", "after_delete")
 UNTESTED = {
@@ -23,6 +29,10 @@ SETUP = {
     "pgvector": ("psycopg", "postgresql", "vector"),
     "langgraph-store": ("langgraph", "langgraph-checkpoint"),
     "mem0": ("mem0ai", "qdrant-client"),
+    "crewai-memory": ("crewai", "lancedb"),
+    "cognee-dataset": ("cognee", "sqlalchemy", "aiosqlite", "sqlite"),
+    "google-adk-session": ("google-adk", "sqlalchemy", "aiosqlite", "sqlite"),
+    "openai-agents-session": ("openai-agents", "sqlite"),
 }
 ERRORS = {
     None: None,
@@ -32,14 +42,39 @@ ERRORS = {
 }
 
 
+def operator_label(value):
+    require(isinstance(value, str) and re.fullmatch(r"[a-z0-9][a-z0-9_.@/+-]{0,79}", value),
+            "Use a lowercase operator identifier of up to 80 ASCII characters.")
+    return value
+
+
+def _validate_execution(execution):
+    fields(execution, "operator run_id setrya_version", ("rerun_of",))
+    operator = execution["operator"]
+    if operator is not None:
+        operator_label(operator)
+    run = execution["run_id"]
+    require(isinstance(run, str) and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", run),
+            "Invalid fixture execution ID.")
+    version = execution["setrya_version"]
+    require(isinstance(version, str) and re.fullmatch(r"[A-Za-z0-9.+_-]{1,80}", version),
+            "Invalid Setrya fixture version.")
+    if "rerun_of" in execution:
+        require(operator is not None, "A linked rerun needs a recorded operator.")
+        sha(execution["rerun_of"])
+
+
 def derive(evidence):
-    fields(evidence, "target observed_at versions observations error", ("readback",))
+    fields(evidence, "target observed_at versions observations error", ("readback", "execution"))
     observed_at = evidence["observed_at"]
     finish = stamp(observed_at)
     target = evidence["target"]
     require(isinstance(target, str) and (target in TARGETS or target in SURFACES), "Unsupported conformance target.")
     hosted = target in SURFACES
     require(hosted == ("readback" in evidence), "Provider readback needs its own observations and scope.")
+    if "execution" in evidence:
+        require(not hosted, "Linked execution applies only to built-in vendor fixtures.")
+        _validate_execution(evidence["execution"])
     if hosted:
         readback = evidence["readback"]
         fields(readback, "baseline_at scope_sha256")
@@ -101,6 +136,9 @@ def derive(evidence):
     if hosted:
         checks.append({"surface": "provider-internals", "status": "NOT TESTED",
                        "reason": "The API readback did not inspect provider-internal storage or retention."})
+    elif target in LOCAL_AGENT_TARGETS:
+        checks.append({"surface": "provider-internals", "status": "NOT TESTED",
+                       "reason": "The local fixture did not inspect hosted storage or provider retention."})
     checks.extend({"surface": name, "status": "NOT TESTED", "reason": reason} for name, reason in UNTESTED.items())
 
     failures = [f"{row['surface']}: {row['reason']}" for row in checks if row["status"] == "FAIL"]
@@ -122,14 +160,31 @@ def derive(evidence):
     return {"scope": "vendor", "target": target, "observed_at": observed_at, "versions": versions,
             "checks": checks, "technical_verdict": verdict, "review_status": review,
             "certification": "UNQUALIFIED", "failures": failures, "gaps": gaps, "open_items": open_items,
+            **({"execution": evidence["execution"]} if "execution" in evidence else {}),
             **({"readback": readback} if hosted else {})}
 
 
-def summary(receipt):
+def execution_lines(receipt, *, signer=None, review_scope="evidence replay"):
+    """Describe recorded execution separately from any signer authorization."""
+    execution = receipt.get("execution") or {}
+    origin = "Provider readback" if "readback" in receipt else "Self-check"
+    if "rerun_of" in execution:
+        origin = "Linked rerun recorded"
+    lines = [f"Execution {origin}", f"Recorded operator {execution.get('operator') or 'unrecorded'}"]
+    if "run_id" in execution:
+        lines.extend((f"Execution ID {execution['run_id']}", f"Fixture Setrya version {execution['setrya_version']}"))
+    if "rerun_of" in execution:
+        lines.append(f"Linked original receipt SHA-256 {execution['rerun_of']}")
+    lines.append(f"Signer verified {signer}" if signer else "Signer unauthenticated")
+    return [*lines, f"Review scope {review_scope}"]
+
+
+def summary(receipt, *, execution_review=None):
     versions = ", ".join(f"{name} {version}" for name, version in sorted(receipt["versions"].items()))
     label = "API readback" if "readback" in receipt else "Fixture"
     lines = [f"{label} verdict {receipt['technical_verdict']} · Setrya Verified status {receipt['certification']}",
              f"Target {receipt['target']}" + (f" ({versions})" if versions else ".")]
+    lines.extend(execution_lines(receipt) if execution_review is None else execution_review)
     if "readback" in receipt:
         lines.append("Readback scope covers the declared API view after an operator-reported deletion.")
     lines.extend(f"{row['status']}  {row['surface']}  {row['reason']}" for row in receipt["checks"])

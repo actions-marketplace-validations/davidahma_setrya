@@ -65,17 +65,20 @@ This review runs without LangGraph or a connection to the application. Replay th
 
 ## Connect your own fixture
 
+Use a fresh environment for the current starter and the `write-back` spelling.
+
 ```sh
+python -m pip install 'setrya[erasure]==1.11.0'
 setrya discovery init --output connection
 setrya discovery run --finding connection/finding.json --mapping connection/mapping.json \
-  --fixture connection/fixture.py --mode late-write --output connected-run
+  --fixture connection/fixture.py --mode write-back --output connected-run
 ```
 
 The generated example is connected to the local synthetic application. To adapt it, start with one approved test case and a disposable tenant.
 
 1. Replace `finding.json` with a single active Macie classification finding for a specific S3 object generation. The importer reads the finding ID, classification type, observation time and object reference. The normalized case uses digests for the object and finding. Keep the raw finding private. [AWS finding schema](https://docs.aws.amazon.com/macie/latest/user/findings-publish-event-schemas.html)
 2. Have the case owner map the source to the test subject, approved handling, expected source revision and application commit. List both caches, the checkpoint, the answer route, and any external service that needs review. Give each entry an owner.
-3. Replace `open_fixture(binding)` in `fixture.py` with a context manager that connects to your test deployment. Supply the runtime’s own subject, environment and application revision. Implement direct inspection and authenticated reads. In `erase_approved(subject, source, actions)`, compare the approved source revision at write time and change only authorized keys. The sample commits its source, checkpoint, summary and both cache changes in one SQLite transaction. In late-write mode, connect worker hold, release, and safe cancellation. [Shared erasure SDK](erasure-v3.md)
+3. Replace `open_fixture(binding)` in `fixture.py` with a context manager that connects to your test deployment. Supply the runtime’s own subject, environment and application revision. Implement direct inspection and authenticated reads. In `erase_approved(subject, source, actions)`, compare the approved source revision at write time and change only authorized keys. The sample commits its source, checkpoint, summary and both cache changes in one SQLite transaction. For write-back testing, connect the worker's capture, hold, release, and safe cancellation. [Shared erasure SDK](erasure-v3.md)
 4. Rerun the fixture for the next change to that deployment and return its new bundle to the case. Each run needs a new output directory.
 
 The bundled input follows the AWS event shape. The app models that object’s contents as a seeded SQLite record. The trial establishes how Setrya handles a pinned finding and a real application response across the declared services. AWS object deletion, platform-wide discovery, external ticket delivery, and provider-side erasure require their own integrations and evidence.

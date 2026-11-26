@@ -61,7 +61,7 @@ Run `check_erasure_adapter` only against fixtures you can erase. It checks the e
 
 ## Async LangGraph applications
 
-Import `arun_shared` from `setrya.erasure.asyncio` to test an async shared investigation. Supply the same case, required stores, mode, external items and journal as the synchronous runner. Implement its application methods as coroutines. The checker calls the ASGI serving path and PostgreSQL through your async hooks on the event loop that owns those clients. Both runners produce the same replayable receipt. In a late-write drill, the application must hold a real task before its write and await completion of the released task and any downstream refreshes. [Shared investigation](shared-investigation.md)
+Import `arun_shared` from `setrya.erasure.asyncio` to test an async shared investigation. Supply the same case, required stores, mode, external items and journal as the synchronous runner. Implement its application methods as coroutines. The checker calls the ASGI serving path and PostgreSQL through your async hooks on the event loop that owns those clients. Both runners produce the same replayable receipt. For a write-back drill, the application must hold a real task before its write and await completion of the released task and any downstream refreshes. [Shared investigation](shared-investigation.md)
 
 ```python
 from setrya.erasure.asyncio import arun_shared

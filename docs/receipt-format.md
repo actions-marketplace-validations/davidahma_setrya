@@ -18,6 +18,10 @@ Replay establishes what the captured reads and exhibits support. Authenticate th
 
 The draft exchange wraps an original person receipt so another team can authenticate the issuer and replay the evidence offline. It supports synthetic drills and observed-deletion receipts. [Draft v1 exchange](receipt-exchange.md)
 
+For conformance results, the operator identifies the recorded execution. `setrya conformance review` verifies the signer and replays the evidence. Comparing a linked rerun also checks that the original and rerun have separate trusted signing keys, separate captures, and matching tested versions. [Conformance review](vendor-conformance.md#review-who-ran-the-test) · [Attach a receipt to a governance ticket](governance-handoff.md)
+
+When captured evidence links a deferred writer to a returned copy, the review labels the failure as a stale write-back. The receipt includes the observations supporting that attribution. [Write-back evidence](write-back.md) · [Glossary](glossary.md)
+
 ## Historical v1 tenant receipts
 
 A receipt records the evidence for one previously issued deletion request. The [JSON Schema](../setrya/offboarding/receipt-v1.schema.json) defines the wire format. Setrya and Axiom v0.3.2 use the same version. The field names, types, status values and meanings are frozen. A future incompatible format will have a different version and its own schema. Setrya will continue to accept v1 in `verify-receipt`.

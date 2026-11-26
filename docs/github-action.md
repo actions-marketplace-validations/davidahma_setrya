@@ -10,17 +10,17 @@ Start in the root of a GitHub repository with Python 3.11 or later on macOS or L
 git switch -c try-setrya
 python3 -m venv .venv-setrya
 . .venv-setrya/bin/activate
-python -m pip install setrya==1.10.0
+python -m pip install setrya==1.13.0
 setrya init --output setrya-case
 setrya doctor --starter setrya-case/test_erasure.py --mode deletion
 mkdir -p .github/workflows
-curl -fsSL https://github.com/davidahma/setrya/releases/download/v1.10.0/setrya-quickstart.yml -o .github/workflows/setrya.yml
+curl -fsSL https://github.com/davidahma/setrya/releases/download/v1.13.0/setrya-quickstart.yml -o .github/workflows/setrya.yml
 git add setrya-case/test_erasure.py .github/workflows/setrya.yml
 git commit -m "Run the Setrya deletion check on pull requests"
 git push -u origin HEAD
 ```
 
-Open a PR against your default branch. The [release workflow](https://github.com/davidahma/setrya/releases/download/v1.10.0/setrya-quickstart.yml) installs `setrya==1.10.0` and runs the SHA-pinned Setrya Action in `deletion` mode. It asks as the sample reader, calls the deletion operation, and checks the store and the answers again. No worker hook is required.
+Open a PR against your default branch. The [release workflow](https://github.com/davidahma/setrya/releases/download/v1.13.0/setrya-quickstart.yml) installs `setrya==1.13.0` and runs the SHA-pinned Setrya Action in `deletion` mode. It asks as the sample reader, calls the deletion operation, and checks the store and the answers again. No worker hook is required.
 
 In the PR’s **Checks** tab, open the **Setrya erasure** run. Expect **PASS · READY_FOR_REVIEW** and the `setrya-receipt` artifact. On a same-repository PR, each push updates one verdict comment. It links to the receipt, names any observed failure or evidence gap and identifies outstanding review items. The artifact contains the underlying store and caller observations. Fork PRs get the check summary and artifact; the comment job requires write permission and runs separately. [Example PR comment](https://github.com/davidahma/setrya/pull/38#issuecomment-7065545463)
 
@@ -58,9 +58,9 @@ setrya replay desk-receipt
 
 Commit the application fixture, the starter edit and the job’s dependency change. Push to the same PR. In this example the duty agent can see depot code `Harbor-17` before deletion, then loses it while still getting `Thursday` for dispatch. If the deletion route removes the row but leaves the old answer cached, the drill returns **FAIL · RESIDUAL_FOUND**. [Follow the sample, application failure and fix on one PR](https://github.com/davidahma/setrya/pull/38)
 
-## Add the worker race
+## Test a stale write-back
 
-The first PR establishes what happens after ordinary deletion. To test a delayed write, connect the fixture's worker hooks, then change the workflow's `mode: deletion` to `mode: late-write`. Setrya holds the worker before its write, runs the deletion, releases it and checks again. A missing checkpoint yields **NOT TESTED**. [Worker and observation contract](erasure-v3.md#required-evidence)
+The first PR establishes what happens after ordinary deletion. Connect the deferred writer's hooks and use `mode: write-back`. Setrya holds the writer after it reads the source, runs the deletion, then releases it and checks again. A missing checkpoint yields **NOT TESTED**. A FAIL with a witnessed stale write-back opens with that finding in the PR comment. [Worker and observation contract](erasure-v3.md#required-evidence) · [Fix a write-back](fix-write-back.md)
 
 The Action returns 0 for PASS, 1 for FAIL, 2 for ERROR and 3 for NOT TESTED. The workflow keeps verified receipts on failure. To include outstanding provider or retention obligations in the release decision, use `setrya replay . --case-review`. Both jobs pin the Action by its full commit SHA. The run rejects a mismatched installed Setrya version before opening the fixture. For GitHub Enterprise Server, use a runner, checkout and artifact uploader supported by your server version. The comment uses the runner’s GitHub API and web URLs. Uploaders without an artifact ID still give reviewers the workflow run link. [GitHub artifact compatibility](https://github.com/actions/upload-artifact#ghes-support)
 

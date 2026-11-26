@@ -22,7 +22,17 @@ COPY_LABELS = {
     "memory": ("agent memory", "agent-memory"), "model-state": ("stateful model", "provider-conversation"),
     "trace": ("trace export", "trace-store"),
 }
+COPY_WRITERS = {
+    "celery": "Celery task", "rq": "RQ job", "dramatiq": "Dramatiq actor", "asyncio": "asyncio task or callback",
+    "retry": "retry decorator", "temporal": "Temporal activity", "langmem": "LangMem reflection",
+    "crewai": "CrewAI background memory save",
+}
 COPY_ROWS = 10
+COPY_SCAN_ERROR = "error"
+COPY_SCAN_ERROR_DETAILS = "**Setrya copy scan · ERROR**\n\nNo copy review is available for this commit. See the workflow run."
+# Keep the write-token job independent of the installed package and untrusted checkout.
+WRITE_BACK = "Stale write-back: the worker turn at journal entry {entry} wrote a copy captured before deletion."
+MAX_JOURNAL_OBSERVATIONS = 16384
 # Only these public descriptions can cross from fixture execution into the privileged comment job.
 REASONS = {
     "answer": ("The endpoint returned the erased finding", "answers"),
@@ -79,23 +89,37 @@ def signals(receipt):
         counts["error", "case"] = len(receipt["errors"])
     return [[kind, phase, min(n, 9999)] for (kind, phase), n in sorted(counts.items())]
 
-def detail_lines(encoded):
+def _details(encoded, code):
     if len(encoded) > 4096:
         raise ValueError("oversized evidence summary")
     rows = json.loads(encoded or "[]")
-    if not isinstance(rows, list) or len(rows) > len(REASONS) * len(PHASES):
+    if not isinstance(rows, list) or len(rows) > len(REASONS) * len(PHASES) + 1:
         raise ValueError("invalid evidence summary")
-    lines = []
+    lines, stale_entry = [], None
     for row in rows:
         if type(row) is not list or len(row) != 3:
             raise ValueError("invalid evidence row")
         kind, phase, n = row
+        if kind == "write-back":
+            if (stale_entry is not None or code != "1" or phase != "case"
+                    or type(n) is not int or not 0 <= n < MAX_JOURNAL_OBSERVATIONS):
+                raise ValueError("invalid stale write-back signal")
+            stale_entry = n
+            continue
         if kind not in REASONS or phase not in PHASES or type(n) is not int or not 1 <= n <= 9999:
             raise ValueError("invalid evidence summary")
         label, group = REASONS[kind]
         location = f" (`erasure-evidence.json#/{phase}/{group}`)" if group and phase != "case" else ""
         lines.append(f"- {label} · {PHASES[phase]} ({n}){location}")
-    return "\n".join(lines)
+    return stale_entry, "\n".join(lines)
+
+def detail_lines(encoded):
+    return _details(encoded, None)[1]
+
+def receipt_details(code, review, encoded):
+    stale_entry, details = _details(encoded, code)
+    lead = WRITE_BACK.format(entry=stale_entry) if stale_entry is not None else ""
+    return "\n\n".join(filter(None, (lead, summary(code, review), details)))
 
 def append(variable, message):
     with Path(os.environ[variable]).open("a", encoding="utf-8") as out:
@@ -118,21 +142,25 @@ def run():
     else:
         try:
             from setrya.erasure.cli import run_person_starter
-            from setrya.receipts import report
+            from setrya.erasure.modes import evidence_mode
+            from setrya.receipts import report, stale_write_back_entry
             test_files = [Path(line.strip()) for line in os.environ.get("SETRYA_TEST_FILES", "").splitlines()
                           if line.strip()]
-            code, receipt = run_person_starter(Path(os.environ["SETRYA_STARTER"]), os.environ["SETRYA_MODE"], folder,
+            mode = evidence_mode(os.environ["SETRYA_MODE"])
+            code, receipt = run_person_starter(Path(os.environ["SETRYA_STARTER"]), mode, folder,
                                                test_files=test_files)
             if receipt is not None:
-                report(receipt)
+                report(receipt, bundle=folder)
                 review = receipt["review_status"]
                 rows = signals(receipt)
+                if code == 1 and (entry := stale_write_back_entry(receipt, folder)) is not None:
+                    rows.insert(0, ["write-back", "case", entry])
         except Exception as exc:
             print(f"Setrya action error ({type(exc).__name__}).", file=sys.stderr)
             code, review, rows = 2, "UNAVAILABLE", []
     encoded = json.dumps(rows, separators=(",", ":"))
     append("GITHUB_OUTPUT", f"exit-code={code}\nreview-status={review}\nevidence-summary={encoded}")
-    append("GITHUB_STEP_SUMMARY", summary(str(code), review) + "\n\n" + detail_lines(encoded))
+    append("GITHUB_STEP_SUMMARY", receipt_details(str(code), review, encoded))
     return code
 
 def conformance():
@@ -150,7 +178,8 @@ def conformance():
         if target not in TARGETS or keyless not in ("true", "false") or bool(key) == (keyless == "true"):
             raise ValueError("choose a supported conformance target and one signing policy")
         receipt = run_and_sign(target, Path(os.environ["SETRYA_OUTPUT"]).absolute(),
-                               key=Path(key) if key else None)
+                               key=Path(key) if key else None,
+                               operator=os.getenv("SETRYA_CONFORMANCE_OPERATOR") or None)
         if receipt is not None:
             code, review = exit_code(receipt), receipt["review_status"]
             details = vendor_summary(receipt)
@@ -162,36 +191,60 @@ def conformance():
 
 def copy_signals(report):
     pending = [row for row in report["sites"] if row["status"] == "needs-review"]
+    pending.sort(key=lambda row: "writer" not in row)
     rows = []
     for row in pending:
         path = quote(row["path"], safe="/._-")
         if len(path) <= 220 and len(rows) < COPY_ROWS:
-            rows.append([path, row["line"], row["kind"], row["site_id"]])
-    return [len(pending), rows, report["map_changed"]]
+            item = [path, row["line"], row["kind"], row["site_id"]]
+            if "writer" in row:
+                item.append(row["writer"])
+            rows.append(item)
+    signals = [len(pending), rows, report["map_changed"]]
+    if background := sum("writer" in row for row in pending):
+        signals.append(background)
+    return signals
 
 def copy_details(encoded):
+    if encoded == COPY_SCAN_ERROR:
+        return COPY_SCAN_ERROR_DETAILS
     if not encoded or len(encoded) > 4096:
         raise ValueError("invalid copy-site summary")
     data = json.loads(encoded)
-    if (type(data) is not list or len(data) != 3 or type(data[0]) is not int or not 0 <= data[0] <= 512
+    if (type(data) is not list or len(data) not in (3, 4) or type(data[0]) is not int or not 0 <= data[0] <= 512
             or type(data[1]) is not list or len(data[1]) > min(data[0], COPY_ROWS) or type(data[2]) is not bool):
         raise ValueError("invalid copy-site summary")
-    count, rows, map_changed = data
+    count, rows, map_changed = data[:3]
+    background = data[3] if len(data) == 4 else 0
+    if type(background) is not int or not 0 <= background <= count:
+        raise ValueError("invalid deferred writer count")
     if not count:
         lines = ["**Setrya copy scan · No new copy sites requiring review within scan scope**"]
     else:
         lines = [f"**Setrya copy scan · {count} possible copy site(s) need review**", ""]
+    if background:
+        lines += ["This PR adds a potential background writer for customer data. Hold it across a deletion.", ""]
+    shown_writers = 0
     for row in rows:
-        if type(row) is not list or len(row) != 4:
+        if type(row) is not list or len(row) not in (4, 5):
             raise ValueError("invalid copy-site row")
-        path, line, kind, site_id = row
+        path, line, kind, site_id = row[:4]
         if (not isinstance(path, str) or not re.fullmatch(r"[A-Za-z0-9./_~%+-]{1,220}", path)
                 or any(part in ("", ".", "..") for part in path.split("/"))
                 or type(line) is not int or not 0 < line <= 524288
                 or not isinstance(kind, str) or kind not in COPY_LABELS
                 or not isinstance(site_id, str) or not re.fullmatch(r"[0-9a-f]{64}", site_id)):
             raise ValueError("invalid copy-site row")
-        lines.append(f"- `{path}:{line}` · {COPY_LABELS[kind][0]}")
+        detail = f"- `{path}:{line}` · {COPY_LABELS[kind][0]}"
+        if len(row) == 5:
+            writer = row[4]
+            if not isinstance(writer, str) or writer not in COPY_WRITERS:
+                raise ValueError("invalid deferred writer")
+            shown_writers += 1
+            detail += f" · deferred writer ({COPY_WRITERS[writer]})"
+        lines.append(detail)
+    if shown_writers > background or (count == len(rows) and shown_writers != background):
+        raise ValueError("inconsistent deferred writer count")
     if count > len(rows):
         lines += ["", f"See the JSON report for all {count} sites."]
     if map_changed:
@@ -201,6 +254,8 @@ def copy_details(encoded):
             {"site_id": rows[0][3], "store": COPY_LABELS[rows[0][2]][1],
              "key": "replace-with-disposable-test-key", "test": "setrya-case/test_erasure.py"},
         ]}
+        if len(rows[0]) == 5:
+            starter["sites"][0]["mode"] = "late-write"
         lines += ["", "Starter mapping for the first site", "", "```json", json.dumps(starter, indent=2), "```"]
     return "\n".join(lines)
 
@@ -217,7 +272,8 @@ def copy_scan():
         publish_new(report, Path(os.environ["SETRYA_COPY_OUTPUT"]))
     except Exception as exc:
         print(f"Setrya copy scan error ({type(exc).__name__}).", file=sys.stderr)
-        append("GITHUB_OUTPUT", "exit-code=2")
+        append("GITHUB_OUTPUT", f"exit-code=2\ncopy-summary={COPY_SCAN_ERROR}")
+        append("GITHUB_STEP_SUMMARY", COPY_SCAN_ERROR_DETAILS)
         return 2
     encoded = json.dumps(copy_signals(report), separators=(",", ":"))
     append("GITHUB_OUTPUT", f"exit-code={3 if report['review_required'] else 0}\ncopy-summary={encoded}")
@@ -264,10 +320,7 @@ def _artifact_id():
 def comment():
     repo, number, head, run_url = _pull_request()
     review = os.environ["SETRYA_REVIEW"]
-    body = MARKER + "\n" + summary(os.environ["SETRYA_CODE"], review)
-    details = detail_lines(os.environ.get("SETRYA_SUMMARY", ""))
-    if details:
-        body += "\n\n" + details
+    body = MARKER + "\n" + receipt_details(os.environ["SETRYA_CODE"], review, os.environ.get("SETRYA_SUMMARY", ""))
     artifact = _artifact_id()
     body += f"\n\n[Workflow run]({run_url})"
     if review != "UNAVAILABLE":
@@ -278,10 +331,11 @@ def comment():
 
 def copy_comment():
     repo, number, head, run_url = _pull_request()
-    body = COPY_MARKER + "\n" + copy_details(os.environ.get("SETRYA_COPY_SUMMARY", ""))
+    encoded = os.environ.get("SETRYA_COPY_SUMMARY", "")
+    body = COPY_MARKER + "\n" + copy_details(encoded)
     artifact = _artifact_id()
     body += f"\n\n[Workflow run]({run_url})"
-    if artifact:
+    if artifact and encoded != COPY_SCAN_ERROR:
         body += f" · [Download the copy report]({run_url}/artifacts/{artifact})"
     return _post_comment(repo, number, head, body, (COPY_MARKER,))
 

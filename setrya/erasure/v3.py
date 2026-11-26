@@ -10,6 +10,7 @@ from uuid import uuid4
 from setrya.offboarding.inputs import publish_new, publish_new_bytes, require
 from .judges import AnswerJudges, TextAnswer, consensus
 from .journal import CopyJournal, identifier
+from .modes import evidence_mode
 from setrya import provenance as source_provenance
 from setrya.core import scan_scope
 from .fs_canary import CanaryMatches
@@ -230,7 +231,8 @@ def run_shared(subject, *, case, application, output, mode="late-write", externa
     """Run trusted callbacks only against a disposable, authorized application fixture."""
     start = monotonic()
     require(isinstance(subject, Subject) and isinstance(case, SharedCase), "Expected a subject and shared case.")
-    require(mode in ("deletion", "late-write"), "Expected deletion or late-write mode.")
+    mode = evidence_mode(mode)
+    require(mode in ("deletion", "late-write"), "Expected deletion or write-back mode.")
     run = identifier(uuid4().hex if run_id is None else run_id, "run")
     spec = case.spec()
     external = [asdict(item) for item in external_items]

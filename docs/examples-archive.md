@@ -8,11 +8,11 @@ Start in the root of your GitHub repository with Python 3.11+ on macOS or Linux.
 git switch -c try-setrya
 python3 -m venv .venv-setrya
 . .venv-setrya/bin/activate
-python -m pip install setrya==1.10.0
+python -m pip install setrya==1.13.0
 setrya init --output setrya-case
 setrya doctor --starter setrya-case/test_erasure.py --mode deletion
 mkdir -p .github/workflows
-curl -fsSL https://github.com/davidahma/setrya/releases/download/v1.10.0/setrya-quickstart.yml -o .github/workflows/setrya.yml
+curl -fsSL https://github.com/davidahma/setrya/releases/download/v1.13.0/setrya-quickstart.yml -o .github/workflows/setrya.yml
 git add setrya-case/test_erasure.py .github/workflows/setrya.yml
 git commit -m "Run the Setrya deletion check on pull requests"
 git push -u origin HEAD
@@ -30,19 +30,19 @@ In `setrya-case/test_erasure.py`, replace the sample imports with your own fixtu
 +from helpdesk_fixture import CASE, open_fixture
 ```
 
-For example, seed a test customer’s depot code and a team dispatch day. Have `inspect` read the note from your store, `read` ask your authenticated answer route and `erase` call your deletion operation. Push the fixture and its test dependencies. The same PR now checks whether the depot code disappears and the dispatch day survives. Start with `deletion` and switch to `late-write` once you can pause and release the worker that captured the old note. [Runnable help-desk fixture and wiring instructions](https://github.com/davidahma/setrya/blob/v1.8.0/docs/github-action.md#switch-from-the-sample-to-your-app) · [Help-desk example PR](https://github.com/davidahma/setrya/pull/38)
+For example, seed a test customer’s depot code and a team dispatch day. Have `inspect` read the note from your store, `read` ask your authenticated answer route and `erase` call your deletion operation. Push the fixture and its test dependencies. The same PR now checks whether the depot code disappears and the dispatch day survives. Start with `deletion` and switch to `write-back` once you can pause and release the worker that captured the old note. [Runnable help-desk fixture and wiring instructions](https://github.com/davidahma/setrya/blob/v1.8.0/docs/github-action.md#switch-from-the-sample-to-your-app) · [Help-desk example PR](https://github.com/davidahma/setrya/pull/38)
 
 ## Try the broken and fixed versions
 
-To see the worker race locally, run the bundled workspace demo. Two teammates reopen the same handoff after a customer asks for deletion.
+To see a stale write-back locally, run the bundled workspace demo. Two teammates reopen the same handoff after a customer asks for deletion.
 
 ```sh
-python -m pip install setrya==1.10.0
+python -m pip install setrya==1.13.0
 setrya demo --output workspace
 setrya replay workspace/guarded
 ```
 
-| After the delayed writer finishes | Broken application | Guarded application |
+| After the deferred writer finishes | Broken application | Guarded application |
 | --- | --- | --- |
 | Support lead asks for the deleted customer’s hostname | `cobalt-bridge.example` | No matching note |
 | Account manager asks the same question in the same workspace | `cobalt-bridge.example` | No matching note |

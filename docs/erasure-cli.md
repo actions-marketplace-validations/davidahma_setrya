@@ -7,11 +7,11 @@ python -m pip install setrya
 setrya init --output subject-test
 setrya doctor --starter subject-test/test_erasure.py
 setrya run --starter subject-test/test_erasure.py --mode deletion --output before-queue
-setrya run --starter subject-test/test_erasure.py --mode late-write --output after-queue
+setrya run --starter subject-test/test_erasure.py --mode write-back --output after-queue
 setrya replay after-queue
 ```
 
-The generated starter also runs under `python -m pytest -q subject-test/test_erasure.py`. Replace its sample `CASE` and `open_fixture` imports with your own test fixture. Doctor opens the fixture, checks its declared hooks, reads its store keys and asks both questions as each caller. Your fixture setup may seed test data. Doctor does not invoke the application's deletion or worker hooks. For `late-write`, wire a checkpoint that holds the same job before its write and drains its serving effects on release. The older `setrya init erasure` template starts with an unconnected shared-case fixture and includes a cache factory. [Observation types and evidence contract](erasure-v3.md) · [Migrating cache revisions](local-cache.md)
+The generated starter also runs under `python -m pytest -q subject-test/test_erasure.py`. Replace its sample `CASE` and `open_fixture` imports with your own test fixture. Doctor opens the fixture, checks its declared hooks, reads its store keys and asks both questions as each caller. Your fixture setup may seed test data. For `write-back`, wire a checkpoint that holds the deferred writer before it commits and drains any serving effects on release. Setrya 1.x accepts `late-write` as the same mode. [Observation types and evidence contract](erasure-v3.md) · [Migrating cache revisions](local-cache.md)
 
 For PostgreSQL LangGraph deployments install `'setrya[erasure,erasure-postgres]'`. For Elasticsearch add `erasure-elasticsearch`. For the shared answer cache add `redis`. Replay of downloaded evidence uses the core package alone.
 
@@ -19,7 +19,7 @@ If the fixture exits before writing a receipt, `setrya run` reports the fixture 
 
 ## Two decisions
 
-`setrya replay DIRECTORY` returns the engineering result. Exit 0 means required application evidence passed, 1 means an established failure, 2 means an error, and 3 means required evidence is insufficient. A deletion-only result identifies the worker race as unexercised. `setrya replay DIRECTORY --case-review` also exits 3 when a technically passing case has outstanding review items. Open the owner, evidence reference and follow-up date in the case system. A missing required application read prevents technical PASS.
+`setrya replay DIRECTORY` returns the engineering result. Exit 0 means required application evidence passed, 1 means an established failure, 2 means an error, and 3 means required evidence is insufficient. A deletion-only result records that it did not exercise a write-back. `setrya replay DIRECTORY --case-review` also exits 3 when a technically passing case has outstanding review items. Open the owner, evidence reference and follow-up date in the case system. A missing required application read prevents technical PASS.
 
 ## Verify the signed release
 

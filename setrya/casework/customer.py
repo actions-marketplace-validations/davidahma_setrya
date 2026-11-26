@@ -64,7 +64,10 @@ def customer_text(receipt, *, case_id=None, failure_kinds=()):
     elif receipt.get("profile") == CRYPTO:
         lines.append(f"The observer checked key destruction for {_count(len(receipt['copies']), 'ciphertext copy', 'ciphertext copies')}.")
     elif receipt.get("profile") == VENDOR:
-        lines.append(f"A synthetic fixture checked the declared surfaces for {receipt['target']}.")
+        if "readback" in receipt:
+            lines.append(f"The review read the declared API surface for {receipt['target']} after a reported deletion.")
+        else:
+            lines.append(f"A synthetic fixture checked the declared surfaces for {receipt['target']}.")
     elif receipt["scope"] == "tenant":
         lines.append(f"The tenant review covered {len(receipt['probes'])} recorded application checks.")
     else:

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from uuid import uuid4
 
 try:
     import pytest
@@ -15,9 +16,11 @@ except ImportError as error:
 
 import setrya
 from setrya.casework import profiles
+from setrya.core import signing
 from setrya.offboarding.inputs import InvalidReport
 from setrya.receipt_format import RECEIPT
 from setrya.receipts import replay
+from setrya.vendor import cli as vendor_cli
 from setrya.vendor import fixtures, report
 from setrya.vendor._mem0 import observation
 
@@ -92,6 +95,34 @@ def test_tampered_receipt_differs_from_evidence(tmp_path):
         replay(tmp_path)
 
 
+def test_execution_metadata_is_replayed_and_legacy_operator_stays_unknown(tmp_path):
+    legacy = tmp_path / "legacy"
+    profiles.issue(profiles.VENDOR, observations(), legacy)
+    assert "execution" not in replay(legacy)
+    assert "Recorded operator unrecorded" in report.execution_lines(replay(legacy))
+    case = tmp_path / "named"
+    execution = {"operator": "vendor-ci", "run_id": str(uuid4()), "setrya_version": setrya.__version__}
+    issued = profiles.issue(profiles.VENDOR, {**observations(), "execution": execution}, case)
+    assert replay(case) == issued
+    assert issued["execution"] == execution
+    assert "Execution Self-check" in report.execution_lines(issued)
+    assert "Signer unauthenticated" in report.execution_lines(issued)
+    modified = {**issued, "execution": {**execution, "operator": "independent-lab"}}
+    (case / RECEIPT).write_text(json.dumps(modified), encoding="utf-8")
+    with pytest.raises(InvalidReport, match="differs"):
+        replay(case)
+
+
+@pytest.mark.parametrize("fields", [
+    {"operator": "Vendor-CI"}, {"run_id": "run"}, {"operator": None, "rerun_of": "a" * 64},
+    {"rerun_of": "invalid"}, {"classification": "independently-run"}, {"setrya_version": ""},
+])
+def test_fixture_rejects_invalid_execution_claims(fields):
+    execution = {"operator": "vendor-ci", "run_id": str(uuid4()), "setrya_version": setrya.__version__, **fields}
+    with pytest.raises(InvalidReport):
+        report.derive({**observations(), "execution": execution})
+
+
 def test_live_langgraph_store():
     pytest.importorskip("langgraph")
     result = report.derive(fixtures.run_fixture("langgraph-store"))
@@ -157,12 +188,152 @@ def test_live_mem0_records_remnant_in_history():
     assert result["technical_verdict"] == "FAIL"
 
 
-def test_signed_conformance_action_and_offline_verification(tmp_path, monkeypatch):
+def _require_cosign3():
     if shutil.which("cosign") is None:
         pytest.skip("requires Cosign 3")
     cosign = subprocess.check_output(["cosign", "version"], text=True)
     if "GitVersion:    v3." not in cosign:
         pytest.skip("requires Cosign 3")
+
+
+def test_signed_linked_rerun_and_original_self_check_have_distinct_review_scopes(tmp_path, monkeypatch):
+    _require_cosign3()
+    pytest.importorskip("langgraph")
+    monkeypatch.setenv("COSIGN_PASSWORD", "")
+    vendor_key, reviewer_key = (tmp_path / name for name in ("vendor", "reviewer"))
+    for key in (vendor_key, reviewer_key):
+        subprocess.run(["cosign", "generate-key-pair", "--output-key-prefix", str(key)], check=True)
+    vendor_pub, reviewer_pub = vendor_key.with_suffix(".pub"), reviewer_key.with_suffix(".pub")
+    prior, rerun = (tmp_path / name for name in ("prior", "rerun"))
+
+    def cli(*args, code=0):
+        result = subprocess.run([sys.executable, "-m", "setrya", "conformance", *map(str, args)], cwd=ROOT,
+                                capture_output=True, text=True)
+        assert result.returncode == code, result.stdout + result.stderr
+        return result.stdout + result.stderr
+
+    def linked(output, key):
+        cli("run", "--target", "langgraph-store", "--operator", "independent-lab", "--output", output,
+            "--key", key.with_suffix(".key"), "--rerun-of", prior)
+
+    cli("run", "--target", "langgraph-store", "--operator", "vendor-ci", "--output", prior,
+        "--key", vendor_key.with_suffix(".key"))
+    linked(rerun, reviewer_key)
+    original = cli("review", prior, "--key", vendor_pub, "--expect-operator", "vendor-ci")
+    assert "Execution Self-check" in original
+    assert "Signer verified Cosign public key SHA-256" in original
+    assert "Rerun matches original" not in original
+    standalone = cli("review", rerun, "--key", reviewer_pub)
+    assert "Execution Linked rerun recorded" in standalone
+    assert "Rerun matches original" not in standalone
+    assert "requires a paired review" in cli("review", rerun, "--key", reviewer_pub, "--accept-rerun", code=2)
+    paired = ("--against", prior, "--against-key", vendor_pub)
+    reviewed = cli("review", rerun, "--key", reviewer_pub, *paired, "--expect-operator", "independent-lab")
+    assert "Fixture verdict PASS · Setrya Verified status UNQUALIFIED" in reviewed
+    assert reviewed.splitlines()[0] == "Rerun matches original"
+    assert f"Fixture Setrya version {setrya.__version__}" in reviewed
+    assert "Original recorded operator vendor-ci" in reviewed
+    assert "Original technical verdict PASS · Review status OPEN_ITEMS" in reviewed
+    assert "Rerun technical verdict PASS · Review status OPEN_ITEMS" in reviewed
+    assert "Review scope authenticated signatures and evidence replay for two linked executions" in reviewed
+    assert "expected test operator" in cli("review", rerun, "--key", reviewer_pub, *paired,
+                                           "--expect-operator", "different-lab", code=2)
+
+    same_signer = tmp_path / "same-signer"
+    linked(same_signer, vendor_key)
+    wrapped = tmp_path / "wrapped.pub"
+    wrapped.write_bytes(vendor_pub.read_bytes().replace(b"\n", b"\r\n"))
+    assert "distinct trusted signing keys" in cli("review", same_signer, "--key", wrapped, *paired,
+                                                  "--expect-operator", "independent-lab", code=2)
+
+    copied = tmp_path / "copied"
+    copied.mkdir()
+    for path in (RECEIPT, profiles.EVIDENCE):
+        shutil.copyfile(prior / path, copied / path)
+    signing.sign_bytes((copied / RECEIPT).read_bytes(), copied / "conformance.sig", key=reviewer_key.with_suffix(".key"))
+    assert "does not link" in cli("review", copied, "--key", reviewer_pub, *paired,
+                                  "--expect-operator", "vendor-ci", code=2)
+
+
+@pytest.mark.parametrize("original_failure, rerun_failure, gate_exit, accepted_exit, changes", [
+    (None, "store", 3, 1, ("Surface store: PASS → FAIL",)),
+    ("store", None, 3, 0, ("Surface store: FAIL → PASS",)),
+    ("store", "index", 3, 1, ("Surface index: PASS → FAIL", "Surface store: FAIL → PASS")),
+    ("store", "store", 1, 1, ()),
+])
+def test_paired_review_gates_changed_outcomes(tmp_path, monkeypatch, capsys, original_failure,
+                                             rerun_failure, gate_exit, accepted_exit, changes):
+    _require_cosign3()
+    monkeypatch.setenv("COSIGN_PASSWORD", "")
+    original, rerun = (tmp_path / name for name in ("original", "rerun"))
+
+    def issue(folder, operator, failure, rerun_of=None):
+        key = folder.with_suffix(".key")
+        subprocess.run(["cosign", "generate-key-pair", "--output-key-prefix", str(folder)], check=True)
+        evidence = observations()
+        if failure:
+            evidence["observations"]["after_retry"][failure]["target"] = True
+        monkeypatch.setattr(vendor_cli, "run_fixture", lambda target: evidence)
+        return vendor_cli.run_and_sign("langgraph-store", folder, key=key, operator=operator, rerun_of=rerun_of)
+
+    original_result = issue(original, "vendor-ci", original_failure)
+    rerun_result = issue(rerun, "independent-lab", rerun_failure, rerun_of=original)
+    args = ["review", str(rerun), "--key", str(rerun.with_suffix(".pub")), "--expect-operator", "independent-lab",
+            "--against", str(original), "--against-key", str(original.with_suffix(".pub"))]
+    capsys.readouterr()
+    assert vendor_cli.command(args) == gate_exit
+    output = capsys.readouterr().out
+    expected_headline = "Rerun differs from original" if changes else "Rerun matches original"
+    assert output.splitlines()[0] == expected_headline
+    assert f"Original technical verdict {original_result['technical_verdict']}" in output
+    assert f"Rerun technical verdict {rerun_result['technical_verdict']}" in output
+    for change in changes:
+        assert change in output
+    assert vendor_cli.command([*args, "--accept-rerun"]) == accepted_exit
+    accepted_output = capsys.readouterr().out
+    assert accepted_output.splitlines()[0] == expected_headline
+    if changes:
+        assert "uses the rerun's technical exit code" in accepted_output
+
+
+def test_rerun_rejects_version_mismatch_before_execution(tmp_path, monkeypatch):
+    original, output = (tmp_path / name for name in ("original", "rerun"))
+    execution = {"operator": "vendor-ci", "run_id": str(uuid4()), "setrya_version": "1.12.0"}
+    profiles.issue(profiles.VENDOR, {**observations(), "execution": execution}, original)
+    monkeypatch.setattr(vendor_cli, "__version__", "99.0.0")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("version mismatch reached fixture execution or signing")
+
+    monkeypatch.setattr(vendor_cli, "_sign_evidence", unexpected)
+    monkeypatch.setattr(vendor_cli, "run_fixture", unexpected)
+    with pytest.raises(InvalidReport, match="same Setrya fixture version as the original"):
+        vendor_cli.run_and_sign("langgraph-store", output, key=None, operator="independent-lab", rerun_of=original)
+    assert not output.exists()
+
+
+def test_rerun_requires_detached_signing_before_execution(tmp_path, monkeypatch):
+    original, output = (tmp_path / name for name in ("original", "rerun"))
+    execution = {"operator": "vendor-ci", "run_id": str(uuid4()), "setrya_version": setrya.__version__}
+    profiles.issue(profiles.VENDOR, {**observations(), "execution": execution}, original)
+    (original / "sigstore.json").write_text("{}", encoding="utf-8")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("the incompatible signing policy reached fixture execution or signing")
+
+    monkeypatch.setattr(vendor_cli, "_sign_evidence", unexpected)
+    with pytest.raises(InvalidReport, match="original with a detached Cosign signature"):
+        vendor_cli.run_and_sign("langgraph-store", output, key=tmp_path / "rerun.key",
+                                operator="independent-lab", rerun_of=original)
+
+    (original / "conformance.sig").write_text("signature", encoding="utf-8")
+    with pytest.raises(vendor_cli.InputError, match="detached Cosign signing key for a linked rerun"):
+        vendor_cli.run_and_sign("langgraph-store", output, key=None, operator="independent-lab", rerun_of=original)
+    assert not output.exists()
+
+
+def test_signed_conformance_action_and_offline_verification(tmp_path, monkeypatch):
+    _require_cosign3()
     pytest.importorskip("langgraph")
     installed = subprocess.run([sys.executable, "-I", "-c", "from importlib.metadata import version; print(version('setrya'))"],
                                capture_output=True, text=True)

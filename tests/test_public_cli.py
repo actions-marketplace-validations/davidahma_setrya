@@ -5,6 +5,8 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import runpy
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -46,6 +48,49 @@ class PublicCLI(unittest.TestCase):
             self.assertTrue(Path(tmp, "policy/policy.json").is_file())
             self.assertEqual(main(["demo", "--scope=tenant", f"--output={tmp}/tenant"]), 0)
             self.assertTrue(Path(tmp, "tenant/receipt/erasure-receipt.json").is_file())
+
+    def test_write_back_cli_alias_uses_the_historical_evidence_mode(self):
+        with TemporaryDirectory() as tmp, contextlib.redirect_stdout(StringIO()):
+            starter = Path(tmp, "starter")
+            self.assertEqual(main(["init", "--output", str(starter)]), 0)
+            self.assertEqual(main(["demo", "--mode=write-back", f"--output={tmp}/workspace"]), 0)
+            args = ["--starter", str(starter / "test_erasure.py")]
+            for mode in ("write-back", "late-write"):
+                with self.subTest(mode=mode):
+                    receipt = Path(tmp, mode)
+                    self.assertEqual(main(["doctor", *args, "--mode", mode]), 0)
+                    self.assertEqual(main(["run", *args, "--mode", mode, "--output", str(receipt)]), 0)
+                    self.assertEqual(main(["replay", str(receipt)]), 0)
+                    result = json.loads((receipt / "erasure-receipt.json").read_bytes())
+                    self.assertEqual((result["mode"], result["race"]), ("late-write", "exercised"))
+
+    def test_generated_starters_report_the_connected_workers_journal(self):
+        with TemporaryDirectory() as tmp, contextlib.redirect_stdout(StringIO()):
+            for name, command in (("workspace", ["init"]), ("shared", ["init", "erasure"])):
+                with self.subTest(starter=name):
+                    directory = Path(tmp, name)
+                    self.assertEqual(main([*command, "--output", str(directory)]), 0)
+                    starter = directory / "test_erasure.py"
+                    wired = """from functools import partial
+from setrya.examples.workspace import CASE, open_fixture as workspace_fixture
+
+open_fixture = partial(workspace_fixture, shared=True, guarded=False, record_writes=True)
+
+"""
+                    main_guard = 'if __name__ == "__main__":'
+                    starter.write_text(starter.read_text().replace(main_guard, wired + main_guard, 1))
+                    direct_args = [str(starter), "--mode", "write-back", "--output", str(directory / "direct")]
+                    with (contextlib.redirect_stdout(StringIO()) as direct, patch.object(sys, "argv", direct_args),
+                          self.assertRaises(SystemExit) as exited):
+                        runpy.run_path(str(starter), run_name="__main__")
+                    self.assertEqual(exited.exception.code, 1)
+
+                    with contextlib.redirect_stdout(StringIO()) as wrapped:
+                        self.assertEqual(main(["run", "--starter", str(starter), "--mode", "write-back",
+                                               "--output", str(directory / "wrapped")]), 1)
+                    lead = "Stale write-back: the worker turn at journal entry 0 wrote a copy captured before deletion."
+                    self.assertEqual(direct.getvalue().splitlines()[0], lead)
+                    self.assertEqual(wrapped.getvalue().splitlines()[0], lead)
 
     def test_person_scope_uses_the_primary_fixture_and_examples(self):
         with TemporaryDirectory() as tmp, contextlib.redirect_stdout(StringIO()):

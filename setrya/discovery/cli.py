@@ -8,17 +8,18 @@ import runpy
 import sys
 
 from setrya.drill import InputError
+from setrya.erasure.modes import CLI_MODES, evidence_mode
 from setrya.erasure.receipt import MAX_BUNDLE_FILE_BYTES
 from setrya.offboarding import signature
 from setrya.offboarding.inputs import InvalidReport, publish_new, publish_new_bytes, read_regular_bytes, require
 
 
 def report(directory, *, expected_binding=None, case_review=False):
-    from .case import exit_code, replay, summary
+    from .case import replay
+    from setrya.receipts import report as receipt_report
 
     result = replay(directory, expected_binding=expected_binding)
-    print(summary(result))
-    return exit_code(result, case_review=case_review)
+    return receipt_report(result, case_review=case_review, bundle=directory)
 
 
 def _binding_options(parser, required):
@@ -35,14 +36,14 @@ def _binding(args):
 
 
 def _run(args):
-    from .case import exit_code, record_retention, replay, run_case, summary
+    from .case import record_retention, replay, run_case
+    from setrya.receipts import report as receipt_report
 
     binding = _binding(args)
     require(not os.path.lexists(args.output), "Choose a fresh case directory.")
     if binding["source"]["action"] == "retain":
         result = record_retention(binding, output=args.output)
-        print(summary(result))
-        return exit_code(result)
+        return receipt_report(result)
     require(args.fixture is not None, "Supply --fixture for an application deletion or rewrite.")
     fixture = args.fixture.resolve()
     require(fixture.is_file() and fixture.suffix == ".py", "Supply a trusted local Python fixture file.")
@@ -68,8 +69,7 @@ def _run(args):
     require(produced is not None, "The fixture ended without producing a case result.")
     verified = replay(args.output, expected_binding=binding)
     require(verified == produced, "The output no longer matches the case produced by this run.")
-    print(summary(verified))
-    return exit_code(verified)
+    return receipt_report(verified, bundle=args.output)
 
 
 def main(argv):
@@ -107,7 +107,7 @@ def main(argv):
     run = commands.add_parser("run", help="test an authorized mapping against a trusted local application fixture")
     _binding_options(run, True)
     run.add_argument("--fixture", type=Path)
-    run.add_argument("--mode", choices=("deletion", "late-write"), default="deletion")
+    run.add_argument("--mode", type=evidence_mode, choices=CLI_MODES, default="deletion")
     run.add_argument("--output", required=True, type=Path)
     replay = commands.add_parser("replay", help="recompute the engineering or case-review result offline")
     replay.add_argument("directory", type=Path)

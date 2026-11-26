@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.13.0
+
+- Compare separately signed vendor runs by verdict and surface. A disagreement requires review before accepting the newer result. Check the fixture version before starting a linked rerun.
+- Pack vendor results as signed attestations for offline verification and governance handoff. Ticket records identify the verifying key and UTC verification time.
+- Run local conformance fixtures for CrewAI memory, Cognee ingestion, and SQLite session history in Google ADK and OpenAI Agents. The workflow verifies the signed results without network access.
+
+## 1.12.0
+
+- Record who operated a conformance fixture. Review the signer and replayed evidence separately, or verify a linked rerun under a separate signer policy.
+- Walk through attaching a signed deletion receipt, its control reference, and open items to a governance ticket.
+
+## 1.11.0
+
+- Explain stale write-back in the README, root Action description, troubleshooting guide, and glossary.
+- Recognize supported deferred writes in Python copy scans and suggest a write-back drill in PR review.
+- Label a failure as stale write-back when the receipt ties the returned copy to a deferred writer's captured input and recorded write.
+- Test original Celery input delivered by a retry or resumed consumer across deletion.
+- Accept `--mode write-back` in the CLI. The existing `late-write` spelling and evidence stay compatible throughout 1.x.
+- Replace a prior copy scan comment when the latest scan fails. Bind YAML run provenance to the bytes parsed for the case.
+- Send release comparisons back for review when a retained-control probe or pinned HTTP behavior changes.
+
 ## 1.10.0
 
 - Reuse HTTP drill behavior across deployments. Capture the endpoint's TLS certificate fingerprint and application-reported build, with an independent deployment pin for review.

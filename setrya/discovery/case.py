@@ -430,7 +430,7 @@ def summary(result):
     sample = {True: "sample finding", False: "ordinary finding", None: "sample status unknown"}[result["sample"]]
     lines = [f"Technical verdict {result['technical_verdict']} · Review status {result['review_status']}",
              f"Case {result['case_id']} · finding {result['finding_id']} · {result['catalog']} · {sample}",
-             f"{result['environment']} · application {result['revision']} · worker race {result['race']}"]
+             f"{result['environment']} · application {result['revision']} · write-back check {result['race']}"]
     for service in result["services"]:
         follow = f" · due {service['follow_up']}" if service.get("follow_up") else ""
         baseline = f" · baseline {service['baseline'].lower()}" if "baseline" in service else ""

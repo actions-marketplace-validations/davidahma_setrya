@@ -26,6 +26,8 @@ def case_spec():
 
 
 class NorthlineExport(northline.Northline):
+    WORKER_ATTEMPT = "northline-archive-refresh"
+
     def __init__(self, folder, subject, journal, *, guarded):
         super().__init__(folder, subject, journal, guarded=guarded)
         self.archive_folder = folder / "archive"
@@ -69,7 +71,7 @@ class NorthlineExport(northline.Northline):
                 raise ValueError("The archive refresh requires the original chart and finding.")
             raw, _ = self._read_archive()
         before_write()
-        with self.lock, Turn("northline-archive-refresh", "analyst-east", "archive-worker").activate():
+        with self.lock, Turn(self.WORKER_ATTEMPT, "analyst-east", "archive-worker").activate():
             if self.guarded and self._finding() != captured:
                 return
             self._write_archive(raw)

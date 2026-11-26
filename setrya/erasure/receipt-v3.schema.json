@@ -570,6 +570,10 @@
             "pgvector",
             "langgraph-store",
             "mem0",
+            "crewai-memory",
+            "cognee-dataset",
+            "google-adk-session",
+            "openai-agents-session",
             "openai-conversations",
             "openai-conversation-items",
             "openai-responses",
@@ -592,6 +596,27 @@
             "scope_sha256": { "$ref": "#/$defs/sha256" }
           },
           "required": ["baseline_at", "scope_sha256"],
+          "additionalProperties": false
+        },
+        "execution": {
+          "type": "object",
+          "properties": {
+            "operator": {
+              "oneOf": [
+                { "type": "null" },
+                { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.@/+-]{0,79}$" }
+              ]
+            },
+            "run_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "setrya_version": { "type": "string", "pattern": "^[A-Za-z0-9.+_-]{1,80}$" },
+            "rerun_of": { "$ref": "#/$defs/sha256" }
+          },
+          "required": ["operator", "run_id", "setrya_version"],
+          "if": { "required": ["rerun_of"] },
+          "then": { "properties": { "operator": { "type": "string" } } },
           "additionalProperties": false
         },
         "versions": {
@@ -654,10 +679,13 @@
         "certification"
       ],
       "if": {
-        "properties": { "target": { "enum": ["pgvector", "langgraph-store", "mem0"] } }
+        "properties": {
+          "target": { "enum": ["pgvector", "langgraph-store", "mem0", "crewai-memory", "cognee-dataset",
+            "google-adk-session", "openai-agents-session"] }
+        }
       },
       "then": { "not": { "required": ["readback"] } },
-      "else": { "required": ["readback"] },
+      "else": { "required": ["readback"], "not": { "required": ["execution"] } },
       "additionalProperties": false
     },
     "journalChain": {

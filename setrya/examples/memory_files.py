@@ -28,6 +28,7 @@ DERIVED_FILE = "clients/acme/memory_current.md"
 TARGET = "Alder-417-needs-reimage"
 CONTROL = "Acme plans a Thursday deployment."
 NO_MATCH = "No matching memory."
+WRITER = "late-memory"
 QUESTIONS = ("Which laptop needs a reimage?", "When does Acme plan to deploy?")
 ROUTE = "/clients/acme/memory/ask"
 CONVERSATION = "acme"
@@ -63,7 +64,7 @@ class MemoryFiles:
             self._publish(self._capture())
         self.files = FilesystemCanaryScanner(root)
         self.history = GitHistoryCanaryScanner(root)
-        self.worker = WorkerFixture(self._dream, self.read, timeout=25)
+        self.worker = WorkerFixture(self._dream, self.read, timeout=25, attempt=WRITER)
         self.hold = self.worker.hold
         self.checkpoint = self.worker.checkpoint
         self.release_and_drain = self.worker.release_and_drain
@@ -99,7 +100,7 @@ class MemoryFiles:
             self.hooks.record_copy(VersionRef("files", DERIVED_FILE, sha256(content).hexdigest()), action="derived")
 
     def _dream(self, subject, before_write):
-        with Turn("late-memory", "scheduled-job", "dreaming-agent", parent="initial-memory").activate():
+        with Turn(WRITER, "scheduled-job", "dreaming-agent", parent="initial-memory").activate():
             with self.lock:
                 captured = self._capture()
                 # In this disposable workspace the file bytes are the input versions.

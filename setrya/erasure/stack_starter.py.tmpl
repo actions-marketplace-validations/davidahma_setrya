@@ -5,6 +5,7 @@ from pathlib import Path
 
 from setrya.erasure import run_shared
 from setrya.erasure.casefile import load_case
+from setrya.erasure.modes import CLI_MODES, evidence_mode
 from setrya.receipts import exit_code, report
 
 PROFILE = load_case(Path(__file__).with_name("case.yml"))
@@ -34,8 +35,8 @@ def test_erasure(tmp_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("deletion", "late-write"), default="deletion")
+    parser.add_argument("--mode", type=evidence_mode, choices=CLI_MODES, default="deletion")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     receipt = run(args.output, args.mode)
-    raise SystemExit(report(receipt))
+    raise SystemExit(report(receipt, bundle=args.output))

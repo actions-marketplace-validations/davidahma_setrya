@@ -53,16 +53,17 @@ jobs:
         with:
           operation: conformance
           conformance-target: pgvector
+          conformance-operator: setrya-ci
           conformance-key: ${{ runner.temp }}/vendor-key.key
           output: ${{ runner.temp }}/vendor-reports/pgvector
       - name: Check LangGraph Store through its public API
         run: |
-          setrya conformance run --target langgraph-store --key "$RUNNER_TEMP/vendor-key.key" --output "$RUNNER_TEMP/vendor-reports/langgraph-store"
+          setrya conformance run --target langgraph-store --operator setrya-ci --key "$RUNNER_TEMP/vendor-key.key" --output "$RUNNER_TEMP/vendor-reports/langgraph-store"
       - name: Detect Mem0's retained history copy
         run: |
           out="$RUNNER_TEMP/vendor-reports/mem0"
           code=0
-          setrya conformance run --target mem0 --key "$RUNNER_TEMP/vendor-key.key" --output "$out" || code=$?
+          setrya conformance run --target mem0 --operator setrya-ci --key "$RUNNER_TEMP/vendor-key.key" --output "$out" || code=$?
           test "$code" -eq 1
           python - "$out/erasure-receipt.json" <<'PY'
           import json
@@ -79,12 +80,63 @@ jobs:
         run: |
           for target in pgvector langgraph-store mem0; do
             out="$RUNNER_TEMP/vendor-reports/$target"
-            setrya verify --receipt "$out/erasure-receipt.json" --key "$RUNNER_TEMP/vendor-key.pub" --bundle "$out/conformance.sig"
             code=0
-            env -u SETRYA_PGVECTOR_DSN setrya replay "$out" || code=$?
+            env -u SETRYA_PGVECTOR_DSN setrya conformance review "$out" \
+              --key "$RUNNER_TEMP/vendor-key.pub" --expect-operator setrya-ci || code=$?
             test "$code" -eq "$([ "$target" = mem0 ] && echo 1 || echo 0)"
           done
           cp "$RUNNER_TEMP/vendor-key.pub" "$RUNNER_TEMP/vendor-reports/ci-fixture.pub"
+      - name: Verify a separately recorded rerun with two synthetic signer policies
+        run: |
+          cosign generate-key-pair --output-key-prefix "$RUNNER_TEMP/rerun-key"
+          original="$RUNNER_TEMP/vendor-reports/langgraph-store"
+          rerun="$RUNNER_TEMP/linked-rerun"
+          setrya conformance run --target langgraph-store --operator synthetic-reviewer \
+            --rerun-of "$original" --key "$RUNNER_TEMP/rerun-key.key" --output "$rerun"
+          setrya conformance review "$rerun" --key "$RUNNER_TEMP/rerun-key.pub" \
+            --against "$original" --against-key "$RUNNER_TEMP/vendor-key.pub" \
+            --expect-operator synthetic-reviewer > "$RUNNER_TEMP/linked-review.txt"
+          grep -qxF 'Rerun matches original' "$RUNNER_TEMP/linked-review.txt"
+      - name: Attach verified evidence to the sample governance ticket
+        run: |
+          example="$GITHUB_WORKSPACE/docs/examples/governance-handoff/handoff.py"
+          sample="$RUNNER_TEMP/governance-handoff"
+          mkdir -p "$sample/issuer" "$sample/reviewer"
+          (
+            cd "$sample/issuer"
+            cosign generate-key-pair --output-key-prefix issuer
+            python -I "$example" issue exchange --key issuer.key
+          )
+          cp -R "$sample/issuer/exchange" "$sample/reviewer/exchange"
+          cp "$sample/issuer/issuer.pub" "$sample/reviewer/trusted-issuer.pub"
+          cd "$sample/reviewer"
+          python -I "$example" review exchange --key trusted-issuer.pub > ticket.json
+          fingerprint=$(openssl pkey -pubin -in trusted-issuer.pub -outform DER | sha256sum | cut -d ' ' -f 1)
+          jq -e '.governance_ticket == "GOV-204" and .control_reference.reference == "ERASURE-07" and
+            .control_reference_source == "receipt" and .evidence_kind == "synthetic-drill" and
+            .signer.type == "cosign-public-key" and .signer.sha256 == $fingerprint and
+            (.verified_at | endswith("+00:00")) and
+            .technical_verdict == "PASS" and .review_status == "OPEN_ITEMS" and
+            .open_items[0].owner == "platform-team" and .open_items[0].follow_up and
+            .open_items[0].evidence == "erasure-receipt.json#/open_items/0"' --arg fingerprint "$fingerprint" ticket.json
+          test "$(jq -r .receipt_sha256 ticket.json)" = "$(sha256sum exchange/erasure-receipt.json | cut -d ' ' -f 1)"
+          code=0
+          setrya receipt verify-exchange exchange --key trusted-issuer.pub --case-review || code=$?
+          test "$code" -eq 3
+          code=0
+          python -I "$example" review exchange --key "$RUNNER_TEMP/rerun-key.pub" > rejected.json || code=$?
+          test "$code" -eq 2
+          test ! -s rejected.json
+          setrya receipt pack "$RUNNER_TEMP/vendor-reports/mem0" --output vendor-exchange \
+            --system mem0 --system-version local-fixture --key "$sample/issuer/issuer.key"
+          python -I "$example" review vendor-exchange --key trusted-issuer.pub \
+            --ticket GOV-205 --framework "Support governance" --control ERASURE-08 > vendor-ticket.json
+          jq -e '.governance_ticket == "GOV-205" and .control_reference.reference == "ERASURE-08" and
+            .control_reference_source == "reviewer" and .evidence_kind == "vendor-attestation" and
+            .signer.sha256 == $fingerprint and .technical_verdict == "FAIL" and
+            .vendor.target == "mem0" and .vendor.execution.operator == "setrya-ci" and
+            any(.vendor.checks[]; .surface == "history" and .status == "FAIL")' \
+            --arg fingerprint "$fingerprint" vendor-ticket.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: ${{ !cancelled() }}
         with:

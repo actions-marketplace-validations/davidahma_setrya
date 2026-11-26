@@ -15,6 +15,7 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 from time import monotonic
 
 from .drill import InputError
+from .erasure.modes import CLI_MODES, evidence_mode
 
 _LIMIT = 16 * 1024
 _TIMEOUT = 120
@@ -166,7 +167,7 @@ def command(argv):
         """Recompute the verdict from a saved evidence bundle."""
         with _bundle(root, bundle) as snapshot:
             receipt = evaluate(snapshot)
-            return {"exit_code": exit_code(receipt), "output": summary(receipt)[:_LIMIT]}
+            return {"exit_code": exit_code(receipt), "output": summary(receipt, bundle=snapshot)[:_LIMIT]}
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
     def receipt_summary(bundle: str, audience: str = "reviewer") -> str:
@@ -195,11 +196,11 @@ def command(argv):
     @server.tool(annotations=ToolAnnotations(readOnlyHint=approved is None, openWorldHint=approved is not None))
     def run(folder: str = "setrya-evidence", mode: str = "deletion") -> CommandResult:
         """Run the approved disposable fixture and record its observations."""
-        if mode not in ("deletion", "late-write"):
-            raise InputError("Choose deletion or late-write.")
+        if mode not in CLI_MODES:
+            raise InputError("Choose deletion or write-back (late-write is also accepted).")
         with fixture() as (entry, original):
             result = _child(["run", "--starter", entry, "--fixture-source", original,
-                             "--output", output(folder), "--mode", mode], root)
+                             "--output", output(folder), "--mode", evidence_mode(mode)], root)
         result["output"] = result["output"].replace(entry, original)
         return result
 
